@@ -18,7 +18,7 @@ for (const s of shots) {
     page = await b.newPage({ viewport: { width: 1920, height: 1080 } });
     page.on('pageerror', e => console.log('pageerror: ' + e.message));
     page.on('console', m => { if (m.type() === 'error' && !/404/.test(m.text())) console.log('console: ' + m.text().slice(0, 300)); });
-    await page.goto(`http://127.0.0.1:${port}/index.html?${s.q || ''}`);
+    await page.goto(`http://127.0.0.1:${port}/${process.env.PAGE || 'index.html'}?${s.q || ''}`);
     const hasApp = await page.waitForFunction(() => window.__app?.ready || document.querySelector('#d:not([disabled])')?.offsetParent, null, { timeout: 180000 }).then(() => page.evaluate(() => !!window.__app?.ready));
     if (hasApp) await page.evaluate(() => window.__app.start?.()); else await page.click('#d').catch(() => {});
     await page.waitForTimeout(3000);
