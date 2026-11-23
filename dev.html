@@ -399,8 +399,8 @@ function lauvHullR(x) {
   return 0;
 }
 // spheres that touch the world: x, y, z (body, metres), radius
-const LAUV_SPHERES = [[0.06, 0, 0, 0.11], [0.30, 0, 0, 0.09], [0.60, 0, 0, 0.085], [0.90, 0, 0, 0.085], [1.20, 0, 0, 0.085], [1.50, 0, 0, 0.085], [1.70, 0, 0, 0.07], [1.77, 0, 0, 0.035],
-  [0.245, 0, 0.14, 0.03], [0.245, 0, -0.14, 0.03], [0.245, -0.14, 0, 0.03], [0.245, 0.14, 0, 0.03], [0.65, 0.26, 0, 0.04]];
+const LAUV_SPHERES = [[0.06, 0, 0, 0.14], [0.30, 0, 0, 0.13], [0.60, 0, 0, 0.13], [0.90, 0, 0, 0.13], [1.20, 0, 0, 0.13], [1.50, 0, 0, 0.13], [1.70, 0, 0, 0.11], [1.77, 0, 0, 0.07],
+  [0.245, 0, 0.14, 0.05], [0.245, 0, -0.14, 0.05], [0.245, -0.14, 0, 0.05], [0.245, 0.14, 0, 0.05], [0.65, 0.26, 0, 0.06]];   // hull radius 0.074 + a margin: the SDF is a 0.75 m voxel field
 const LAUV_PARAMS = {
   netBuoy: 1.2,          // N, slightly positive buoyancy
   cdAxial: 0.30, cdCross: 0.8, k1: 0.02, ca: 1.0, mungK: 0.1,
@@ -2157,9 +2157,9 @@ fn ggx(nh: f32, a: f32) -> f32 { let a2 = a * a; let d = nh * nh * (a2 - 1.) + 1
   let R = reflect(-V, N);
   let env = (amb(i.wp, R, v1.g, z) + side(i.wp, R, sat((v2.r - .5) * 2.7), z)) * ao;
   let fe = (f0 + (1. - f0) * pow(1. - ndv, 5.)) * (1. - rough * .55);
-  var c = diff + sp + env * (fe * (1. + cc * .6)) * 1.3;
+  var c = diff + sp + env * (fe * (1. + cc * .3)) * .8;
   // the vehicle's own lamp light and a warm fill keep the paint readable at depth, where the sun has lost its red
-  c += alb * (1. - metal) * vec3f(1., .82, .62) * (.16 + .3 * sat(dot(N, V))) * (.6 + .4 * ss(0., 25., -i.wp.y));
+  c += alb * (1. - metal) * vec3f(1., .82, .62) * (.22 + .4 * sat(dot(N, V))) * (.6 + .4 * ss(0., 25., -i.wp.y));
   if ((part == 1u && ign(i.cp.xy) < blur * .85) || (part == 6u && ign(i.cp.xy + 7.) > blur * .4)) { discard; }
   return fin(fog(c, i.wp, z));
 }
@@ -2210,7 +2210,7 @@ const lauvColliders = [];            // hook for other pieces: fn(x, y, z) -> si
 // the world edge (the endless-world piece replaces it)
 let lauvConstrain = (v) => { const r = hypot(v.pos[0], v.pos[2]); if (r > 148) { const k = 148 / r; v.pos[0] *= k; v.pos[2] *= k; } };
 const lauvS = { acc: 0, scratches: 0, sinceContact: 9, inContact: false, slideAcc: 0, paused: false, hint: 1, hintT: 0, scratchFlash: 0, snap: 1,
-  puffAcc: 0, bubAcc: 0, flCool: 0, revT: 0, kelpT: 0, thrUpT: 0, thrDnT: 0, fps: 60, gpUp: 0, gpDn: 0,
+  fN: 0, fT: 0, puffAcc: 0, bubAcc: 0, flCool: 0, revT: 0, kelpT: 0, thrUpT: 0, thrDnT: 0, fps: 60, gpUp: 0, gpDn: 0,
   camMode: 'chase', camAz: 0, camEl: 0, camDist: 3.6, camYaw: 0, camIdle: 9, cpx: 0, cpy: 0, cpz: 0, tx: 0, ty: 0, tz: 0 };
 const lauvP = new Float32Array(LAUV_MAXP * 8), lauvPV = new Float32Array(LAUV_MAXP * 3), lauvPL = new Float32Array(LAUV_MAXP * 2);
 let lauvPN = 0;
@@ -2219,6 +2219,7 @@ const lauvRope = new Float64Array(LAUV_NS * 6), lauvRopeVB = new ArrayBuffer(LAU
 let lauvRopeLen = 1, lauvRopeOn = 0;
 const lauvTmp = new Float64Array(3);
 let LV_GPU = null;
+const LAUV_OFF = /[?&]veh=0/.test(location.search);   // dev: leave the vehicle out of the frame, to time what it costs
 
 // ---------------------------------------------------------------- signed distance for contact and camera: terrain SDF plus hooks
 function lauvSdf(x, y, z) {
@@ -2351,14 +2352,14 @@ function lauvRopeBuild() {
     const tl = hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
     const vx = lauvRope[o] - F[CX], vy = lauvRope[o + 1] - F[CY], vz = lauvRope[o + 2] - F[CZ];
     let ax = ty * vz - tz * vy, ay = tz * vx - tx * vz, az = tx * vy - ty * vx; const al = hypot(ax, ay, az) || 1; ax /= al; ay /= al; az /= al;
-    const w = 0.035 * (1 - 0.55 * i / (LAUV_NS - 1)) * (1 + 0.4 * sin(i * 1.7));
+    const w = 0.03 * (1 - 0.5 * i / (LAUV_NS - 1)) * (1 + 0.5 * sin(i * 1.9 + 1));
     const vl = hypot(vx, vy, vz) || 1;
     for (let s = 0; s < 2; s++) {
       const q = (i * 2 + s) * 6, sg = s ? 1 : -1;
       lauvRopeF[q] = lauvRope[o] + ax * w * sg; lauvRopeF[q + 1] = lauvRope[o + 1] + ay * w * sg; lauvRopeF[q + 2] = lauvRope[o + 2] + az * w * sg;
       const b = (i * 2 + s) * 24;
       lauvRopeI[b + 12] = round(-vx / vl * 127); lauvRopeI[b + 13] = round(-vy / vl * 127); lauvRopeI[b + 14] = round(-vz / vl * 127); lauvRopeI[b + 15] = 0;
-      const t = i / (LAUV_NS - 1); lauvRopeU[b + 16] = 70 + 30 * t; lauvRopeU[b + 17] = 85 + 20 * t; lauvRopeU[b + 18] = 26; lauvRopeU[b + 19] = 130; lauvRopeU[b + 20] = 7; lauvRopeU[b + 21] = 0; lauvRopeU[b + 22] = 40; lauvRopeU[b + 23] = 0;
+      const t = i / (LAUV_NS - 1); lauvRopeU[b + 16] = 92 - 22 * t; lauvRopeU[b + 17] = 70 - 10 * t; lauvRopeU[b + 18] = 24; lauvRopeU[b + 19] = 130; lauvRopeU[b + 20] = 7; lauvRopeU[b + 21] = 0; lauvRopeU[b + 22] = 40; lauvRopeU[b + 23] = 0;
     }
   }
 }
@@ -2377,7 +2378,7 @@ async function lauvInit() {
   const m = mod(W_LAUV), mp = mod(W_LPART);
   const vbl = { arrayStride: 24, attributes: [A(0, 0, 'float32x3'), A(1, 12, 'snorm8x4'), A(2, 16, 'unorm8x4'), A(3, 20, 'uint8x4')] };
   const pipe = (vs, strip) => device.createRenderPipeline({ layout: pl, vertex: { module: m, entryPoint: vs, buffers: [vbl] }, fragment: { module: m, entryPoint: 'fs', targets: [{ format: HDR }] },
-    primitive: { topology: strip ? 'triangle-strip' : 'triangle-list', cullMode: 'none' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' }, multisample: { count: AA } });
+    primitive: { topology: strip ? 'triangle-strip' : 'triangle-list', cullMode: strip ? 'none' : 'back' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' }, multisample: { count: AA } });
   const pPart = device.createRenderPipeline({ layout: pl0, vertex: { module: mp, entryPoint: 'vs', buffers: [{ arrayStride: 32, stepMode: 'instance', attributes: [A(0, 0, 'float32x4'), A(1, 16, 'float32x4')] }] },
     fragment: { module: mp, entryPoint: 'fs', targets: [{ format: HDR, blend: { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } }] },
     primitive: { topology: 'triangle-strip' }, depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: 'greater' }, multisample: { count: AA } });
@@ -2399,12 +2400,12 @@ function lauvUpdate() {
   if (lauvPN) Q.writeBuffer(g.vbP, 0, lauvP.buffer, 0, lauvPN * 32);
 }
 function lauvDraw(r) {
-  const g = LV_GPU;
+  const g = LV_GPU; if (LAUV_OFF) return;
   r.setPipeline(g.pVeh); r.setBindGroup(1, g.bg); r.setVertexBuffer(0, g.vb); r.setIndexBuffer(g.ib, 'uint32'); r.drawIndexed(g.nI);
   if (lauvRopeOn) { r.setPipeline(g.pRope); r.setVertexBuffer(0, g.vbRope); r.draw(LAUV_NS * 2); }
 }
 function lauvDrawParticles(r) {
-  if (!lauvPN) return; const g = LV_GPU;
+  if (!lauvPN || LAUV_OFF) return; const g = LV_GPU;
   r.setPipeline(g.pPart); r.setVertexBuffer(0, g.vbP); r.draw(4, lauvPN);
 }
 
@@ -2432,8 +2433,8 @@ function lauvCamera(dt) {
   const tx = P[0] + fx * 0.05, ty = P[1] + fy * 0.05 + 0.03, tz = P[2] + fz * 0.05;
   const hy = lv.yaw; let yawRef = S.camYaw;
   if (mode === 'chase' || mode === 'free') { yawRef += lauvWrapA(hy - yawRef) * (1 - exp(-dt * 2.6)); S.camYaw = yawRef; } else yawRef = S.camYaw = hy;
-  let az = S.camAz, el = S.camEl, dist = S.camDist, baseEl = 0.26 + lv.pitch * 0.35;
-  if (mode === 'chase') dist = 3.0 + 0.4 * abs(lv.v[0]);
+  let az = S.camAz, el = S.camEl, dist = S.camDist, baseEl = 0.2 + lv.pitch * 0.35;
+  if (mode === 'chase') dist = 2.5 + 0.35 * abs(lv.v[0]);
   else if (mode === 'side') { az = 0; el = 0; baseEl = 0.06; dist = 1.9; }
   else if (mode === 'front') { az = 0; el = 0; baseEl = 0.1; dist = 2.1; }
   else if (mode === 'top') { az = 0; el = 0; baseEl = 1.45; dist = 3.2; }
@@ -2450,7 +2451,7 @@ function lauvCamera(dt) {
   if (mode === 'surface') py = 1.7;
   if (mode !== 'surface') {   // rock avoidance: walk from the target towards the wanted position and stop in front of the rock
     const n = max(2, Math.ceil(dist / 0.2)); let last = dist;
-    for (let i = 1; i <= n; i++) { const t = i / n; if (lauvSdf(tx + (px - tx) * t, ty + (py - ty) * t, tz + (pz - tz) * t) > -0.45) { last = max((i - 1) / n * dist, 0.5); break; } }
+    for (let i = 1; i <= n; i++) { const t = i / n, d = t * dist; if (d > 0.7 && lauvSdf(tx + (px - tx) * t, ty + (py - ty) * t, tz + (pz - tz) * t) > -0.35) { last = max((i - 1) / n * dist, 1.3); break; } }
     if (last < dist) { const k = last / dist; px = tx + (px - tx) * k; py = ty + (py - ty) * k; pz = tz + (pz - tz) * k; }
   }
   if (S.snap || mode === 'side' || mode === 'front' || mode === 'top') { S.cpx = px; S.cpy = py; S.cpz = pz; S.tx = tx; S.ty = ty; S.tz = tz; S.snap = 0; }
@@ -2478,6 +2479,7 @@ function lauvFrame(dt, play) {
   }
   let steer = lauvKeys.right - lauvKeys.left + gs, pitch = lauvKeys.up - lauvKeys.down + gpi;
   if (tId >= 0) { const tr = 4 / (innerWidth < innerHeight ? innerWidth : innerHeight); steer += clamp((tx - tx0) * tr, -1, 1); pitch -= clamp((ty - ty0) * tr, -1, 1); }
+  if (S.hold) { steer = S.hold.steer || 0; pitch = S.hold.pitch || 0; }   // test hook: __app.hold()
   I.steer = clamp(steer, -1, 1); I.pitch = clamp(pitch, -1, 1);
   if (lauvKeys.thrustUp) { S.thrUpT += dt; if (S.thrUpT > 0.2) { S.thrUpT = 0; lauvStep(0.1); } }
   if (lauvKeys.thrustDown) { S.thrDnT += dt; if (S.thrDnT > 0.2) { S.thrDnT = 0; lauvStep(-0.1); } }
@@ -2486,7 +2488,7 @@ function lauvFrame(dt, play) {
   if (mdx || mdy) { S.camAz -= mdx * 0.0022; S.camEl += mdy * 0.0022; S.camIdle = 0; S.hint = 0; mdx = 0; mdy = 0; }
   lauvCamera(dt);
   if (!S.paused) lauvParticles(dt);
-  S.fps += (min(1 / max(dt, 1e-3), 240) - S.fps) * 0.05;
+  S.fN++; S.fT += dt; if (S.fT >= 0.5) { S.fps = S.fN / S.fT; S.fN = 0; S.fT = 0; }
   lauvHud(dt);
 }
 
@@ -2506,9 +2508,9 @@ function lauvEffects(dt) {
     S.inContact = true; S.sinceContact = 0;
     if (H.slide > 0.2) { S.slideAcc += H.slide * dt; if (S.slideAcc > 1.4) { S.slideAcc = 0; S.scratches++; S.scratchFlash = 1; } }
     if (H.impact > 0.05) lauvAud.thud = max(lauvAud.thud, min(H.impact * 2.2, 1));
-    const up = H.ny > 0.25 ? 1 : 0.25;    // sediment rises mostly where the surface faces up
+    const up = H.ny > 0.25 ? 1 : 0.5;    // sediment rises mostly where the surface faces up
     S.puffAcc += (H.slide * 9 + H.impact * 40) * up * dt;
-    while (S.puffAcc > 1) { S.puffAcc -= 1; lauvEmit(H.x + rr(-0.1, 0.1), H.y + rr(0, 0.1), H.z + rr(-0.1, 0.1), rr(0.12, 0.3), 1, rr(-0.12, 0.12), rr(0.04, 0.2), rr(-0.12, 0.12), rr(2.5, 4.5), 1); }
+    while (S.puffAcc > 1) { S.puffAcc -= 1; lauvEmit(H.x + rr(-0.12, 0.12), H.y + rr(0, 0.12), H.z + rr(-0.12, 0.12), rr(0.2, 0.45), 1, rr(-0.12, 0.12), rr(0.04, 0.2), rr(-0.12, 0.12), rr(2.5, 4.5), 1); }
   } else { S.sinceContact += dt; if (S.sinceContact > 0.15) S.inContact = false; if (S.sinceContact > 1.5) S.slideAcc = 0; }
   lauvAud.scrape += ((hit ? min(H.slide * 0.9, 1) : 0) - lauvAud.scrape) * min(dt * 12, 1);
   S.scratchFlash = max(0, S.scratchFlash - dt * 1.6);
@@ -2539,21 +2541,21 @@ function lauvHudInit() {
     '#hud .pn{position:absolute;background:#12305Cf0;border:1px solid #2175BC;border-radius:.45em;box-shadow:0 .2em .8em #0007;padding:.55em .8em}' +
     '#hud .k{font-size:.72em;letter-spacing:.12em;text-transform:uppercase;color:#9CC4EA}' +
     '#hud .v{font-size:1.45em;font-weight:700;line-height:1.1}#hud .v small{font-size:.55em;font-weight:600;color:#9CC4EA;margin-left:.25em}' +
-    '#hl{left:1.2em;bottom:1.2em;display:grid;grid-template-columns:repeat(4,auto);gap:.4em 1.4em;align-items:end}' +
+    '#hl{left:1.2em;bottom:1.2em;display:grid;grid-template-columns:repeat(4,auto);gap:.4em 1.4em;align-items:end;min-width:22em}' +
     '#hl .th{grid-column:1/5;display:grid;grid-template-columns:auto 1fr auto;gap:.8em;align-items:center;margin-top:.15em}' +
     '#hl .bar{height:.7em;background:#0B1F3F;border:1px solid #2175BC;border-radius:.4em;position:relative;overflow:hidden}' +
     '#hl .bar i{position:absolute;top:0;bottom:0;background:#F07A1E}#hl .bar b{position:absolute;top:-1px;bottom:-1px;width:2px;background:#fff;left:23%}' +
     '#hsc{transition:color .15s}#hsc.f{color:#F07A1E}' +
     '#hw{left:50%;top:1.4em;transform:translateX(-50%);background:#12305C;border-color:#F07A1E;border-left-width:.45em;padding:.5em 1.2em;display:none;white-space:nowrap}' +
     '#hw b{color:#F07A1E;letter-spacing:.1em;margin-right:.7em}#hw.on{display:block;animation:hwp 1s infinite}@keyframes hwp{50%{border-color:#12305C}}' +
-    '#hk{left:50%;bottom:1.4em;transform:translateX(-50%);display:flex;gap:1.6em;align-items:center;transition:opacity 1s}#hk.off{opacity:0}' +
+    '#hk{left:50%;bottom:7.5em;transform:translateX(-50%);display:flex;gap:1.6em;align-items:center;transition:opacity 1s}#hk.off{opacity:0}' +
     '#hk span{display:flex;align-items:center;gap:.45em;white-space:nowrap}' +
     '#hk kbd{font:700 .9em system-ui;min-width:1.5em;text-align:center;padding:.12em .45em;border-radius:.3em;background:#EAF2FB;color:#12305C;box-shadow:inset 0 -.15em #C3D0E0}';
   document.head.appendChild(st);
   const d = document.createElement('div'); d.id = 'hud';
   d.innerHTML = '<div id=hl class=pn><div><div class=k>Depth</div><div class=v id=hd>0<small>m</small></div></div><div><div class=k>Speed</div><div class=v id=hs>0<small>m/s</small></div></div>' +
     '<div><div class=k>Heading</div><div class=v id=hh>0<small>N</small></div></div><div><div class=k>Scratches</div><div class=v id=hsc>0</div></div>' +
-    '<div class=th><span class=k>Throttle</span><div class=bar><i id=ht></i><b></b></div><span class=v id=hp style="min-width:3.4em;text-align:right">0<small>rpm</small></span></div></div>' +
+    '<div class=th><span class=k>Throttle</span><div class=bar><i id=ht></i><b></b></div><span class=v id=hp style="min-width:4.6em;text-align:right;font-size:1.1em">0<small>rpm</small></span></div></div>' +
     '<div id=hw class=pn><b>PROPELLER FOULED</b>reverse (S) to clear it</div>' +
     '<div id=hk class=pn><span><kbd>&larr;</kbd><kbd>&rarr;</kbd>steer</span><span><kbd>&uarr;</kbd><kbd>&darr;</kbd>climb / dive</span><span><kbd>W</kbd><kbd>S</kbd>throttle</span><span>mouse look</span></div>';
   document.body.appendChild(d);
@@ -3229,11 +3231,13 @@ window.__app = {
   },
   key(cmd, down) { lauvKey(cmd, down); },
   pause(b) { lauvS.paused = !!b; },
+  hold(o) { lauvS.hold = o || null; },   // {steer, pitch} held regardless of the keyboard (tests)
   addCollider(fn) { lauvColliders.push(fn); },   // fn(x, y, z) -> signed distance in metres, > 0 inside the obstacle
+  sound,   // test: build the audio graph without a gesture
   vehicle: lv,
   // test helper: advance the simulation by sec seconds at 60 Hz regardless of the frame rate
   sim(sec) { for (let t = 0; t < sec; t += 1 / 60) { lauvAdvance(1 / 60); lauvParticles(1 / 60); } lauvS.snap = 1; },
-  kelpNear: lauvKelpNear, sdf: lauvSdf,
+  kelpNear: lauvKelpNear, sdf: lauvSdf, hit: lauvHit,
   kelpSample(n) { const o = [], N = lkSeg.length / 7, st = floor(N / n); for (let i = 0; i < n; i++) o.push(Array.from(lkSeg.subarray(i * st * 7, i * st * 7 + 7))); return o; },
 };
 

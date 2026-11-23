@@ -651,10 +651,12 @@ window.__app = {
   },
   key(cmd, down) { lauvKey(cmd, down); },
   pause(b) { lauvS.paused = !!b; },
+  hold(o) { lauvS.hold = o || null; },   // {steer, pitch} held regardless of the keyboard (tests)
   addCollider(fn) { lauvColliders.push(fn); },   // fn(x, y, z) -> signed distance in metres, > 0 inside the obstacle
+  sound,   // test: build the audio graph without a gesture
   vehicle: lv,
   // test helper: advance the simulation by sec seconds at 60 Hz regardless of the frame rate
   sim(sec) { for (let t = 0; t < sec; t += 1 / 60) { lauvAdvance(1 / 60); lauvParticles(1 / 60); } lauvS.snap = 1; },
-  kelpNear: lauvKelpNear, sdf: lauvSdf,
+  kelpNear: lauvKelpNear, sdf: lauvSdf, hit: lauvHit,
   kelpSample(n) { const o = [], N = lkSeg.length / 7, st = floor(N / n); for (let i = 0; i < n; i++) o.push(Array.from(lkSeg.subarray(i * st * 7, i * st * 7 + 7))); return o; },
 };
