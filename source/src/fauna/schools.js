@@ -13,7 +13,7 @@ const SC_KMAX = 96;            // neighbours looked at per fish and frame (a win
 
 // ---- species: len (m), half height / half width as a fraction of the length, where the body is deepest (0..1 from the nose), colours
 const SC_SPECIES = [
-  { name: 'sardine', len: 0.16, H: 0.085, W: 0.055, peak: 0.36, tail: [0.22, 0.20, 0.7], dorsal: [0.30, 0.52, 0.09], anal: [0.60, 0.74, 0.04], pect: 0, rings: 7, sides: 6,
+  { name: 'sardine', len: 0.16, H: 0.085, W: 0.055, peak: 0.36, tail: [0.22, 0.20, 0.7], dorsal: [0.30, 0.52, 0.09], anal: [0.60, 0.74, 0.04], pect: 0, rings: 5, sides: 5,
     pat: 0, back: [0.07, 0.17, 0.26], belly: [0.82, 0.88, 0.90], metal: 0.9, accent: [0.05, 0.08, 0.12], fin: [0.40, 0.45, 0.48] },
   { name: 'chromis', len: 0.10, H: 0.17, W: 0.07, peak: 0.36, tail: [0.26, 0.24, 0.75], dorsal: [0.22, 0.72, 0.10], anal: [0.60, 0.80, 0.06], pect: 1, rings: 8, sides: 8,
     pat: 1, back: [0.10, 0.45, 0.62], belly: [0.42, 0.72, 0.72], metal: 0.25, accent: [0.05, 0.25, 0.40], fin: [0.18, 0.5, 0.6] },
@@ -35,8 +35,8 @@ const SC_SPECIES = [
 // ---- what is where: sp species, n fish per school, kind 0 travelling school / 1 bait ball / 2 hovering group at a rock, count schools
 // R leash or ball radius (m), speed in body lengths per second (ball: m/s), fear = radius at which the vehicle is felt (m), y range, rock = needs an outcrop
 const SC_PLAN = [
-  { sp: 0, n: 6144, kind: 1, count: 1, R: 2.7, speed: 1.0, fear: 1.3, ymin: -17, ymax: -7, hole: 1 },
-  { sp: 0, n: 2048, kind: 1, count: 1, R: 1.9, speed: 0.9, fear: 1.2, ymin: -17, ymax: -6, hole: 1 },
+  { sp: 0, n: 14000, kind: 1, count: 1, R: 2.4, speed: 1.0, fear: 1.3, ymin: -17, ymax: -7, hole: 1 },
+  { sp: 0, n: 5000, kind: 1, count: 1, R: 1.7, speed: 0.9, fear: 1.2, ymin: -17, ymax: -6, hole: 1 },
   { sp: 0, n: 512, kind: 0, count: 3, R: 3.0, speed: 5, fear: 2.4, ymin: -16, ymax: -5 },
   { sp: 6, n: 160, kind: 0, count: 3, R: 4.0, speed: 4.5, fear: 2.4, ymin: -16, ymax: -4 },
   { sp: 5, n: 96, kind: 0, count: 5, R: 2.6, speed: 2.5, fear: 2.0, ymin: -18, ymax: -6 },
@@ -44,6 +44,7 @@ const SC_PLAN = [
   { sp: 4, n: 64, kind: 0, count: 4, R: 2.0, speed: 2.0, fear: 1.8, ymin: -18, ymax: -6 },
   { sp: 3, n: 40, kind: 0, count: 4, R: 2.2, speed: 1.6, fear: 1.8, ymin: -18, ymax: -6 },
   { sp: 7, n: 32, kind: 2, count: 3, R: 1.6, speed: 1.2, fear: 1.6, rock: 1, above: 1.4 },
+  { sp: 8, n: 1400, kind: 0, count: 2, R: 3.2, speed: 4, fear: 2.4, ymin: -16, ymax: -5, near: [-6, -24] },
   { sp: 8, n: 480, kind: 2, count: 2, R: 3.0, speed: 1.0, fear: 2.2, rock: 1, above: 2.2 },
   { sp: 1, n: 48, kind: 2, count: 6, R: 1.1, speed: 1.4, fear: 1.5, rock: 1, above: 1.1 },
 ];
@@ -149,11 +150,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   } else if (kind < 1.5) {
     // bait ball: a shell of random radii round the anchor, swirling about a tilted axis
     let rb = -rel; let r = max(dist, .05);
-    let rt = R0 * (.15 + .85 * pow(h0, .3333)) * (1. + .14 * sin(tm * .6 + dot(rb / r, vec3f(1., 2.3, 3.1)) * 2.2));
+    let near = ss(10., 3., length(wv(S.anc.xyz - k.veh.xyz)));
+    let rt = R0 * (1. - .3 * near) * (.15 + .85 * pow(h0, .3333)) * (1. + .14 * sin(tm * .6 + dot(rb / r, vec3f(1., 2.3, 3.1)) * 2.2));
     acc += rel / r * (r - rt) * 3.5;
     let tilt = S.prm3.w; let axis = vec3f(sin(tilt), cos(tilt), 0.);
     let tg = cross(axis, rb); let tl = length(tg);
-    let vt = tg / max(tl, .1) * S.prm3.z * cruise * ss(.1 * R0, .55 * R0, r);
+    let vt = tg / max(tl, .1) * S.prm3.z * cruise * (1. + .7 * near) * ss(.1 * R0, .55 * R0, r);
     acc += (vt + S.avel.xyz - v) * 1.7 * calm;
   } else {
     acc += rel * 1.4 * ss(.3 * R0, 1.2 * R0, dist) + (S.avel.xyz - v) * .5 * calm;
@@ -211,10 +213,10 @@ const SC_W_DRAW = S_B + SC_COMMON + /*wgsl*/`
 @group(2) @binding(2) var<storage, read> SPT: array<vec4f>;
 struct VI { @location(0) p: vec4f, @location(1) n: vec4f, @builtin(instance_index) ii: u32 };
 struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) op: vec3f, @location(3) @interpolate(flat) sp: u32, @location(4) @interpolate(flat) sd: f32,
-  @location(5) lt: f32, @location(6) @interpolate(flat) al: f32, @location(7) @interpolate(flat) prt: f32 };
+  @location(5) lt: f32, @location(6) @interpolate(flat) al: f32, @location(7) @interpolate(flat) prt: f32, @location(8) @interpolate(flat) cr: f32 };
 @vertex fn vs(i: VI) -> VO {
   var o: VO;
-  o.cp = vec4f(2., 2., 2., 1.); o.wp = vec3f(0.); o.n = vec3f(0., 1., 0.); o.op = vec3f(0.); o.sp = 0u; o.sd = 0.; o.lt = 1.; o.al = 0.; o.prt = 0.;
+  o.cp = vec4f(2., 2., 2., 1.); o.wp = vec3f(0.); o.n = vec3f(0., 1., 0.); o.op = vec3f(0.); o.sp = 0u; o.sd = 0.; o.lt = 1.; o.al = 0.; o.prt = 0.; o.cr = 2.;
   let F = FS[i.ii]; let S = SC[u32(F.c.x)]; let sp = S.ids.z;
   let L = F.c.y;
   let P = g.cam.xyz + wd(F.pos - g.cam.xyz);
@@ -238,6 +240,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   if (part > 3.5) { l.z += sign(l.z) * .03 * (1. + sin(F.ph * TAU * .7)); }
   let w = P + (dir * l.x + up * l.y + side * l.z) * L;
   o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = normalize(dir * nl.x + up * nl.y + side * nl.z); o.op = l;
+  o.cr = select(2., length(wd(F.pos - S.anc.xyz)) / S.prm3.y, S.prm.w > .5 && S.prm.w < 1.5);
   o.sp = sp; o.sd = hs(f32(i.ii) * .37); o.al = F.alarm; o.prt = part;
   o.lt = select(shadow1(w), 1., sp == 0u);
   return o;
@@ -277,6 +280,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   c = mix(c, c * .5 + (envc * 3.6 + vec3f(.05, .09, .11)) * alb + E * fl * 3.2 * alb, metal * .85);
   c += E * fl * (.5 + 3. * i.al) * metal * vec3f(1., .98, .92);
   c += E * pow(sat(dot(n, normalize(V + L))), 24.) * .5 * (1. - metal) + vec3f(.3, .6, .7) * pow(1. - sat(dot(n, V)), 3.) * .15 * vv.g;
+  c *= mix(.04, 1., ss(.5, 1.1, i.cr)) * (1. + .6 * ss(.85, 1.15, i.cr));
   return fin(fog(c, i.wp, z));
 }
 `;
@@ -320,7 +324,8 @@ function scMakeWorld() {
     let ok = false;
     for (let tr = 0; tr < 600 && !ok; tr++) {
       let x = rr(-HPER, HPER), z = rr(-HPER, HPER);
-      if (pl.kind === 1 && c === 0 && pl.n > 4000 && tr < 150) { x = rr(-14, 14); z = 28 + rr(-10, 10); } // the big ball is near where you start
+      if (pl.kind === 1 && c === 0 && pl.n > 4000 && tr < 150) { x = rr(-14, 14); z = 28 + rr(-10, 10); }
+      if (pl.near && c === 0 && tr < 150) { x = pl.near[0] + rr(-6, 6); z = pl.near[1] + rr(-6, 6); } // the big ball is near where you start
       if (pl.rock) {
         const h = scFloorAt(x, z); let m = 0; for (let k = 0; k < 8; k++) m += scFloorAt(x + 6 * cos(k * TAU / 8), z + 6 * sin(k * TAU / 8)) / 8;
         if (h - m < 1.0 || h > -5 || h < -24) continue;
@@ -424,7 +429,7 @@ FAUNA.push({
     const spt = new Float32Array(SC_SPECIES.length * 16);
     SC_SPECIES.forEach((s, i) => { spt.set([...s.back, s.pat, ...s.belly, s.metal, ...s.accent, 0, ...s.fin, s.H], i * 16); });
     scBuf.spt = buf(spt, GPUBufferUsage.STORAGE);
-    const maxFish = 16384;
+    const maxFish = 40000;
     scBuf.A = device.createBuffer({ size: maxFish * 48, usage: GA }); scBuf.B = device.createBuffer({ size: maxFish * 48, usage: GA });
     scBuf.sch = device.createBuffer({ size: 96 * 64, usage: GA });
     scBuf.k = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
