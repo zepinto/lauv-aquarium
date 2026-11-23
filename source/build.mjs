@@ -2,7 +2,7 @@
 //   npm run build            minified
 //   npm run build:readable   unminified, for debugging
 //   npm run build:dev        ../dev.html: unminified, plus the development tools in src/dev.js
-import { readFileSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { transformSync } from 'esbuild';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FAUNA = readdirSync(path.join(here, 'src', 'fauna')).filter((f) => f.endsWith('.js')).sort().map((f) => 'fauna/' + f);
-const FILES = ['quality.js', 'math.js', 'lauvphys.js', 'shaders.js', 'world.js', 'lauv.js', 'registry.js', ...FAUNA, 'main.js', 'audio.js']; // concatenation order matters
+const FILES = ['quality.js', 'math.js', 'lauvphys.js', 'shaders.js', 'look.js', 'world.js', 'lauv.js', 'registry.js', ...FAUNA, 'main.js', 'audio.js']; // concatenation order matters
 const dev = process.argv.includes('--dev'), readable = dev || process.argv.includes('--readable');
 const out = dev ? 'dev.html' : 'index.html';
 if (dev) FILES.push('dev.js');
@@ -33,5 +33,8 @@ if (readable) {
 }
 writeFileSync(path.join(here, '..', out), html);
 copyFileSync(path.join(here, 'lauv-omst.glb'), path.join(here, '..', 'lauv-omst.glb')); // the model is served next to the page
+// material textures (look.js) are served next to the page too
+mkdirSync(path.join(here, '..', 'textures'), { recursive: true });
+for (const f of readdirSync(path.join(here, 'textures'))) copyFileSync(path.join(here, 'textures', f), path.join(here, '..', 'textures', f));
 const gz = gzipSync(Buffer.from(html), { level: 9 }).length;
 console.log(`${out}: ${(html.length / 1024).toFixed(1)} kB${readable ? ' (readable)' : ''}, ${(gz / 1024).toFixed(1)} kB gzipped`);
