@@ -660,7 +660,7 @@ window.__app = {
 // __world.driveResult()             null while driving, then {frames, meters, max, p95, p99, mean, hitches}
 // __world.state()                   the LAUV: x, y, z, yaw, pitch
 window.__world = {
-  ready: true, stats: WSTAT, skip: SKIP, gpu: () => F[GPU],
+  ready: true, stats: WSTAT, skip: SKIP, gpu: () => F[GPU], ship: Wd.shipPos,
   set(x, y, z, yaw, pitch) { lauvPlace(x, y, z, yaw, pitch); lv.setSpeed(0); },
   pose(i) { lauvFace(...POSES[i]); },
   // y of the highest rock under (x, z) (from the collision bricks); setAbove puts the camera h metres above it
