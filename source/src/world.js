@@ -349,7 +349,7 @@ function makeWorld(D, T, POSES) {
   // --- fish schools + mantas (the fauna pieces replace these)
   const fish = [];
   rseed(14);
-  for (let s = 0; s < 16; s++) {
+  for (let s = 0; s < 0; s++) { // (the base school of fish is replaced by fauna/schools.js)
     const x = rr(OX, OX + PER), z = rr(OZ, OZ + PER), y = rr(-14, -6), R = rr(10, 22), n = 200 + rnd() * 200 | 0, spd = 0.3 * rr(0.9, 1.1), dir = rnd() < 0.5 ? 1 : -1, ss_ = rnd();
     for (let i = 0; i < n; i++) fish.push(x, y, z, R, rnd(), dir * 1.9 / R, spd, ss_);
   }
