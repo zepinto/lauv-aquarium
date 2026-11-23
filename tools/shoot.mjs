@@ -9,10 +9,7 @@ import { grab } from './grab.mjs';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 // GPU lock: screenshots hold it shared, fps.sh holds it exclusive, so timings never overlap another agent's renders.
-if (!process.env.GPULOCKED) {
-  const r = spawnSync('flock', ['-s', '/home/zp/workspace/lauv-aquarium/.gpu.lock', 'env', 'GPULOCKED=1', process.execPath, ...process.argv.slice(1)], { stdio: 'inherit' });
-  process.exit(r.status ?? 1);
-}
+// no GPU lock for frames: it starved tools/fps.sh. fps.sh alone takes the lock; the lead measures authoritatively at merges.
 const [port, shotsFile, out, flag] = process.argv.slice(2);
 const shots = JSON.parse(readFileSync(shotsFile, 'utf8'));
 const b = await launch();

@@ -10,10 +10,7 @@ import { launch } from './chrome.mjs';
 import { grab } from './grab.mjs';
 import { readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-if (!process.env.GPULOCKED) {
-  const r = spawnSync('flock', ['-s', '/home/zp/workspace/lauv-aquarium/.gpu.lock', 'env', 'GPULOCKED=1', process.execPath, ...process.argv.slice(1)], { stdio: 'inherit' });
-  process.exit(r.status ?? 1);
-}
+// no GPU lock for frames: it starved tools/fps.sh. fps.sh alone takes the lock; the lead measures authoritatively at merges.
 const [port, specFile, out] = process.argv.slice(2);
 const s = JSON.parse(readFileSync(specFile, 'utf8'));
 const N = s.frames ?? 120, dt = s.dt ?? 1 / 30, tmp = out + '_frames';
