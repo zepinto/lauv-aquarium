@@ -121,6 +121,7 @@ const pSnow = scenePipe(mSpr, 'vsSnow', 'fsSnow', [ibSnow], { strip: true, blend
 const pSolidSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid]), pTerrSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid], { cull: 'front' });
 const pLeafSh = shadowPipe(mLeaf, 'vs', [ibLeaf], { strip: true, constants: { ROWS: 3 } });
 await lauvInit(); // the LAUV: model, pipelines (lauv.js)
+await surfInit(); // the sea seen from above (surface.js)
 for (const f of FAUNA) if (f.init) await f.init();
 
 const mWater = mod(W_WATER);
@@ -358,7 +359,7 @@ if (hasTS) {
 }
 
 // ---------------------------------------------------------------- frame
-let hud = false;
+let hud = false, CULLK = 1;   // CULLK: the vertical squash of the refracted world (proj() in the shaders), for culling
 const SKIP = {}; // debugging: SKIP.terrain / chunks / props / big / small = true leaves that set out of the frame
 let drive = null; // scripted drive of the LAUV (see __world.drive)
 let mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0, hN = 0, hMax = 0, hMin = 1e9, hPer = 1e9, hLate = 0, hTot = 0, tId = -1, tN = 0, tx0 = 0, ty0 = 0, tx = 0, ty = 0;
@@ -387,7 +388,7 @@ function drawCells(r, start, lo, hi, mar, indexed, verts, minD, maxD) {
         if (x < CELLS) {
           const l = lo[c], h = hi[c];
           if (l <= h) {
-            const px = OX + (x + 0.5) * CELLW - cx, py = (l + h) * 0.5 - cy, ey = (h - l) * 0.5 + mar, hx = max(abs(px) - hw, 0), h2 = hx * hx + hz * hz;
+            const kq = h <= 0 ? CULLK : 1, px = OX + (x + 0.5) * CELLW - cx, py = (l + h) * 0.5 * kq - cy, ey = (h - l) * 0.5 * kq + mar, hx = max(abs(px) - hw, 0), h2 = hx * hx + hz * hz;
             if (h2 < max2 && h2 >= min2) {
               const lim = px * fx + py * fy + pz * fz + ex * abs(fx) + ey * abs(fy) + ex * abs(fz);
               if (lim >= 0 && abs(px * rx + pz * rz) - ex * (abs(rx) + abs(rz)) <= lim * tx) v = abs(px * ux + py * uy + pz * uz) - ex * (abs(ux) + abs(uz)) - ey * abs(uy) <= lim * TANH;
@@ -449,7 +450,9 @@ function render() {
   m[51] = 0;
   let ek = (-cy - 8) / 26; ek = ek < 0 ? 0 : ek > 1 ? 1 : ek;
   m[56] = EXPO * (0.6 + 0.4 * ek); m[57] = RAYS; m[58] = det;
-  lauvUpdate();
+  m[59] = cy <= 0 ? 0 : cy >= 0.6 ? 1 : (cy / 0.6) * (cy / 0.6) * (3 - 2 * cy / 0.6);   // camera in the air: how far the world below looks refracted (proj())
+  CULLK = 1 - 0.22 * m[59];
+  lauvUpdate(); surfUpdate();
   Q.writeBuffer(ubo, 0, UB);
   WT[0] = F[TIME]; Q.writeBuffer(uboW, 0, WT);
 
@@ -467,7 +470,9 @@ function render() {
   for (let i = 1; i < 5; i++) { r = e.beginRenderPass(waterPass[i]); r.setPipeline(pMip16); r.setBindGroup(0, waterBG[i - 1]); r.draw(3); r.end(); }
   // scene
   r = e.beginRenderPass(passScene);
-  r.setBindGroup(0, bg0); curTile = -1; useTile(r, 4);
+  r.setBindGroup(0, bg0); curTile = -1;
+  if (surfDrawSky(r)) curTile = -1;
+  useTile(r, 4);
   r.setPipeline(pTerrain); r.setVertexBuffer(0, vbTerrain); r.setVertexBuffer(1, ibSolids); r.setIndexBuffer(ibTerrain, 'uint32');
   if (!SKIP.terrain) drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
   r.setPipeline(pSolid); r.setVertexBuffer(0, vbMesh); r.setIndexBuffer(ibMesh, 'uint32');
@@ -498,8 +503,8 @@ function render() {
   }
   if (!SKIP.small) { r.setPipeline(pLeafS); r.setVertexBuffer(0, ibSmall); drawCells(r, Wd.small.start, Wd.small.lo, Wd.small.hi, 1.5, false, 6, 0, 70); }
   useTile(r, 4);
-  r.setPipeline(pSurf); r.draw(4);
-  r.setPipeline(pBack); r.draw(4);
+  if (surfOn) { surfDrawWater(r); curTile = -1; useTile(r, 4); }
+  else { r.setPipeline(pSurf); r.draw(4); r.setPipeline(pBack); r.draw(4); }
   r.setPipeline(pBub); r.setVertexBuffer(0, ibBubbles); r.draw(4, nBub);
   r.setPipeline(pSnow); r.setVertexBuffer(0, ibSnowB); r.draw(4, nSnow);
   lauvDrawParticles(r);

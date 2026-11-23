@@ -261,6 +261,13 @@ fn wd(v: vec3f) -> vec3f { return vec3f(wr(v.x), v.y, wr(v.z)); }
 fn wt(p: vec3f) -> vec3f { return vec3f(wr(p.x), p.y, wr(p.z)); }
 fn pu(q: vec2f, sc: f32) -> vec2f { return q * (round(PER / sc) / PER); }
 fn pk(sc: f32) -> f32 { return round(PER * sc) / PER; }
+// apparent position of what lies under the water when the camera is in the air (g.mis.w: 0 under water, 1 well above it):
+// refraction makes it look about 1/1.33 as deep
+fn proj(w: vec3f) -> vec4f {
+  var q = w;
+  if (q.y < 0.) { q.y *= 1. - .22 * g.mis.w; }
+  return g.vp * vec4f(q, 1.);
+}
 fn sat(x: f32) -> f32 { return clamp(x, 0., 1.); }
 fn ss(a: f32, b: f32, x: f32) -> f32 { let t = clamp((x - a) / (b - a), 0., 1.); return t * t * (3. - 2. * t); }
 fn ign(p: vec2f) -> f32 { return fract(52.9829189 * fract(dot(p, vec2f(.06711056, .00583715)))); }
@@ -339,8 +346,12 @@ fn zone(p: vec3f) -> f32 { return g.sun.w; }
 fn side(p: vec3f, n: vec3f, open: f32, z: f32) -> vec3f { return mix(WCOL, PCOL, z) * exp(kd(z) * min(p.y, 0.)) * open * (1. - abs(n.y)) * .7; }
 // skylight at most 150 m along the ray: past that, terrain and the background behind it (vsB) get the same haze
 fn fog(c: vec3f, wp: vec3f, z: f32) -> vec3f {
-  let v = wp - g.cam.xyz; let d = length(v); let rd = v / d;
-  return c * exp(-sg(z) * d) * ss(230., 185., d) + fogIn(g.cam.xyz, rd, d, z, g.sun.xyz) * (.58 + .42 * vol(g.cam.xyz + rd * min(d, 150.)).g);
+  var ro = g.cam.xyz; let v = wp - ro; var d = length(v); let rd = v / d;
+  if (ro.y > 0.) {   // the camera is in the air: the water starts where the ray crosses the surface (surface.js)
+    if (wp.y >= 0.) { return c; }
+    let t0 = min(ro.y / max(-rd.y, 1e-4), d); ro += rd * t0; d -= t0;
+  }
+  return c * exp(-sg(z) * d) * ss(230., 185., d) + fogIn(ro, rd, d, z, g.sun.xyz) * (.58 + .42 * vol(ro + rd * min(d, 150.)).g);
 }
 fn qrot(q: vec4f, v: vec3f) -> vec3f { return v + 2. * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
 `;
@@ -357,7 +368,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   if (i.c.x < 1.5 && i.c.z > 1.5 && g.res.x > 0.) { sc *= 1. - ss(i.c.z * .7, i.c.z, distance(base, g.cam.xyz) / g.mis.z); }
   var w = base + qrot(i.b, i.p * sc);
   w.y += sin(g.cam.w * .3 + i.c.y * 40.) * i.c.w;
-  o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = qrot(i.b, i.n.xyz); o.op = i.p * i.a.w + i.c.y * 37.; o.on = i.n.xyz;
+  o.cp = proj(w); o.wp = w; o.n = qrot(i.b, i.n.xyz); o.op = i.p * i.a.w + i.c.y * 37.; o.on = i.n.xyz;
   o.m = i.c; o.q = i.b; o.ao = i.n.w;
   return o;
 }
@@ -524,7 +535,7 @@ fn pal(h: f32) -> vec3f {
   p += N2 * ruf;
   let sw = sway(i.a.xz, hA + (p.y - i.a.y), t);
   p.x += sw.x; p.z += sw.y;
-  o.cp = g.vp * vec4f(p, 1.); o.wp = p; o.n = normalize(N2 + S * u * .55 - T0 * cos(v * 10. + s2 * 30. + t * .6) * u * .7 * nearK); o.uv = vec2f(u, v);
+  o.cp = proj(p); o.wp = p; o.n = normalize(N2 + S * u * .55 - T0 * cos(v * 10. + s2 * 30. + t * .6) * u * .7 * nearK); o.uv = vec2f(u, v);
   o.col = col; o.pr = pr; o.sd = vec2f(s1, s2); o.spc = spc;
   return o;
 }
@@ -538,7 +549,7 @@ struct GO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   let tw = pow(.5 + .5 * sin(t * (.35 + .9 * hs(b.x)) + b.x * 100.), 4.);
   let sz = min(max(b.z, d * .0026), d * .0045);
   let w = p + (g.right.xyz * q.x + g.up.xyz * q.y) * sz;
-  o.cp = g.vp * vec4f(w, 1.); o.uv = q;
+  o.cp = proj(w); o.uv = q;
   let z = zone(p);
   let lit = .3 + 1.8 * shadow1(p) * sunE(p.y, z).g;
   let e = b.z / sz;
@@ -594,7 +605,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   var l = i.p * i.b.z * (.75 + .5 * h.z);
   l.z += sin(t * 9. + s * 50. + l.x * 5.) * .22 * (.25 * i.b.z - l.x);
   let w = P + off + T * l.x + Up * l.y + S * l.z;
-  o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = T * i.n.x + Up * i.n.y + S * i.n.z; o.op = i.p; o.sd = s;
+  o.cp = proj(w); o.wp = w; o.n = T * i.n.x + Up * i.n.y + S * i.n.z; o.op = i.p; o.sd = s;
   o.lt = shadow1(w);
   return o;
 }
@@ -628,7 +639,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   let sl = (.576 * pow(au, .6) * sin(fp) - .43 * pow(au, 1.6) * cos(fp)) * sign(u);
   let ln = normalize(vec3f(i.n.x - sl * i.n.y, i.n.y + sl * i.n.x, i.n.z));
   let w = P + (S * l.x + Up * l.y + T * l.z) * sz;
-  o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = S * ln.x + Up * ln.y + T * ln.z; o.op = i.p; o.sd = i.b.w;
+  o.cp = proj(w); o.wp = w; o.n = S * ln.x + Up * ln.y + T * ln.z; o.op = i.p; o.sd = i.b.w;
   o.lt = 1.;
   return o;
 }
@@ -716,7 +727,7 @@ fn quad(i: u32) -> vec2f { return vec2f(f32(i & 1u), f32(i >> 1u)) * 2. - 1.; }
   p = g.cam.xyz + wd(p - g.cam.xyz);
   let sz = a.w * (.55 + .7 * life) * ss(0., .03, life) * ss(0., -1.2, p.y);
   let w = p + (g.right.xyz * q.x + g.up.xyz * q.y) * sz;
-  o.cp = g.vp * vec4f(w, 1.); o.uv = q; o.wp = p;
+  o.cp = proj(w); o.uv = q; o.wp = p;
   o.pr = vec4f(b.x, sz, shadow1(p), 0.);
   return o;
 }
@@ -749,7 +760,7 @@ fn quad(i: u32) -> vec2f { return vec2f(f32(i & 1u), f32(i >> 1u)) * 2. - 1.; }
   let d = length(p - g.cam.xyz);
   let sz = (.012 + .045 * a.w * a.w * a.w);
   let w = p + (g.right.xyz * q.x + g.up.xyz * q.y) * max(sz, d * .0011);
-  o.cp = g.vp * vec4f(w, 1.); o.uv = q; o.wp = p;
+  o.cp = proj(w); o.uv = q; o.wp = p;
   let fade = ss(B * .5, B * .32, d) * ss(.6, 2.5, d) * min(1., sz / (d * .0011)) * ss(-.3, -1.5, p.y);
   let tw = .6 + .4 * sin(t * (1. + a.w * 2.) + a.x * 100.);
   o.pr = vec4f(fade * tw, shadow1(p), a.w, d);
@@ -781,14 +792,17 @@ const W_RAYS = S_G + W_FS + /*wgsl*/`
   let rv = g.fwd.xyz + g.right.xyz * (nd.x * g.right.w) + g.up.xyz * (nd.y * g.up.w);
   let rl = length(rv); let rd = rv / rl;
   let zl = g.fwd.w / max(dp, 1e-6);
-  var tm = min(zl * rl, 120.);
-  if (rd.y > 1e-4) { tm = min(tm, -g.cam.y / rd.y); }
+  var tm = min(zl * rl, 120.); var t0 = 0.;
+  if (g.cam.y > 0.) {   // camera in the air: the shafts start where the ray enters the water
+    if (rd.y >= 0.) { return vec4f(0., 0., 0., zl); }
+    t0 = -g.cam.y / rd.y; tm = max(tm, t0);
+  } else if (rd.y > 1e-4) { tm = min(tm, -g.cam.y / rd.y); }
   let ro = g.cam.xyz; let sx = g.sun.xyz; let k = kd(g.sun.w); let sgz = sg(g.sun.w);
-  let dt = tm / ${RAYN}.;
+  let dt = (tm - t0) / ${RAYN}.;
   let j = ign(fc.xy);
   var acc = vec3f(0.);
   for (var n = 0; n < ${RAYN}; n++) {
-    let t = (f32(n) + j) * dt;
+    let t = t0 + (f32(n) + j) * dt;
     let p = ro + rd * t;
     let s = g.sm * vec4f(wt(p), 1.);
     let vis = textureSampleCompareLevel(tSh, sS, vec2f(s.x * .5 + .5, .5 - s.y * .5), s.z - .0006);
@@ -796,7 +810,7 @@ const W_RAYS = S_G + W_FS + /*wgsl*/`
     let pat = ss(.3, .7, textureSampleLevel(tW, sR, pu(q, 27.), 2.5).r) * ss(.15, .6, textureSampleLevel(tW, sR, pu(q.yx, 11.) + .3, 2.).r);
     let o = textureSampleLevel(tV, sC, (p - vec3f(${OX}., ${OY}., ${OZ}.)) / vec3f(PER, ${NY * VS}, PER), 0.).r;
     let mist = sat(1. - (o - .5) * 3.4);
-    acc += exp(-sgz * t + k * (p.y / sx.y)) * (vis * (.012 + pat * 6.) * (1. + 1.2 * mist * mist));
+    acc += exp(-sgz * (t - t0) + k * (p.y / sx.y)) * (vis * (.012 + pat * 6.) * (1. + 1.2 * mist * mist));
   }
   let mu = max(dot(rd, sx), 0.);
   let ph = mix(.2 + 2.0 * mu * mu * mu, .8, g.sun.w);
