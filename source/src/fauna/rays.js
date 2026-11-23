@@ -64,7 +64,7 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
     let eye = ss(.03, .012, length(vec2f(abs(i.op.x) - .13, zz - .5)));
     let spir = ss(.05, .02, length(vec2f(abs(i.op.x) - .2, zz - .36))) * .85;
     back = mix(back, vec3f(.02), max(eye, spir));
-    belly = mix(vec3f(.62, .60, .55), vec3f(.28, .25, .2), ss(.7, 1., au) * .8) * (.9 + .2 * tx.b);
+    belly = mix(vec3f(.46, .44, .39), vec3f(.22, .19, .15), ss(.7, 1., au) * .8) * (.9 + .2 * tx.b);
     gl = .25;
   } else if (ty < 1.5) {
     // spotted eagle ray: blue-black back with a white dotted pattern, white belly
@@ -97,6 +97,28 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
   let sky = amb(i.wp, vec3f(0., 1., 0.), vv.g, z);
   c += alb * sky * ca * .45 * (1. - top) + sky * pow(1. - ndv, 3.) * .3;
   return fin(fog(c, i.wp, z));
+}
+`;
+const W_PUFF = S_B + /*wgsl*/`
+struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) wp: vec3f, @location(2) @interpolate(flat) fl: vec4f };
+@vertex fn vs(@builtin(vertex_index) vi: u32, @location(0) a: vec4f, @location(1) b: vec4f) -> PO {
+  var o: PO; let q = vec2f(f32(vi & 1u), f32(vi >> 1u)) * 2. - 1.;
+  let p = g.cam.xyz + wd(a.xyz - g.cam.xyz);
+  let sz = a.w * (.6 + b.x * 1.5);
+  let w = p + (g.right.xyz * q.x + g.up.xyz * q.y) * sz;
+  o.cp = g.vp * vec4f(w, 1.); o.uv = q; o.wp = p; o.fl = b;
+  return o;
+}
+@fragment fn fs(i: PO) -> @location(0) vec4f {
+  let r2 = dot(i.uv, i.uv);
+  let n = .62 + .38 * sin(i.uv.x * 4.1 + i.fl.z * 31.) * sin(i.uv.y * 3.7 - i.fl.z * 17.) + .15 * sin((i.uv.x + i.uv.y) * 9. + i.fl.z * 7.);
+  let al = pow(max(1. - r2, 0.), 1.6) * n * i.fl.y * pow(1. - i.fl.x, 1.3);
+  let z = zone(i.wp); let v = i.wp - g.cam.xyz; let d = length(v);
+  let E = sunE(i.wp.y, z) * (.55 + .45 * shadow1(i.wp));
+  var c = vec3f(.80, .74, .60) * (E * .55 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * .85);
+  let T = exp(-SIG.g * d) * ss(.15, .8, d);
+  c = c * T + fogIn(g.cam.xyz, v / d, d, z, g.sun.xyz) * (1. - T);
+  return vec4f(min(max(c * al, vec3f(0.)), vec3f(12.)), al * mix(.5, 1., T));
 }
 `;
   // ---------------------------------------------------------------- meshes
@@ -140,7 +162,7 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
   for (let i = 0; i < N; i++) {
     const type = i < NS ? 0 : i < NS + NE ? 1 : 2;
     R.push({ i, type, p: new Float64Array(3), v: new Float64Array(3), yaw: rng() * TAU, pitch: 0, roll: 0, yawRate: 0, phase: rng() * 6, amp: 0.15, freq: 0.6, ampT: 0.15,
-      scale: type === 0 ? rf(0.5, 0.75) : type === 1 ? rf(0.75, 1.05) : rf(2.0, 2.4), state: type === 0 ? REST : CRUISE, t: 0, site: -1, cool: 0, react: 0, glideT: 0, veer: 0, wander: 0, wanderT: 0,
+      scale: type === 0 ? rf(0.5, 0.75) : type === 1 ? rf(0.75, 1.05) : rf(2.0, 2.4), state: type === 0 ? REST : CRUISE, t: 0, site: -1, cool: 0, react: 0, glideT: 0, veer: 0, hd: 0, wanderT: 0,
       leader: null, off: [0, 0], pause: 3 + rng() * 6, gy: -20, gyT: 0, puffT: 0, speed: type === 1 ? 1.7 : 1.3 });
   }
   let sites = [], placed = false, off = false, ibuf, vbs = [], pipe, inst;
@@ -165,7 +187,7 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
     }
   }
   const nearestSite = (x, z, minD, exclude) => { let b = -1, bd = 1e9; for (let k = 0; k < sites.length; k++) { const s = sites[k]; if (s.used >= 0 && s.used !== exclude) continue; const d = hypot(wrapD(s.x - x), wrapD(s.z - z)); if (d < bd && d >= minD) { bd = d; b = k; } } return b; };
-  function settle(r, k, yaw) { const s = sites[k]; if (r.site >= 0) sites[r.site].used = -1; r.site = k; s.used = r.i; r.p[0] = s.x; r.p[2] = s.z; r.p[1] = s.y - 0.005 * r.scale + 0.01; r.v.fill(0); r.yaw = yaw; r.pitch = 0; r.roll = 0; r.state = REST; r.amp = r.ampT = 0.14; r.freq = 0.6; r.cool = 12; }
+  function settle(r, k, yaw, cool = 0) { const s = sites[k]; if (r.site >= 0) sites[r.site].used = -1; r.site = k; s.used = r.i; r.p[0] = s.x; r.p[2] = s.z; r.p[1] = s.y - 0.005 * r.scale + 0.01; r.v.fill(0); r.yaw = yaw; r.pitch = 0; r.roll = 0; r.state = REST; r.amp = r.ampT = 0.14; r.freq = 0.6; r.cool = cool; }
   function place() {
     bfVehicle(); findSites(); placed = true;
     // stingrays: the first three on the sites nearest the vehicle (so some are always close), the rest spread out
@@ -175,7 +197,7 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
         for (let tries = 0; tries < 30; tries++) {
           const a = rng() * TAU, d = r.type === 1 ? rf(22, 60) : rf(35, 85), x = wrapT(bfV.x + cos(a) * d), z = wrapT(bfV.z + sin(a) * d), gy = bfGround(x, z, -2), y = max(gy + rf(3, 5), r.type === 2 ? -9 : -7.5);
           if (y > -2.5 || sdAt(x, y, z) > -0.9 || sdAt(x + 4, y, z) > -0.9 || sdAt(x - 4, y, z) > -0.9) continue;
-          r.p[0] = x; r.p[1] = y; r.p[2] = z; r.yaw = rng() * TAU; break;
+          r.p[0] = x; r.p[1] = y; r.p[2] = z; r.yaw = r.hd = rng() * TAU; break;
         }
         if (r.type === 1 && r.i > NS) { r.leader = R[NS + (r.i - NS - 1) % 1 * 0 + (r.i - NS < 3 ? 0 : 3)]; }
       }
@@ -184,6 +206,25 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
     const lead = R[NS], g1 = R[NS + 1], g2 = R[NS + 2];
     for (const [f, o] of [[g1, [-2.6, 2.2]], [g2, [-3.2, -2.4]]]) { f.leader = lead; f.off = o; f.p[0] = wrapT(lead.p[0] + o[1]); f.p[1] = lead.p[1] + 0.3; f.p[2] = wrapT(lead.p[2] - o[0] * 0 + 3); f.yaw = lead.yaw; }
     R[NS + 3].leader = null; R[NS + 4].leader = null;
+  }
+  // ---------------------------------------------------------------- sand puffs: soft billboards that rise, slow down and fade
+  const NP = 128, pp = new Float32Array(NP * 8), pv = new Float32Array(NP * 3), pl = new Float32Array(NP), pi = new Float32Array(NP * 8);   // pp: x y z size | age alpha seed 0
+  let np = 0, pbuf, ppipe;
+  function puff(x, y, z, r, n, up, size) {
+    for (let k = 0; k < n && np < NP; k++) {
+      const a = rng() * TAU, d = r * rf(0.15, 1), s = rf(0.2, 0.65), o = np * 8; np++;
+      pp[o] = x + cos(a) * d; pp[o + 1] = y + rf(0, 0.12); pp[o + 2] = z + sin(a) * d; pp[o + 3] = size * rf(0.7, 1.3); pp[o + 4] = 0; pp[o + 5] = rf(0.55, 0.9); pp[o + 6] = rng() * 10; pp[o + 7] = 0;
+      pv[(np - 1) * 3] = cos(a) * s; pv[(np - 1) * 3 + 1] = up * rf(0.3, 1); pv[(np - 1) * 3 + 2] = sin(a) * s; pl[np - 1] = rf(3, 5.5);
+    }
+  }
+  function puffUpdate(dt) {
+    for (let k = 0; k < np; k++) {
+      const o = k * 8; pp[o + 4] += dt / pl[k];
+      if (pp[o + 4] >= 1) { np--; if (k < np) { for (let j = 0; j < 8; j++) pp[o + j] = pp[np * 8 + j]; for (let j = 0; j < 3; j++) pv[k * 3 + j] = pv[np * 3 + j]; pl[k] = pl[np]; } k--; continue; }
+      const damp = exp(-dt * 1.5); pv[k * 3] *= damp; pv[k * 3 + 1] = pv[k * 3 + 1] * damp + 0.02 * dt; pv[k * 3 + 2] *= damp;
+      pp[o] += pv[k * 3] * dt; pp[o + 1] += pv[k * 3 + 1] * dt; pp[o + 2] += pv[k * 3 + 2] * dt;
+    }
+    if (np) Q.writeBuffer(pbuf, 0, pp.buffer, 0, np * 32);
   }
   // ---------------------------------------------------------------- behaviour
   const away = new Float64Array(3);
@@ -200,42 +241,42 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
       r.t += dt; r.ampT = 0.5; r.freq = 1.6;
       if (r.t > r.react) {
         r.state = LIFT; r.t = 0; r.yaw = atan2(away[0], -away[2]) + rf(-0.5, 0.5);
-        bfPuff(r.p[0], r.p[1], r.p[2], 0.9 * r.scale, 30, 0.6, 0.5 * (0.6 + r.scale)); if (r.site >= 0) { sites[r.site].used = -1; r.site = -1; }
+        puff(r.p[0], r.p[1], r.p[2], 0.9 * r.scale, 30, 0.6, 0.5 * (0.6 + r.scale)); if (r.site >= 0) { sites[r.site].used = -1; r.site = -1; }
       }
     } else if (r.state === LIFT) {
       r.t += dt; r.ampT = 1; r.freq = 2.3; yawDes = r.yaw;
-      speed = 0.3 + 1.0 * bfSS(0, 1.4, r.t); vyT = 1.0 * (1 - bfSS(0.8, 2.2, r.t)) + 0.1;
-      r.puffT -= dt; if (r.puffT < 0 && r.t < 1.3) { r.puffT = 0.09; bfPuff(r.p[0] - sin(r.yaw) * 0.3 * r.scale, r.p[1] - 0.15, r.p[2] + cos(r.yaw) * 0.3 * r.scale, 0.6 * r.scale, 4, 0.4, 0.4 * (0.6 + r.scale)); }
+      speed = 0.45 + 0.85 * bfSS(0, 1.3, r.t); vyT = 0.6 * (1 - bfSS(0.5, 1.8, r.t)) + 0.08;
+      r.puffT -= dt; if (r.puffT < 0 && r.t < 1.3) { r.puffT = 0.09; puff(r.p[0] - sin(r.yaw) * 0.3 * r.scale, r.p[1] - 0.15, r.p[2] + cos(r.yaw) * 0.3 * r.scale, 0.6 * r.scale, 4, 0.4, 0.4 * (0.6 + r.scale)); }
       if (r.t > 2.2) { r.state = GLIDE; r.t = 0; r.glideT = rf(16, 26); }
     } else if (r.state === GLIDE) {
       r.t += dt; r.glideT -= dt;
       speed = 1.15; r.freq = 0.95; r.ampT = r.t < 5 ? 0.7 : 0.5 + 0.2 * sin(t * 0.9 + r.i);
-      yawDes = r.t < 8 ? atan2(away[0], -away[2]) * 0 + r.yaw : r.yaw + r.wander;
-      r.wanderT -= dt; if (r.wanderT < 0) { r.wanderT = rf(3, 6); r.wander = rf(-0.7, 0.7); }
-      if (r.t < 8) yawDes = r.yaw;   // keep going the way it was thrown
+      if (r.t < dt * 1.5) r.hd = r.yaw;
+      r.wanderT -= dt; if (r.wanderT < 0) { r.wanderT = rf(3, 6); if (r.t > 8) r.hd = r.yaw + rf(-0.7, 0.7); }   // keep going the way it was thrown for the first 8 s
+      yawDes = r.hd;
       if (r.glideT < 0) { const k = nearestSite(r.p[0] + sin(r.yaw) * 18, r.p[2] - cos(r.yaw) * 18, 16, r.i); if (k >= 0) { r.site = k; sites[k].used = r.i; r.state = LAND; r.t = 0; } else r.glideT = 8; }
     } else if (r.state === LAND) {
       r.t += dt; const s = sites[r.site], sx = wrapD(s.x - r.p[0]), sz = wrapD(s.z - r.p[2]), sd = hypot(sx, sz);
       yawDes = atan2(sx, -sz); speed = bfClamp(sd * 0.3, 0.22, 1.1); r.freq = 0.8 + 0.5 * bfSS(2, 0, sd); r.ampT = 0.55 + 0.3 * bfSS(2, 0, sd);
       if (sd < 1.5) { r.v[0] *= 1 - min(1, 2 * dt); r.v[2] *= 1 - min(1, 2 * dt); }
-      if (sd < 0.6 && r.p[1] < s.y + 0.35) { bfPuff(s.x, s.y, s.z, 0.8 * r.scale, 10, 0.3, 0.4 * (0.6 + r.scale)); settle(r, r.site, r.yaw); return place_inst(r, dt); }
+      if (sd < 0.6 && r.p[1] < s.y + 0.35) { puff(s.x, s.y, s.z, 0.8 * r.scale, 10, 0.3, 0.4 * (0.6 + r.scale)); settle(r, r.site, r.yaw, 14); return place_inst(r, dt); }
     } else {   // open water: wander, follow the leader, stay clear of rock, veer off from the LAUV
-      r.wanderT -= dt; if (r.wanderT < 0) { r.wanderT = rf(4, 9); r.wander = rf(-0.16, 0.16); }
-      yawDes = r.yaw + r.wander * 4;
+      r.wanderT -= dt; if (r.wanderT < 0) { r.wanderT = rf(5, 11); r.hd = r.yaw + rf(-0.9, 0.9); }
+      yawDes = r.hd;
       const leash = r.type === 2 ? 95 : 80;
-      if (d2 > leash) yawDes = atan2(-away[0], away[2]);
+      if (d2 > leash) r.hd = yawDes = atan2(-away[0], away[2]);
       if (r.leader) { const L = r.leader, ox = sin(L.yaw) * r.off[0] + cos(L.yaw) * r.off[1], oz = -cos(L.yaw) * r.off[0] + sin(L.yaw) * r.off[1]; yawDes = atan2(wrapD(L.p[0] + ox - r.p[0]), -wrapD(L.p[2] + oz - r.p[2])); }
       speed = r.speed;
       if (r.leader) speed = r.leader.speed + bfClamp(hypot(wrapD(r.leader.p[0] - r.p[0]), wrapD(r.leader.p[2] - r.p[2])) - 3.5, -0.8, 1.2) * 0.4;
       const R0 = r.type === 2 ? 15 : 17;
       if (r.veer <= 0 && d3 < R0 && (moving || d3 < 7)) { r.veer = 5; r.vside = rng() < 0.5 ? -1 : 1; }
-      if (r.veer > 0) { r.veer -= dt; yawDes = atan2(away[0], -away[2]) + r.vside * 0.35; speed = r.speed * 1.7; r.freq = 1.5; r.ampT = 1; vyT = (dyv < 0 ? 0.3 : -0.3); }
+      if (r.veer > 0) { r.veer -= dt; r.hd = yawDes = atan2(away[0], -away[2]) + r.vside * 0.35; speed = r.speed * 1.7; r.freq = 1.5; r.ampT = 1; vyT = (dyv < 0 ? 0.3 : -0.3); }
       else { r.freq = r.type === 2 ? 0.45 : 0.85; r.pause -= dt; r.ampT = r.pause < 0 ? 0.14 : r.type === 2 ? 0.8 : 0.9; if (r.pause < -2.6 - r.i * 0.1) r.pause = rf(7, 14); }
       // rock ahead: turn to the freer side
       const fx = sin(r.yaw), fz = -cos(r.yaw);
       if (!bfFree(r.p[0], r.p[1], r.p[2], fx, 0, fz, 9, 1.2)) {
         const l = bfFree(r.p[0], r.p[1], r.p[2], sin(r.yaw - 0.8), 0, -cos(r.yaw - 0.8), 7, 1.0);
-        yawDes = r.yaw + (l ? -0.9 : 0.9); speed *= 0.8; if (!bfFree(r.p[0], r.p[1], r.p[2], fx, 0.3, fz, 9, 1.2)) vyT = 0.6;
+        yawDes = r.hd = r.yaw + (l ? -0.9 : 0.9); speed *= 0.8; if (!bfFree(r.p[0], r.p[1], r.p[2], fx, 0.3, fz, 9, 1.2)) vyT = 0.6;
       }
       // depth: above the seabed, below the surface
       r.gyT -= dt; if (r.gyT < 0) { r.gyT = 0.4 + rng() * 0.2; r.gy = bfGround(r.p[0] + fx * 4, r.p[2] + fz * 4, min(r.p[1] + 2, -1)); }
@@ -282,6 +323,11 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
     for (const m of all) { vbAll.set(new Uint8Array(m.vb.buffer || m.vb), v0 * 16); for (let k = 0; k < m.ni; k++) ibAll[i0 + k] = m.ib[k]; meshes.push({ i0, v0, ni: m.ni }); v0 += m.nv; i0 += m.ni; }
     meshes.vb = buf(vbAll, BU.VERTEX); meshes.ib = buf(ibAll, BU.INDEX);
     inst = new Float32Array(N * 16); ibuf = device.createBuffer({ size: N * 64, usage: BU.VERTEX | BU.COPY_DST });
+    pbuf = device.createBuffer({ size: NP * 32, usage: BU.VERTEX | BU.COPY_DST });
+    const mp = mod(W_PUFF);
+    ppipe = device.createRenderPipeline({ layout: pl0, vertex: { module: mp, entryPoint: 'vs', buffers: [{ arrayStride: 32, stepMode: 'instance', attributes: [A(0, 0, 'float32x4'), A(1, 16, 'float32x4')] }] },
+      fragment: { module: mp, entryPoint: 'fs', targets: [{ format: HDR, blend: { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } }] },
+      primitive: { topology: 'triangle-strip' }, depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: 'greater' }, multisample: { count: AA } });
     pipe = scenePipe(mod(W_RAY), 'vsRay', 'fsRay', [vbSolid, { arrayStride: 64, stepMode: 'instance', attributes: [A(2, 0, 'float32x4'), A(3, 16, 'float32x4'), A(4, 32, 'float32x4'), A(5, 48, 'float32x4')] }]);
   }
   let tAll = 0, ok = false;
@@ -291,13 +337,14 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
     bfVehicle(); tAll += dt;
     if (!placed) place();
     for (const r of R) { if (r.type === 0 && r.state === REST && r.site < 0) continue; stepRay(r, dt, tAll); }
-    Q.writeBuffer(ibuf, 0, inst); ok = true;
+    Q.writeBuffer(ibuf, 0, inst); ok = true; puffUpdate(dt);
     bfMis.ms += performance.now() - t0;
   }
   function draw(r) {
     if (!ok) return;
     useTile(r, 4); r.setPipeline(pipe); r.setVertexBuffer(0, meshes.vb); r.setVertexBuffer(1, ibuf); r.setIndexBuffer(meshes.ib, 'uint32');
     for (let k = 0; k < 3; k++) r.drawIndexed(meshes[k].ni, ranges[k][1], meshes[k].i0, meshes[k].v0, ranges[k][0]);
+    if (np) { r.setPipeline(ppipe); r.setVertexBuffer(0, pbuf); r.draw(4, np); }
   }
   // test hooks: __big.rays
   const hook = (window.__big ||= {});
@@ -306,7 +353,7 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
     // a resting stingray on the free site nearest (x, z) (default: 9 m ahead of the vehicle), returns it
     stingNear(x, z, i = 0) { bfVehicle(); const r = R[i], k = nearestSite(x ?? bfV.x + bfV.fx * 9, z ?? bfV.z + bfV.fz * 9, 0, r.i); settle(r, k, rng() * TAU); return { site: sites[k], dist: hypot(wrapD(sites[k].x - bfV.x), wrapD(sites[k].z - bfV.z)) }; },
     // an eagle ray / manta cruising ahead of the vehicle
-    cruiseNear(i, ahead = 12, side = 0, dy = 0) { bfVehicle(); const r = R[i]; r.p[0] = wrapT(bfV.x + bfV.fx * ahead + bfV.rx * side); r.p[2] = wrapT(bfV.z + bfV.fz * ahead + bfV.rz * side); r.p[1] = bfV.y + dy; r.yaw = bfV.yaw + PI / 2; r.v.fill(0); r.state = CRUISE; r.leader = null; r.veer = -1e9; },
+    cruiseNear(i, ahead = 12, side = 0, dy = 0) { bfVehicle(); const r = R[i]; r.p[0] = wrapT(bfV.x + bfV.fx * ahead + bfV.rx * side); r.p[2] = wrapT(bfV.z + bfV.fz * ahead + bfV.rz * side); r.p[1] = bfV.y + dy; r.yaw = bfV.yaw + PI / 2; r.v.fill(0); r.state = CRUISE; r.leader = null; r.veer = 0; r.hd = r.yaw; },
     lift(i) { R[i].state = STARTLE; R[i].t = 0; R[i].react = 0.05; R[i].cool = 0; },
   };
   return { name: 'rays', init: rayInit, update, draw };

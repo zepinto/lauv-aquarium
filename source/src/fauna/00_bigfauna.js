@@ -90,5 +90,6 @@ function bfVehicle() {
 {
   let dbg = null;
   (window.__big ||= {}).cam = (...a) => { dbg = a.length >= 6 ? a : null; };
+  window.__big.cost = () => ({ ms: bfMis.ms / max(bfMis.n, 1), frames: bfMis.n });
   FAUNA.push({ name: 'bigfauna-cam', update() { if (dbg) lookAt(dbg[0], dbg[1], dbg[2], dbg[3], dbg[4], dbg[5]); } });
 }

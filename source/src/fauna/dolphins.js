@@ -50,7 +50,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   // countershading: dark slate cape, grey flank, pale pinkish belly; the cape line wanders (lighter streak behind the eye, dip at the dorsal fin)
   let wob = .16 * sin(s * 11. + 1.3) * ss(.08, .3, s) + .1 * sin(s * 27.) * ss(.15, .4, s) + (tx.a - .5) * .18;
   let tt = t + wob * (1. - abs(t));
-  let back = vec3f(.030, .038, .050); let flank = vec3f(.115, .135, .155); let belly = vec3f(.46, .44, .42);
+  let back = vec3f(.030, .036, .046); let flank = vec3f(.115, .125, .138); let belly = vec3f(.42, .39, .37);
   var alb = mix(flank, back, ss(-.05, .5, tt));
   alb = mix(alb, belly, ss(-.12, -.62, tt));
   alb = mix(alb, vec3f(.40, .27, .26), ss(-.7, -1., tt) * .35 * ss(.15, .7, s));
@@ -62,8 +62,8 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   alb += vec3f(.06) * ss(.74, .9, tx.a) * (1. - f32(isfin)) * ss(-.2, .6, tt);
   // eye, mouth line, blowhole (side features: the eye is at 14 % of the length, level with the mouth corner)
   let sd = step(.3, lat) * (1. - f32(isfin));
-  let eye = ss(.016, .006, length(vec2f(i.op.x - .364, i.op.y - .013))) * sd;
-  let eyer = ss(.03, .012, length(vec2f(i.op.x - .364, i.op.y - .013))) * sd;
+  let eye = ss(.016, .006, length(vec2f(i.op.x - .36, i.op.y - .013))) * sd;
+  let eyer = ss(.03, .012, length(vec2f(i.op.x - .36, i.op.y - .013))) * sd;
   let my = -.006 + .02 * ss(.44, .375, i.op.x) + .01 * ss(.5, .42, i.op.x);
   let mouth = ss(.0028, .0008, abs(i.op.y - my)) * step(.372, i.op.x) * (1. - f32(isfin));
   let blow = ss(.014, .006, length(vec2f(i.op.x - .245, i.op.z))) * step(.6, n.y) * (1. - f32(isfin));
@@ -80,7 +80,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   c += select(vec3f(0.), alb * E * sat(dot(-n, L)) * .5, isfin);
   // wet skin: a glossy sun lobe, a broad sheen and the sky reflected at grazing angles
   let H = normalize(V + L); let nv = sat(dot(n, V));
-  c += E * (pow(sat(dot(n, H)), 70.) * 2.2 + pow(sat(dot(n, H)), 12.) * .22) * (.4 + ca * .6) * (1. - mouth);
+  c += E * (pow(sat(dot(n, H)), 70.) * 1.3 + pow(sat(dot(n, H)), 12.) * .12) * (.4 + ca * .6) * (1. - mouth) * (1. - .8 * f32(isfin));
   let sky = amb(i.wp, vec3f(0., 1., 0.), vv.g, z);
   c += sky * pow(1. - nv, 4.) * .55 + alb * sky * ca * .25 * sat(-n.y);
   return fin(fog(c, i.wp, z));
@@ -88,8 +88,8 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
 `
   // ---------------------------------------------------------------- mesh
   // hull profile: s (0 nose .. 1 stock), top / bottom half height, half width, centre line height
-  const PROF = [[0, .004, .003, .004, 0], [.02, .012, .009, .012, -.002], [.06, .021, .019, .023, -.004], [.095, .031, .026, .033, -.004], [.13, .058, .030, .048, 0],
-    [.18, .086, .052, .068, .008], [.25, .106, .076, .088, .01], [.33, .116, .098, .098, .005], [.42, .112, .105, .098, 0], [.52, .100, .098, .088, -.003],
+  const PROF = [[0, .004, .003, .004, 0], [.02, .012, .009, .012, -.002], [.06, .021, .019, .023, -.004], [.105, .030, .025, .031, -.004], [.14, .060, .031, .050, 0],
+    [.19, .088, .054, .070, .008], [.25, .106, .076, .088, .01], [.33, .116, .098, .098, .005], [.42, .112, .105, .098, 0], [.52, .100, .098, .088, -.003],
     [.62, .082, .082, .070, -.003], [.72, .060, .060, .050, -.002], [.82, .040, .042, .034, -.002], [.90, .028, .030, .024, -.002], [.96, .022, .022, .016, -.002],
     [1, .018, .018, .012, -.001], [1.03, .012, .012, .008, 0], [1.05, .002, .002, .002, 0]];
   function prof(s, ch) {   // cubic Hermite through the table, finite-difference tangents
@@ -360,10 +360,15 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   const hook = (window.__big ||= {});
   hook.dolphins = {
     pod, D, off: (b) => { off = !!b; },
+    // sound tests: the audio graph state and one voice of each kind from dolphin i
+    sound: () => ({ ok: snd.ok, state: typeof AC === 'object' && AC ? AC.state : 'none' }),
+    voice(i = 0, kind = 'whistle') { sndInit(); const d = D[i]; if (kind === 'click') clickTrain(d, 30, true); else if (kind === 'blow') blow(d); else whistle(d, kind === 'chirp'); },
     // put the pod beside the vehicle at once and make it escort (clips and screenshots)
     join() { bfVehicle(); pod.mode = 'escort'; pod.t = 0; pod.still = 0; pod.cool = 0; for (const d of D) { const s = SLOTS[d.i]; d.p[0] = wrapT(bfV.x + bfV.fx * (s[0] + 9 - d.i) + bfV.rx * s[1] * 2.5); d.p[2] = wrapT(bfV.z + bfV.fz * (s[0] + 9 - d.i) + bfV.rz * s[1] * 2.5); d.p[1] = bfClamp(bfV.y + 1, -5, -0.6); d.v[0] = bfV.vx; d.v[1] = 0; d.v[2] = bfV.vz; d.f[0] = bfV.fx; d.f[1] = 0; d.f[2] = bfV.fz; } },
     // the pod cruising and breathing at x, z (default: 25 m ahead of the vehicle)
     cruiseAt(x, z, h) { bfVehicle(); pod.mode = 'cruise'; pod.cool = 1e9; place(x ?? bfV.x + bfV.fx * 25, z ?? bfV.z + bfV.fz * 25, h ?? atan2(bfV.rx, -bfV.rz), 2.3); },
+    // the pod arrives from dist metres away (default 40) in a direction 60 degrees off the vehicle's heading and comes to look
+    call(dist = 40, side = 1) { bfVehicle(); const a = atan2(bfV.fx, -bfV.fz) + side * 1.05, x = bfV.x + sin(a) * dist, z = bfV.z - cos(a) * dist; place(x, z, atan2(bfV.x - x, -(bfV.z - z)), 3.5); pod.mode = 'approach'; pod.t = 0; pod.still = 0; pod.cool = 0; },
     leave() { pod.mode = 'leave'; pod.t = 0; },
   };
   return { name: 'dolphins', init: dolInit, update, draw };
