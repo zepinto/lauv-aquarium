@@ -416,9 +416,10 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   } else if (mat == 4) {
     // sponges: brown, tan, rust and a muted violet
     let hue = fract(sd * 7.31);
-    alb = mix(vec3f(.46, .24, .10), vec3f(.60, .44, .24), fract(hue * 3.));
-    if (hue > .78) { alb = vec3f(.34, .22, .34); }
-    if (hue < .12) { alb = vec3f(.50, .16, .10); }
+    alb = mix(vec3f(.46, .26, .12), vec3f(.60, .44, .24), fract(hue * 3.));
+    if (hue > .72) { alb = vec3f(.42, .24, .46); }
+    if (hue < .2) { alb = vec3f(.62, .22, .10); }
+    if (hue > .3 && hue < .38) { alb = vec3f(.70, .54, .14); }
     alb *= (.45 + .75 * B.h) * (.7 + .3 * C.h);
     vao = i.ao * i.ao; gloss = .15; bump = 1.4; flu = .12;
   } else {

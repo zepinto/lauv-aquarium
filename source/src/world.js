@@ -206,8 +206,8 @@ function makeWorld(D, T, POSES) {
     const x = T.wp[k] + rr(-0.75, 0.75), z = T.wp[k + 2] + rr(-0.75, 0.75), y = T.wp[k + 1], sa = T.vs[k / 3];
     if (nearPose(x, z, 1.5) || y > -2) continue;
     const meadow = sstep(0.5, 0.62, pfbm(x, 5, z, 0.018, 3)) * sstep(0.4, 0.8, sa), u = rnd();
-    if (u < meadow * 0.2) { // a bushy clump
-      const bl = 14 + (rnd() * 10 | 0), ln = rr(0.4, 0.95);
+    if (u < meadow * 0.34) { // a bushy clump
+      const bl = 16 + (rnd() * 10 | 0), ln = rr(0.4, 0.95);
       for (let j = 0; j < bl; j++) leaf(small, x + rr(-0.16, 0.16), y - 0.04, z + rr(-0.16, 0.16), ln * rr(0.55, 1.25), rnd() * TAU, rr(0.04, 0.4), rr(0.03, 0.055), 0, 2, rnd(), rnd(), rr(0.3, 0.7));
     } else if (sa < 0.4 && u < 0.2 * sstep(0.45, 0.6, pfbm(x, 9, z, 0.05, 2))) {
       for (let j = 0; j < 7; j++) leaf(small, x + rr(-0.15, 0.15), y - 0.05, z + rr(-0.15, 0.15), rr(0.15, 0.45), rnd() * TAU, rr(0.1, 0.9), rr(0.03, 0.06), 0, rnd() < 0.5 ? 5 : 7, rnd(), rnd(), rr(0.3, 0.8));
