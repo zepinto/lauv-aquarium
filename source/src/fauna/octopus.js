@@ -8,6 +8,7 @@
 const OCT_N = 6, OCT_NA = 8, OCT_NS = 16, OCT_NRB = 20, OCT_BR = 17, OCT_AR = 9, OCT_ER = 9, OCT_EC = 10;
 const OCT_VA = OCT_NA * OCT_NS * OCT_AR, OCT_VB = OCT_NRB * OCT_BR, OCT_VE = OCT_ER * OCT_EC, OCT_VPO = OCT_VA + OCT_VB + 2 * OCT_VE;
 const OCT_MAXINK = 128, OCT_SEE = 150;
+const OCT_OFF = /[?&]oct=0/.test(location.search);   // dev: oct=0 leaves the octopuses out, to time what they cost
 const OS = { REST: 0, CRAWL: 1, ALARM: 2, JET: 3, ENTER: 4, HIDE: 5, PEEK: 6, EXIT: 7 };
 
 const W_OCTO = S_B + /*wgsl*/`
@@ -68,7 +69,7 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
     alb = mix(skin, alb, ss(0., .3, i.mi.w));   // mi.w: how open the eye is (blinks)
     gloss = 1.; spec = 3.;
   } else {
-    let base = mix(vec3f(.27, .235, .19), vec3f(.44, .38, .28), sand);
+    let base = mix(vec3f(.21, .18, .145), vec3f(.40, .34, .25), sand);
     let m1 = vn3(q * vec3f(14., 30., 30.) + seed) * .6 + vn3(q * 60. + seed * 2.) * .4;
     let m2 = vn3(q * vec3f(40., 85., 85.) + 11. + seed + t * .05);
     // chromatophores: broad warm and dark patches with fine flecks, drifting slowly like clouds
@@ -457,7 +458,14 @@ function octInkAdd(x, y, z, vx, vy, vz, s0, life, a0) {
 function octInkBurst(O, dx, dy, dz) {
   for (let k = 0; k < 22; k++) {
     const a = octRn() * TAU, b = octRn() * 2 - 1, r = Math.sqrt(1 - b * b), ux = r * Math.cos(a), uy = b, uz = r * Math.sin(a), sp = 0.14 + 0.22 * octRn();
-    octInkAdd(O.P[0] + O.A[0] * 0.22 + ux * 0.12 - dx * 0.1, O.P[1] + O.A[1] * 0.22 + uy * 0.1 - dy * 0.1, O.P[2] + O.A[2] * 0.22 + uz * 0.12 - dz * 0.1, ux * sp - dx * 0.15, uy * sp * 0.6 + 0.06, uz * sp - dz * 0.15, 0.24 + 0.16 * octRn(), 13 + 5 * octRn(), 0.55 + 0.25 * octRn());
+    octInkAdd(O.P[0] + O.A[0] * 0.22 + ux * 0.12 - dx * 0.1, O.P[1] + O.A[1] * 0.22 + uy * 0.1 - dy * 0.1, O.P[2] + O.A[2] * 0.22 + uz * 0.12 - dz * 0.1, ux * sp - dx * 0.15, uy * sp * 0.6 + 0.12 + 0.1 * octRn(), uz * sp - dz * 0.15, 0.24 + 0.16 * octRn(), 13 + 5 * octRn(), 0.55 + 0.25 * octRn());
+  }
+}
+// a thin haze round the blob that spreads for longer: the ink disperses slowly
+function octInkHaze(O) {
+  for (let k = 0; k < 10; k++) {
+    const a = octRn() * TAU, b = octRn() * 2 - 1, r = Math.sqrt(1 - b * b);
+    octInkAdd(O.P[0] + O.A[0] * 0.25 + r * Math.cos(a) * 0.25, O.P[1] + O.A[1] * 0.25 + b * 0.2, O.P[2] + O.A[2] * 0.25 + r * Math.sin(a) * 0.25, r * Math.cos(a) * 0.12, 0.08 + b * 0.05, r * Math.sin(a) * 0.12, 0.45 + 0.25 * octRn(), 22 + 6 * octRn(), 0.22 + 0.12 * octRn());
   }
 }
 function octInkStep(dt) {
@@ -563,7 +571,7 @@ function octStep(O, dt) {
   O.lastD = dist;
   O.blinkT -= dt; if (O.blinkT < 0) { O.blinkT = 2.5 + octRn() * 5; O.blink = 0.2; }
   if (O.blink > 0) { O.blink -= dt; O.open = O.blink > 0 ? 1 - Math.sin(Math.PI * O.blink / 0.2) : 1; } else O.open = 1;
-  O.bph += dt * (O.state === OS.JET ? 7 : 5.3); O.breath = Math.sin(O.bph);
+  O.bph += dt * (O.state === OS.JET ? 7 : 5.3); O.breath = Math.sin(O.bph) * 1.4;
   O.pulse *= Math.exp(-dt * 5);
   const s = O.state;
   if ((s === OS.REST || s === OS.CRAWL || s === OS.EXIT) && dist < alertD && !(window.__octo && window.__octo.noscare)) { octState(O, OS.ALARM); O.pl.fill(0); O.stepT.fill(-1); }
@@ -605,7 +613,7 @@ function octStep(O, dt) {
       if (t >= 0.55) {
         let ex = O.front[0] - P[0], ey = O.front[1] - P[1], ez = O.front[2] - P[2]; const el = octLen(ex, ey, ez) || 1; ex /= el; ey /= el; ez /= el;
         // not straight at the intruder: if the den is that way, break off to the side
-        octState(O, OS.JET); O.jetT = 0; O.jetN = -1; O.inkT = 0; V[0] = ex * 0.6; V[1] = ey * 0.6 + 0.35; V[2] = ez * 0.6; octInkBurst(O, ex, ey, ez);
+        octState(O, OS.JET); O.jetT = 0; O.jetN = -1; O.inkT = 0; V[0] = ex * 0.6; V[1] = ey * 0.6 + 0.35; V[2] = ez * 0.6; octInkBurst(O, ex, ey, ez); octInkHaze(O);
         if (O.sand > 0.2) for (let k = 0; k < 5; k++) lauvEmit(P[0] + O.ox + octRn() * 0.3 - 0.15, P[1] - 0.04, P[2] + O.oz + octRn() * 0.3 - 0.15, 0.2 + octRn() * 0.15, 1, -ex * 0.4 + octRn() * 0.2 - 0.1, 0.1 + octRn() * 0.15, -ez * 0.4 + octRn() * 0.2 - 0.1, 3.5, 1);
       }
       break;
@@ -676,11 +684,27 @@ FAUNA.push({
     };
   },
   update(dt) {
-    const G = octG; if (!G.gpu) return;
+    const G = octG; if (!G.gpu || OCT_OFF) return;
     if (!G.ready) { if (G.scanN < 120000) octScanStep(3000); else octChoose(); return; }
     const t0 = performance.now();
     g_octT += dt;
-    if (G.follow) { const q = G.follow, O = octO[q.i], a = q.az + (q.abs ? 0 : Math.atan2(O.F[0], O.F[2])), c = Math.cos(q.el); lookAt(O.P[0] + Math.sin(a) * c * q.dist + O.ox, O.P[1] + Math.sin(q.el) * q.dist + (q.dy || 0.1), O.P[2] + Math.cos(a) * c * q.dist + O.oz, O.P[0] + O.ox, O.P[1] + (q.dy || 0.1), O.P[2] + O.oz); }
+    if (G.follow) { // test camera on an octopus: the wanted azimuth and distance, moved round the animal when rock is in the way
+      const q = G.follow, O = octO[q.i], c = Math.cos(q.el), dy = q.dy || 0.1, tx = O.P[0], ty = O.P[1] + dy, tz = O.P[2];
+      const base = q.az + (q.abs ? 0 : Math.atan2(O.F[0], O.F[2]));
+      const clear = (a, d) => {
+        const cx = tx + Math.sin(a) * c * d, cy = ty + Math.sin(q.el) * d, cz = tz + Math.cos(a) * c * d;
+        if (sdAt(cx, cy, cz) > -0.45) return false;
+        for (let s = 0.35; s < d; s += 0.25) if (sdAt(tx + (cx - tx) * s / d, ty + (cy - ty) * s / d, tz + (cz - tz) * s / d) > -0.12) return false;
+        return true;
+      };
+      let a = q.azc === undefined ? base : q.azc, d = q.dc || q.dist;
+      if (!clear(a, d)) {
+        let found = false;
+        for (let sc = 1; sc > 0.3 && !found; sc *= 0.8) for (let k = 0; k <= 12 && !found; k++) for (const sg of k ? [1, -1] : [1]) { const aa = base + sg * k * 0.3; if (clear(aa, q.dist * sc)) { a = aa; d = q.dist * sc; found = true; break; } }
+        q.azc = a; q.dc = d;
+      }
+      lookAt(tx + Math.sin(a) * c * d + O.ox, ty + Math.sin(q.el) * d, tz + Math.cos(a) * c * d + O.oz, tx + O.ox, ty, tz + O.oz);
+    }
     else if (G.cam) lookAt(...G.cam);   // test: a fixed camera (set before the cameras of other pieces: update runs after lauvFrame)
     const cx = F[CX], cy = F[CY], cz = F[CZ];
     for (const O of octO) {
@@ -701,7 +725,7 @@ FAUNA.push({
   },
   late() {},
   draw(r) {
-    const G = octG, g = G.gpu; if (!g || !G.ready) return;
+    const G = octG, g = G.gpu; if (!g || !G.ready || OCT_OFF) return;
     useTile(r, 4);
     if (G.drawn) { r.setPipeline(g.pOct); r.setVertexBuffer(0, g.vb); r.setIndexBuffer(g.ib, 'uint16'); for (let s = 0; s < G.drawn; s++) r.drawIndexed(g.nIdx, 1, 0, s * OCT_VPO); }
     if (octInk.n) { r.setPipeline(g.pInk); r.setVertexBuffer(0, g.vbInk); r.draw(4, octInk.n); }
@@ -711,11 +735,13 @@ FAUNA.push({
 window.__octo = {
   get ready() { return octG.ready; },
   list: () => octO.map((O) => ({ i: O.i, state: O.state, t: +O.t.toFixed(2), P: Array.from(O.P), den: Array.from(O.den), front: Array.from(O.front), perch: Array.from(O.perch), dout: Array.from(O.dout), dist: +O.lastD.toFixed(1), sand: O.sand })),
+  // dev: put octopus i at the den entrance, about to squeeze in
+  enter(i) { const O = octO[i]; O.P.set(O.front); O.V.fill(0); O.pl.fill(0); octState(O, OS.ENTER); },
   crawl(i) { const O = octO[i]; if (O && O.state === OS.REST && octPickWp(O)) octState(O, OS.CRAWL); return O.wp.join(); },
   state(i) { return octO[i].state; },
   scare(i) { const O = octO[i]; if (O && O.state <= OS.CRAWL) { octState(O, OS.ALARM); O.pl.fill(0); O.stepT.fill(-1); } },
   noscare: false,
-  follow(i, dist, az, el, abs, dy) { octG.follow = i === undefined ? null : { i, dist, az, el, abs, dy }; },
+  follow(i, dist, az, el, abs, dy) { octG.follow = i === undefined ? null : { i, dist, az, el, abs, dy, azc: undefined, dc: undefined }; },
   cam(x, y, z, tx, ty, tz) { octG.cam = x === undefined ? null : [x, y, z, tx, ty, tz]; },
   // dev: camera looking at octopus i from dist metres, az radians around it (0 = from the den side), el above the horizon
   view(i, dist, az, el, dy = 0.12) { const O = octO[i], a = az + Math.atan2(O.F[0], O.F[2]); const c = Math.cos(el); octG.cam = [O.P[0] + Math.sin(a) * c * dist, O.P[1] + Math.sin(el) * dist + dy, O.P[2] + Math.cos(a) * c * dist, O.P[0], O.P[1] + dy, O.P[2]]; },
