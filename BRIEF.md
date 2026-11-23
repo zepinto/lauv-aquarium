@@ -27,6 +27,9 @@ grade your own work. Loop until the critic picks ours.
   max ≈ 2 m/s. Roll is held at 0 automatically (roll controller on the fins).
 - Commands (keyboard, also gamepad if cheap): left / right (rudder), up / down (climb / dive, elevator),
   thrust up / thrust down (throttle steps, a little reverse allowed). Arrows + W/S by default; show them on screen once.
+- Mobile (multi-touch, landscape): one finger sets the speed (a throttle slider on one side, it stays where it is
+  released), the other finger drives a 4-way stick on the other side (left / right / climb / dive), both at once.
+  Big, thumb-sized, semi-transparent controls in the OMST look; works on phones and tablets.
 - Kelp can foul the propeller (thrust drops, the vehicle drags a strand; reversing clears it). It hits rocks and the
   bottom: real contact (stops, bounces, scrapes), sediment puff, sound, and a scratch counter that is the only "score".
 - At the surface the camera shows the scene from above the water (sky, sun, waves, the vehicle awash, the
