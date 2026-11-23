@@ -363,10 +363,12 @@ fn cuv(p: vec3f) -> vec2f { return p.xz - g.sun.xz * (p.y / g.sun.y); }
 fn caus(p: vec3f, d: f32) -> vec3f {
   let q = cuv(p);
   let o = vec2f(.004, .0025);
-  let q1 = pu(q, 3.3);
+  let q1 = pu(q, 1.9); // LOOK: caustic cells a few dm across, as in a few metres of water (3.3 m cells read as dark blobs)
   let a = vec3f(textureSample(tW, sR, q1 + o).r, textureSample(tW, sR, q1).r, textureSample(tW, sR, q1 - o).r);
   let b = textureSample(tW, sR, pu(q.yx, 6.9) + .37).r;
-  let c = min(pow(a, vec3f(2.0)) * 7. * (.6 + b * .8), vec3f(5.)); // LOOK: less large-scale modulation
+  // LOOK: only the line cores lit (the pattern is ~0.3 in the cells, ~0.9 median, ~2.5 on the brightest lines), less
+  // large-scale modulation
+  let c = smoothstep(vec3f(1.), vec3f(2.4), a) * 2.6 * (.75 + b * .5);
   return mix(c, vec3f(.3), ss(50., 140., d));
 }
 fn caus2(p: vec3f, d: f32) -> f32 {
@@ -507,7 +509,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     if (mat == 0) {
       // ---- LOOK: sand on the flats: scanned sand at two scales (no visible tiling), coral rubble in patches,
       // ripples across the current, grit and an algae film
-      sK = i.ao * ss(.55, .82, n0.y);
+      sK = ss(.55, .82, n0.y); // LOOK: the vertex AO (blob-shaped on the flats) no longer mixes dark rock into the sand
       if (sK > .01) {
         let sp = i.op.xz;
         let su1 = sp * pk(.55); let su2 = sp.yx * pk(.17) + .31;
@@ -532,7 +534,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
         let s1n = sn1.xy * 2. - 1.; let g1n = gn.xy * 2. - 1.;
         tn = mix(tn, vec3f(mix(s1n.x, g1n.x, rw), 0., mix(s1n.y, g1n.y, rw)), sK);
         rdir = vec2f(190., 140.) / 236.;
-        rdir *= cos(ph) * fade * .8 * (1. - rw);
+        rdir *= cos(ph) * fade * .28 * (1. - rw); // LOOK: was .8 (dark dashes on the slopes facing away from the sun)
       }
       gloss = mix(gloss, .05, sK); bump = mix(bump, .5, sK);
     }
@@ -546,7 +548,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     // sponges: brown, tan, rust and a muted violet
     let hue = fract(sd * 7.31);
     alb = mix(vec3f(.46, .26, .12), vec3f(.60, .44, .24), fract(hue * 3.));
-    if (hue > .72) { alb = vec3f(.30, .17, .30); } // LOOK: duller violet
+    if (hue > .72) { alb = vec3f(.24, .15, .20); } // LOOK: duller violet
     if (hue < .2) { alb = vec3f(.62, .22, .10); }
     if (hue > .3 && hue < .38) { alb = vec3f(.70, .54, .14); }
     alb *= (.45 + .75 * B.h) * (.7 + .3 * C.h);
@@ -560,13 +562,14 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     let hue = fract(sd * 5.73);
     alb = mix(vec3f(.52, .40, .22), vec3f(.36, .40, .16), fract(hue * 4.));
     if (hue > .55) { alb = vec3f(.50, .45, .32); }
-    if (hue > .8) { alb = vec3f(.76, .38, .44); }
+    if (hue > .8) { alb = vec3f(.62, .27, .32); } // LOOK: less pastel
     if (hue > .9) { alb = vec3f(.78, .40, .15); }
-    if (hue > .96) { alb = vec3f(.40, .32, .62); }
+    if (hue > .96) { alb = vec3f(.32, .22, .48); }
     alb *= (.4 + .8 * B.h) * (.5 + .9 * i.ao * i.ao);
     if (mat == 6) {
       let hh = fract(sd * 3.77);
       alb = mix(mix(vec3f(.85, .30, .10), vec3f(.85, .12, .35), ss(.25, .35, hh)), mix(vec3f(.90, .70, .12), vec3f(.35, .25, .75), ss(.75, .85, hh)), ss(.5, .6, hh)) * (.55 + .7 * B.h) * (.6 + .6 * i.ao);
+      alb = mix(vec3f(dot(alb, vec3f(.3, .59, .11))), alb, .6) * .75; // LOOK: hero corals less candy-coloured
       gloss = .3;
     }
     flu = .1; gloss = .2; bump = 1.5;
@@ -581,13 +584,15 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let N = normalize(qrot(i.q, normalize(on + (A.n * .85 + B.n * .65 + C.n * .45 * ss(60., 12., dist) * (1. - tnk * .6)) * bump + tn * tnk * near + vec3f(rdir.x, sgro, rdir.y)))); // LOOK: + scanned normals
   let L = g.sun.xyz; let V = normalize(g.cam.xyz - i.wp);
   let v1 = vol(i.wp + n0 * 1.5); let v2 = vol(i.wp + n0 * 4.5);
-  let ao = (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45) * vao * ss(.12, .6, hgt);
+  // LOOK: the procedural cavity term (hgt) only darkens rock a little now, and never sand: it made dark blotches
+  let ao = (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45) * vao * mix(mix(.6, 1., ss(.12, .6, hgt)), 1., sK);
   let z = zone(i.wp);
   let E = sunE(i.wp.y, z) * shadowS(i.wp + n0 * .25, i.cp.xy) * vehSh(i.wp); // LOOK: soft shadows
   let ndl = sat(dot(N, L));
   let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z)) * ao;
   // LOOK: caustics as bright lines over an even base (no dark blotches between them)
-  let dl = E * ndl * (.35 + mix(vec3f(.35), ca, ss(.05, .35, dot(n0, L))) * 1.0);
+  // LOOK: caustics as thin bright lines over an even base: the dark cells between them read as blotches when strong
+  let dl = E * ndl * (1.9 + mix(vec3f(.4), ca, ss(.05, .35, dot(n0, L))) * 1.15);
   var c = alb * (dl + am) + emi + alb * flu * dot(dl + am, vec3f(.1, .5, .5));
   let H = normalize(V + L);
   c += E * (.25 + ca) * pow(sat(dot(N, H)), mix(10., 70., gloss)) * gloss * ndl * 1.8;
@@ -1066,7 +1071,7 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
   c += acc / ws;
   let bl = textureSampleLevel(tB, sC, uv, 0.).rgb;
   c = mix(c, bl, .06) + bl * .03;
-  c *= g.mis.x;
+  c *= g.mis.x * 1.35; // LOOK: exposure (the darker water column and even caustics need a little more)
   let q = uv - .5;
   c *= 1. - dot(q, q) * .55;
   c = tmap(c);

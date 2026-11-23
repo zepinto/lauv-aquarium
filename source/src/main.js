@@ -50,7 +50,8 @@ const tDetail = tex(1024, 1024, 'rgba8unorm', TU.RENDER_ATTACHMENT | TU.TEXTURE_
 const tVol = tex(NX / 2, NY / 2, 'rg8unorm', TU.TEXTURE_BINDING | TU.COPY_DST, { d: NZ / 2 });
 const tMap = tex(512, 512, 'rgba8unorm', TU.TEXTURE_BINDING | TU.COPY_DST);
 
-const LOOKDBG = { rays: 1, ao: 1 }; window.__look = LOOKDBG; // LOOK: debug switches (tests, per-pass costs)
+// LOOK: debug switches (tests, per-pass costs) and a camera orbit for test shots (free camera at azimuth / elevation)
+const LOOKDBG = { rays: 1, ao: 1, orbit(az, el) { lauvS.camMode = 'free'; lauvS.camAz = az; lauvS.camEl = el; lauvS.snap = 1; } }; window.__look = LOOKDBG;
 const LOOK = lookTextures(); // LOOK: scanned material textures (look.js), loading in the background
 const UB = new Float32Array(68), UBS = new Float32Array(68);
 const ubo = device.createBuffer({ size: 272, usage: BU.UNIFORM | BU.COPY_DST }), uboS = device.createBuffer({ size: 272, usage: BU.UNIFORM | BU.COPY_DST });
