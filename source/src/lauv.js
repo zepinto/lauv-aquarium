@@ -89,7 +89,7 @@ function lauvBuildMesh(prims) {
 
 const W_LAUV = S_B + /*wgsl*/`
 struct VU { r0: vec4f, r1: vec4f, r2: vec4f, fins: vec4f, misc: vec4f };
-@group(1) @binding(0) var<uniform> vu: VU;
+@group(2) @binding(0) var<uniform> vu: VU;
 struct VI { @location(0) p: vec3f, @location(1) n: vec4f, @location(2) c: vec4f, @location(3) m: vec4u };
 struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) c: vec4f, @location(3) @interpolate(flat) m: vec4u, @location(4) lp: vec3f };
 fn rotY(p: vec3f, a: f32, h: f32) -> vec3f { let d = p.x - h; let c = cos(a); let s = sin(a); return vec3f(h + d * c + p.z * s, p.y, -d * s + p.z * c); }
@@ -102,13 +102,13 @@ fn rotX(p: vec3f, a: f32) -> vec3f { let c = cos(a); let s = sin(a); return vec3
   else if (part == 3u) { p = rotZ(p, -vu.fins.y, .245); n = rotZ(n, -vu.fins.y, 0.); }
   else if (part == 4u) { p = rotZ(p, -vu.fins.z, .245); n = rotZ(n, -vu.fins.z, 0.); }
   else if (part == 5u) { p = rotY(p, vu.fins.w, .245); n = rotY(n, vu.fins.w, 0.); }
-  let w = vec3f(dot(vu.r0.xyz, p) + vu.r0.w, dot(vu.r1.xyz, p) + vu.r1.w, dot(vu.r2.xyz, p) + vu.r2.w);
+  let w = vec3f(dot(vu.r0.xyz, p) + vu.r0.w, dot(vu.r1.xyz, p) + vu.r1.w, dot(vu.r2.xyz, p) + vu.r2.w) + tl.xyz;
   o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = vec3f(dot(vu.r0.xyz, n), dot(vu.r1.xyz, n), dot(vu.r2.xyz, n)); o.c = i.c; o.m = i.m; o.lp = i.p;
   return o;
 }
 // the kelp strand dragged by the propeller: vertices are already in the world
 @vertex fn vsW(i: VI) -> VO {
-  var o: VO; o.cp = g.vp * vec4f(i.p, 1.); o.wp = i.p; o.n = i.n.xyz; o.c = i.c; o.m = i.m; o.lp = i.p; return o;
+  var o: VO; let w = i.p + tl.xyz; o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = i.n.xyz; o.c = i.c; o.m = i.m; o.lp = i.p; return o;
 }
 fn lh(p: vec3f) -> f32 { var q = fract(p * vec3f(.1031, .1030, .0973)); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
 fn lvn(p: vec3f) -> f32 {
@@ -179,8 +179,8 @@ const W_LPART = S_B + /*wgsl*/`
 struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @interpolate(flat) b: vec4f, @location(2) wp: vec3f, @location(3) @interpolate(flat) sh: f32 };
 @vertex fn vs(@builtin(vertex_index) vi: u32, @location(0) a: vec4f, @location(1) b: vec4f) -> PO {
   var o: PO; let q = vec2f(f32(vi & 1u), f32(vi >> 1u)) * 2. - 1.;
-  let w = a.xyz + (g.right.xyz * q.x + g.up.xyz * q.y) * a.w;
-  o.cp = g.vp * vec4f(w, 1.); o.uv = q; o.b = b; o.wp = a.xyz; o.sh = shadow1(a.xyz);
+  let c = a.xyz + tl.xyz; let w = c + (g.right.xyz * q.x + g.up.xyz * q.y) * a.w;
+  o.cp = g.vp * vec4f(w, 1.); o.uv = q; o.b = b; o.wp = c; o.sh = shadow1(c);
   return o;
 }
 @fragment fn fs(i: PO) -> @location(0) vec4f {
@@ -216,8 +216,6 @@ const lv = new LauvVehicle();
 const lauvKeys = { left: 0, right: 0, up: 0, down: 0, thrustUp: 0, thrustDown: 0 };
 const lauvAud = { rpm: 0, scrape: 0, thud: 0, foul: 0, bub: 0 };
 const lauvColliders = [];            // hook for other pieces: fn(x, y, z) -> signed distance in metres (> 0 inside the obstacle)
-// the world edge (the endless-world piece replaces it)
-let lauvConstrain = (v) => { const r = hypot(v.pos[0], v.pos[2]); if (r > 148) { const k = 148 / r; v.pos[0] *= k; v.pos[2] *= k; } };
 const lauvS = { acc: 0, scratches: 0, sinceContact: 9, inContact: false, slideAcc: 0, paused: false, hint: 1, hintT: 0, scratchFlash: 0, snap: 1,
   fN: 0, fT: 0, puffAcc: 0, bubAcc: 0, flCool: 0, revT: 0, kelpT: 0, thrUpT: 0, thrDnT: 0, fps: 60, gpUp: 0, gpDn: 0,
   camMode: 'chase', camAz: 0, camEl: 0, camDist: 3.6, camYaw: 0, camIdle: 9, cpx: 0, cpy: 0, cpz: 0, tx: 0, ty: 0, tz: 0 };
@@ -268,9 +266,29 @@ function lauvCollide() {
   lauvHit.n += hit;
 }
 
-// ---------------------------------------------------------------- kelp: leaves as segments in a grid, for propeller fouling
-const LK_N = 128, LK_C = 3, LK_O = -192;
+// ---------------------------------------------------------------- the world is a torus: the vehicle lives in the base tile
+// When the hull crosses the seam it is moved by one tile, and everything that follows it (camera, strand, particles) moves too, so nothing jumps.
+function lauvTorus() {
+  const P = lv.pos, dx = wrapT(P[0]) - P[0], dz = wrapT(P[2]) - P[2];
+  if (!dx && !dz) return;
+  const S = lauvS; P[0] += dx; P[2] += dz;
+  S.cpx += dx; S.cpz += dz; S.tx += dx; S.tz += dz;
+  for (let i = 0; i < LAUV_NS; i++) { const o = i * 6; lauvRope[o] += dx; lauvRope[o + 3] += dx; lauvRope[o + 2] += dz; lauvRope[o + 5] += dz; }
+  for (let i = 0; i < lauvPN; i++) { lauvP[i * 8] += dx; lauvP[i * 8 + 2] += dz; }
+}
+// scripted flight (__world.drive): the hull moves straight on at the given speed, with no physics
+function lauvDriveStep(dt, d) {
+  const R = lv.R, s = d.speed * dt, P = lv.pos;
+  P[0] += R[0] * s; P[1] += R[1] * s; P[2] += R[2] * s;
+  lv.setSpeed(min(d.speed, 2));
+  if (!d.noclip) lauvCollide();
+  lauvTorus(); lauvEffects(dt);
+}
+
+// ---------------------------------------------------------------- kelp: leaves as segments in a grid (over the whole tile, wrapping), for propeller fouling
+const LK_N = 128, LK_C = PER / LK_N;
 let lkStart = null, lkSeg = null;
+const lkCell = (x, z) => ((floor((x - OX) / LK_C)) & (LK_N - 1)) + LK_N * ((floor((z - OZ) / LK_C)) & (LK_N - 1));
 function lauvKelp(big) {
   const f = new Float32Array(big.buf), n = big.n, cell = new Uint32Array(LK_N * LK_N + 1);
   const keep = [];
@@ -280,7 +298,7 @@ function lauvKelp(big) {
     const x = f[i * 9], y = f[i * 9 + 1], z = f[i * 9 + 2], len = f[i * 9 + 3] * 0.85, yaw = f[i * 9 + 4], tilt = f[i * 9 + 5];
     const st = sin(tilt), dx = st * cos(yaw), dy = cos(tilt), dz = st * sin(yaw);
     seg.set([x, y, z, len, dx, dy, dz], k * 7);
-    const cx = clamp(floor((x - LK_O) / LK_C), 0, LK_N - 1), cz = clamp(floor((z - LK_O) / LK_C), 0, LK_N - 1); cid[k] = cx + LK_N * cz; cell[cid[k] + 1]++;
+    cid[k] = lkCell(x, z); cell[cid[k] + 1]++;
   });
   for (let i = 0; i < LK_N * LK_N; i++) cell[i + 1] += cell[i];
   const fill = cell.slice(0, LK_N * LK_N), order = new Uint32Array(keep.length);
@@ -292,12 +310,12 @@ function lauvKelp(big) {
 // length of a kelp leaf within r of the point (0: none)
 function lauvKelpNear(x, y, z, r) {
   if (!lkSeg) return 0;
-  const cx = floor((x - LK_O) / LK_C), cz = floor((z - LK_O) / LK_C);
+  x = wrapT(x); z = wrapT(z);
+  const cx = floor((x - OX) / LK_C), cz = floor((z - OZ) / LK_C);
   for (let gz = cz - 1; gz <= cz + 1; gz++) for (let gx = cx - 1; gx <= cx + 1; gx++) {
-    if (gx < 0 || gz < 0 || gx >= LK_N || gz >= LK_N) continue;
-    const c = gx + LK_N * gz;
+    const c = (gx & (LK_N - 1)) + LK_N * (gz & (LK_N - 1));
     for (let k = lkStart[c]; k < lkStart[c + 1]; k++) {
-      const o = k * 7, px = x - lkSeg[o], py = y - lkSeg[o + 1], pz = z - lkSeg[o + 2], len = lkSeg[o + 3];
+      const o = k * 7, px = wrapD(x - lkSeg[o]), py = y - lkSeg[o + 1], pz = wrapD(z - lkSeg[o + 2]), len = lkSeg[o + 3];
       const t = clamp(px * lkSeg[o + 4] + py * lkSeg[o + 5] + pz * lkSeg[o + 6], 0, len);
       const dx = px - lkSeg[o + 4] * t, dy = py - lkSeg[o + 5] * t, dz = pz - lkSeg[o + 6] * t;
       if (dx * dx + dy * dy + dz * dz < r * r) return len;
@@ -306,55 +324,59 @@ function lauvKelpNear(x, y, z, r) {
   return 0;
 }
 
-// ---------------------------------------------------------------- set-piece rocks (boulders, fluke, ship, large chunks) as sphere shells
+// ---------------------------------------------------------------- set pieces (the wreck, boulders, large rock chunks, hard corals) as sphere shells
 // The terrain SDF has the terrain only; the instanced set pieces are separate meshes. Each mesh type is covered by a shell of
-// overlapping spheres (one per occupied cell of a coarse grid over its vertices), copied to every instance and put in a hash grid.
-const LS_C = 6;      // hash cell, metres
+// overlapping spheres (one per occupied cell of a coarse grid over its vertices), copied to every instance and put in a hash grid
+// that wraps like the world (LS_N cells of PER / LS_N metres). Mesh ids as in main.js: 0-3 boulders, 10 table coral, 11 ship, 17-19 large chunks, 26 brain coral.
+const LS_N = 64, LS_C = PER / LS_N;
 let lsStart = null, lsSph = null, lsN = 0;
-function lauvSolids(solids, chunks, meshes) {
+const lsCell = (x, z) => ((floor((x - OX) / LS_C)) & (LS_N - 1)) + LS_N * ((floor((z - OZ) / LS_C)) & (LS_N - 1));
+function lauvSolids(Wd, meshes) {
   const sph = [];    // x, y, z, r
-  const shell = (m) => {   // local spheres of a mesh: [x, y, z, r] list
+  const shell = (m, id) => {   // local spheres of a mesh: [x, y, z, r] list
     const ab = m.vb.buffer ? m.vb.buffer.slice(m.vb.byteOffset, m.vb.byteOffset + m.nv * 16) : m.vb.slice(0, m.nv * 16), f = new Float32Array(ab), n = m.nv;
     let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
     for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { const v = f[i * 4 + k]; if (v < lo[k]) lo[k] = v; if (v > hi[k]) hi[k] = v; }
-    const ext = max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), cell = ext / 4, g = new Map();
+    const ext = max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), cell = id === 11 ? min(ext / 4, 1.6) : ext / 4, g = new Map();
     for (let i = 0; i < n; i++) {
       const x = f[i * 4], y = f[i * 4 + 1], z = f[i * 4 + 2], key = floor((x - lo[0]) / cell) + 4096 * (floor((y - lo[1]) / cell) + 4096 * floor((z - lo[2]) / cell));
       let c = g.get(key); if (!c) g.set(key, c = [0, 0, 0, 0]); c[0] += x; c[1] += y; c[2] += z; c[3]++;
     }
-    const out = []; for (const c of g.values()) out.push([c[0] / c[3], c[1] / c[3], c[2] / c[3], cell * 0.75]);
+    const out = []; for (const c of g.values()) out.push([c[0] / c[3], c[1] / c[3], c[2] / c[3], cell * (id === 11 ? 0.62 : 0.75)]);
     out.ext = ext; out.mid = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
     return out;
   };
   const cache = new Map();
   const add = (id, data, from, count) => {
-    if (!cache.has(id)) cache.set(id, shell(meshes[id]));
+    if (!cache.has(id)) cache.set(id, shell(meshes[id], id));
     const loc = cache.get(id);
     for (let i = from; i < from + count; i++) {
       const o = i * 12, px = data[o], py = data[o + 1], pz = data[o + 2], sc = data[o + 3], qx = data[o + 4], qy = data[o + 5], qz = data[o + 6], qw = data[o + 7];
-      const small = loc.ext * sc < 6, set = small ? [[loc.mid[0], loc.mid[1], loc.mid[2], loc.ext * 0.42]] : loc;
+      const small = id !== 11 && loc.ext * sc < 6, set = small ? [[loc.mid[0], loc.mid[1], loc.mid[2], loc.ext * 0.42]] : loc;
       if (loc.ext * sc < 0.5) continue;   // pebbles
       for (const s of set) {
         const x = s[0] * sc, y = s[1] * sc, z = s[2] * sc;   // v + 2 q x (q x v + w v)
         const cx = qy * z - qz * y + qw * x, cy = qz * x - qx * z + qw * y, cz = qx * y - qy * x + qw * z;
-        sph.push(px + x + 2 * (qy * cz - qz * cy), py + y + 2 * (qz * cx - qx * cz), pz + z + 2 * (qx * cy - qy * cx), s[3] * sc);
+        sph.push(wrapT(px + x + 2 * (qy * cz - qz * cy)), py + y + 2 * (qz * cx - qx * cz), wrapT(pz + z + 2 * (qx * cy - qy * cx)), s[3] * sc);
       }
     }
   };
-  for (let m = 0; m < 12; m++) { const g = solids.ranges[m]; if (g[1]) add(m, solids.data, g[0], g[1]); }
-  for (let i = 3; i < 6; i++) add(14 + i, chunks[i].data, 0, chunks[i].n);
-  const n = sph.length / 4, cells = LK_N * LK_N * 4 / 9, W6 = 64, cnt = new Uint32Array(W6 * W6 + 1), key = new Uint32Array(n);
-  for (let i = 0; i < n; i++) { const cx = clamp(floor((sph[i * 4] - LK_O) / LS_C), 0, W6 - 1), cz = clamp(floor((sph[i * 4 + 2] - LK_O) / LS_C), 0, W6 - 1); key[i] = cx + W6 * cz; cnt[key[i] + 1]++; }
-  for (let i = 0; i < W6 * W6; i++) cnt[i + 1] += cnt[i];
-  const fill = cnt.slice(0, W6 * W6), sorted = new Float32Array(n * 4);
+  const sol = Wd.solids;
+  for (let m = 0; m < 12; m++) { const g = sol.ranges[m]; if (g[1]) add(m, sol.data, g[0], g[1]); }
+  for (let i = 0; i < PROP_IDS.length; i++) { const id = PROP_IDS[i]; if ((id < 4 || id === 10 || id === 26) && Wd.props[i].n) add(id, Wd.props[i].data, 0, Wd.props[i].n); }
+  for (let i = 3; i < 6; i++) add(14 + i, Wd.chunks[i].data, 0, Wd.chunks[i].n);
+  const n = sph.length / 4, cnt = new Uint32Array(LS_N * LS_N + 1), key = new Uint32Array(n);
+  for (let i = 0; i < n; i++) { key[i] = lsCell(sph[i * 4], sph[i * 4 + 2]); cnt[key[i] + 1]++; }
+  for (let i = 0; i < LS_N * LS_N; i++) cnt[i + 1] += cnt[i];
+  const fill = cnt.slice(0, LS_N * LS_N), sorted = new Float32Array(n * 4);
   for (let i = 0; i < n; i++) { const o = fill[key[i]]++ * 4; sorted[o] = sph[i * 4]; sorted[o + 1] = sph[i * 4 + 1]; sorted[o + 2] = sph[i * 4 + 2]; sorted[o + 3] = sph[i * 4 + 3]; }
-  lsStart = cnt; lsSph = sorted; lsN = n; void cells;
+  lsStart = cnt; lsSph = sorted; lsN = n;
   lauvColliders.push((x, y, z) => {   // signed distance to the nearest shell sphere (> 0 inside), -1 far away
-    const cx = floor((x - LK_O) / LS_C), cz = floor((z - LK_O) / LS_C); let best = -1;
+    x = wrapT(x); z = wrapT(z);
+    const cx = floor((x - OX) / LS_C), cz = floor((z - OZ) / LS_C); let best = -1;
     for (let gz = cz - 1; gz <= cz + 1; gz++) for (let gx = cx - 1; gx <= cx + 1; gx++) {
-      if (gx < 0 || gz < 0 || gx >= W6 || gz >= W6) continue;
-      const c = gx + W6 * gz;
-      for (let k = lsStart[c]; k < lsStart[c + 1]; k++) { const o = k * 4, d = lsSph[o + 3] - hypot(x - lsSph[o], y - lsSph[o + 1], z - lsSph[o + 2]); if (d > best) best = d; }
+      const c = (gx & (LS_N - 1)) + LS_N * (gz & (LS_N - 1));
+      for (let k = lsStart[c]; k < lsStart[c + 1]; k++) { const o = k * 4, d = lsSph[o + 3] - hypot(wrapD(x - lsSph[o]), y - lsSph[o + 1], wrapD(z - lsSph[o + 2])); if (d > best) best = d; }
     }
     return best > 1 ? 1 : best;
   });
@@ -437,7 +459,7 @@ async function lauvInit() {
   const bgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: SS.VERTEX | SS.FRAGMENT, buffer: {} }] });
   const u = device.createBuffer({ size: 80, usage: BU.UNIFORM | BU.COPY_DST });
   const bg = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: u } }] });
-  const pl = device.createPipelineLayout({ bindGroupLayouts: [bgl0, bgl] });
+  const pl = device.createPipelineLayout({ bindGroupLayouts: [bgl0, bglTile, bgl] });   // group 1 is the tile offset (tl), group 2 the vehicle
   const m = mod(W_LAUV), mp = mod(W_LPART);
   const vbl = { arrayStride: 24, attributes: [A(0, 0, 'float32x3'), A(1, 12, 'snorm8x4'), A(2, 16, 'unorm8x4'), A(3, 20, 'uint8x4')] };
   const pipe = (vs, strip) => device.createRenderPipeline({ layout: pl, vertex: { module: m, entryPoint: vs, buffers: [vbl] }, fragment: { module: m, entryPoint: 'fs', targets: [{ format: HDR }] },
@@ -464,11 +486,11 @@ function lauvUpdate() {
 }
 function lauvDraw(r) {
   const g = LV_GPU; if (LAUV_OFF) return;
-  r.setPipeline(g.pVeh); r.setBindGroup(1, g.bg); r.setVertexBuffer(0, g.vb); r.setIndexBuffer(g.ib, 'uint32'); for (let k = 0; k < LAUV_REP; k++) r.drawIndexed(g.nI);
+  useTile(r, 4); r.setPipeline(g.pVeh); r.setBindGroup(2, g.bg); r.setVertexBuffer(0, g.vb); r.setIndexBuffer(g.ib, 'uint32'); for (let k = 0; k < LAUV_REP; k++) r.drawIndexed(g.nI);
   if (lauvRopeOn) { r.setPipeline(g.pRope); r.setVertexBuffer(0, g.vbRope); r.draw(LAUV_NS * 2); }
 }
 function lauvDrawParticles(r) {
-  if (!lauvPN || LAUV_OFF) return; const g = LV_GPU;
+  if (!lauvPN || LAUV_OFF) return; const g = LV_GPU; useTile(r, 4);
   r.setPipeline(g.pPart); r.setVertexBuffer(0, g.vbP); r.draw(4, lauvPN);
 }
 
@@ -489,7 +511,7 @@ function lauvReleaseKeys() { for (const k in lauvKeys) lauvKeys[k] = 0; }
 function lauvCycleCam() { const m = ['chase', 'free', 'side', 'front'], S = lauvS; S.camMode = m[(m.indexOf(S.camMode) + 1) % m.length]; if (S.camMode === 'chase') { S.camAz = S.camEl = 0; } S.snap = 1; }
 
 // ---------------------------------------------------------------- pose helpers
-function lauvPlace(x, y, z, yaw, pitch) { lv.setPose(x, y, z, yaw, pitch || 0); lauvS.snap = 1; lauvS.camYaw = yaw; }
+function lauvPlace(x, y, z, yaw, pitch) { lv.setPose(x, y, z, yaw, pitch || 0); lauvTorus(); lauvS.snap = 1; lauvS.camYaw = yaw; }
 function lauvFace(px, py, pz, tx, ty, tz) { lauvPlace(px, py, pz, atan2(tx - px, -(tz - pz)), 0); }
 const lauvWrapA = (a) => atan2(sin(a), cos(a));
 
@@ -534,7 +556,7 @@ function lauvCamera(dt) {
 }
 
 // ---------------------------------------------------------------- the frame: input, physics steps, contact effects, camera
-function lauvFrame(dt, play) {
+function lauvFrame(dt, play, drv) {
   const S = lauvS, I = lv.in;
   const gp = navigator.getGamepads ? navigator.getGamepads()[0] : null; let gs = 0, gpi = 0;
   if (gp) {
@@ -550,7 +572,7 @@ function lauvFrame(dt, play) {
   if (lauvKeys.thrustUp) { S.thrUpT += dt; if (S.thrUpT > 0.2) { S.thrUpT = 0; lauvStep(0.1); } }
   if (lauvKeys.thrustDown) { S.thrDnT += dt; if (S.thrDnT > 0.2) { S.thrDnT = 0; lauvStep(-0.1); } }
   lauvHit.n = 0; lauvHit.impact = 0; lauvHit.slide = 0;
-  if (play && !S.paused) lauvAdvance(dt);
+  if (drv) lauvDriveStep(dt, drv); else if (play && !S.paused) lauvAdvance(dt);
   if (mdx || mdy) { S.camAz -= mdx * 0.0022; S.camEl += mdy * 0.0022; S.camIdle = 0; S.hint = 0; mdx = 0; mdy = 0; }
   lauvCamera(dt);
   if (!S.paused) lauvParticles(dt);
@@ -561,7 +583,7 @@ function lauvFrame(dt, play) {
 // fixed physics steps for dt seconds of frame time, then the effects of what happened
 function lauvAdvance(dt) {
   const S = lauvS; S.acc += dt; let n = 0;
-  while (S.acc >= LAUV_DT && n < 12) { lv.step(LAUV_DT); lauvCollide(); lauvConstrain(lv); lauvRopeStep(LAUV_DT); S.acc -= LAUV_DT; n++; }
+  while (S.acc >= LAUV_DT && n < 12) { lv.step(LAUV_DT); lauvCollide(); lauvTorus(); lauvRopeStep(LAUV_DT); S.acc -= LAUV_DT; n++; }
   if (n === 12) S.acc = 0;
   lauvEffects(dt);
 }
