@@ -2113,7 +2113,7 @@ const W_LAUV = S_B + /*wgsl*/`
 struct VU { r0: vec4f, r1: vec4f, r2: vec4f, fins: vec4f, misc: vec4f };
 @group(1) @binding(0) var<uniform> vu: VU;
 struct VI { @location(0) p: vec3f, @location(1) n: vec4f, @location(2) c: vec4f, @location(3) m: vec4u };
-struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) c: vec4f, @location(3) @interpolate(flat) m: vec4u };
+struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) c: vec4f, @location(3) @interpolate(flat) m: vec4u, @location(4) lp: vec3f };
 fn rotY(p: vec3f, a: f32, h: f32) -> vec3f { let d = p.x - h; let c = cos(a); let s = sin(a); return vec3f(h + d * c + p.z * s, p.y, -d * s + p.z * c); }
 fn rotZ(p: vec3f, a: f32, h: f32) -> vec3f { let d = p.x - h; let c = cos(a); let s = sin(a); return vec3f(h + d * c - p.y * s, d * s + p.y * c, p.z); }
 fn rotX(p: vec3f, a: f32) -> vec3f { let c = cos(a); let s = sin(a); return vec3f(p.x, p.y * c - p.z * s, p.y * s + p.z * c); }
@@ -2125,19 +2125,49 @@ fn rotX(p: vec3f, a: f32) -> vec3f { let c = cos(a); let s = sin(a); return vec3
   else if (part == 4u) { p = rotZ(p, -vu.fins.z, .245); n = rotZ(n, -vu.fins.z, 0.); }
   else if (part == 5u) { p = rotY(p, vu.fins.w, .245); n = rotY(n, vu.fins.w, 0.); }
   let w = vec3f(dot(vu.r0.xyz, p) + vu.r0.w, dot(vu.r1.xyz, p) + vu.r1.w, dot(vu.r2.xyz, p) + vu.r2.w);
-  o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = vec3f(dot(vu.r0.xyz, n), dot(vu.r1.xyz, n), dot(vu.r2.xyz, n)); o.c = i.c; o.m = i.m;
+  o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = vec3f(dot(vu.r0.xyz, n), dot(vu.r1.xyz, n), dot(vu.r2.xyz, n)); o.c = i.c; o.m = i.m; o.lp = i.p;
   return o;
 }
 // the kelp strand dragged by the propeller: vertices are already in the world
 @vertex fn vsW(i: VI) -> VO {
-  var o: VO; o.cp = g.vp * vec4f(i.p, 1.); o.wp = i.p; o.n = i.n.xyz; o.c = i.c; o.m = i.m; return o;
+  var o: VO; o.cp = g.vp * vec4f(i.p, 1.); o.wp = i.p; o.n = i.n.xyz; o.c = i.c; o.m = i.m; o.lp = i.p; return o;
+}
+fn lh(p: vec3f) -> f32 { var q = fract(p * vec3f(.1031, .1030, .0973)); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+fn lvn(p: vec3f) -> f32 {
+  let i = floor(p); let f = fract(p); let u = f * f * (3. - 2. * f);
+  return mix(mix(mix(lh(i), lh(i + vec3f(1., 0., 0.)), u.x), mix(lh(i + vec3f(0., 1., 0.)), lh(i + vec3f(1., 1., 0.)), u.x), u.y),
+             mix(mix(lh(i + vec3f(0., 0., 1.)), lh(i + vec3f(1., 0., 1.)), u.x), mix(lh(i + vec3f(0., 1., 1.)), lh(i + vec3f(1., 1., 1.)), u.x), u.y), u.z);
+}
+// paint scuffs: one thin streak along the hull per scratch the player has collected
+fn scuffs(lp: vec3f, count: f32) -> f32 {
+  let ang = atan2(lp.z, lp.y); var s = 0.;
+  for (var k = 0; k < 40; k++) {
+    if (f32(k) >= count) { break; }
+    let kk = f32(k);
+    let h = vec3f(fract(sin(kk * 12.9898 + 1.) * 43758.5453), fract(sin(kk * 78.233 + 2.) * 43758.5453), fract(sin(kk * 37.719 + 3.) * 43758.5453));
+    let x0 = .35 + h.x * 1.3; let a0 = (h.y - .5) * 6.2832; let len = .03 + h.z * .2; let sl = (h.z - .5) * .5;
+    let dx = lp.x - x0; var da = ang - a0; da = da - 6.2832 * round(da / 6.2832); let dt = da * .074;
+    let along = dx * cos(sl) + dt * sin(sl); let across = -dx * sin(sl) + dt * cos(sl);
+    s = max(s, ss(len, len * .6, abs(along)) * ss(.0018, .0006, abs(across + (lvn(vec3f(along * 90., kk, 0.)) - .5) * .002)));
+  }
+  return s;
 }
 fn ggx(nh: f32, a: f32) -> f32 { let a2 = a * a; let d = nh * nh * (a2 - 1.) + 1.; return a2 / (3.14159 * d * d); }
 @fragment fn fs(i: VO, @builtin(front_facing) ff: bool) -> @location(0) vec4f {
   let part = i.m.x; let blur = vu.misc.y;
   var N = normalize(i.n); if (!ff) { N = -N; }
-  let alb = pow(i.c.rgb, vec3f(2.2)); let rough = max(i.c.a, .06);
-  let metal = f32(i.m.y) / 255.; let cc = f32(i.m.z) / 255.;
+  var alb = pow(i.c.rgb, vec3f(2.2)); var rough = max(i.c.a, .06);
+  let metal = f32(i.m.y) / 255.; var cc = f32(i.m.z) / 255.;
+  // finish: orange-peel in the paint, a film of grime low on the hull and near the tail, scuffs where the player hit things
+  if (part == 0u && i.m.w == 0u && metal < .5) {
+    let pe = lvn(i.lp * 260.) - .5; N = normalize(N + (vec3f(lvn(i.lp * 190. + 3.), lvn(i.lp * 190. + 7.), lvn(i.lp * 190. + 11.)) - .5) * .05);
+    rough = clamp(rough + pe * .08, .08, .9);
+    let gr = lvn(i.lp * vec3f(5., 22., 22.)) * (.6 + .4 * lvn(i.lp * 41.)); let low = ss(.2, -.8, N.y) * .5 + ss(.5, .0, i.lp.x) * .35;
+    let dirt = sat(low * gr * 1.5);
+    alb = mix(alb, alb * vec3f(.5, .62, .35) + vec3f(.006, .012, .004), dirt * .6);
+    let sc = scuffs(i.lp, vu.misc.z);
+    alb = mix(alb, vec3f(.34, .33, .30), sc * .8); rough = mix(rough, .55, sc); cc = cc * (1. - sc);
+  }
   let L = g.sun.xyz; let V = normalize(g.cam.xyz - i.wp);
   let z = zone(i.wp); let dist = length(i.wp - g.cam.xyz);
   let v1 = vol(i.wp + N * .25); let v2 = vol(i.wp + N * .9);
@@ -2392,7 +2422,7 @@ function lauvUpdate() {
   for (let i = 0; i < 4; i++) uf[12 + i] = lv.servo[i];
   const sweep = abs(lv.rpm) / 60 * TAU / 120;           // angle swept in half a frame at 60 fps: the blades fade into a disc as it nears the blade spacing
   let bl = clamp((sweep / (TAU / 3) - 0.08) / 0.42, 0, 1); bl = bl * bl * (3 - 2 * bl);
-  uf[16] = -lv.propAngle; uf[17] = bl;
+  uf[16] = -lv.propAngle; uf[17] = bl; uf[18] = lauvS.scratches;
   Q.writeBuffer(g.u, 0, uf);
   // shadow caster for the terrain shader: the hull's axis, tail to nose
   lv.toWorld(0.1, 0, 0, lauvTmp); UB[60] = lauvTmp[0]; UB[61] = lauvTmp[1]; UB[62] = lauvTmp[2]; UB[63] = 0.075;
@@ -3226,6 +3256,7 @@ window.__app = {
     const p = lv.pos, y = o.yaw !== undefined ? o.yaw : lv.yaw, pt = o.pitch !== undefined ? o.pitch : lv.pitch;
     lauvPlace(o.x !== undefined ? o.x : p[0], o.y !== undefined ? o.y : p[1], o.z !== undefined ? o.z : p[2], y, pt);
     if (o.u !== undefined) lv.setSpeed(o.u);
+    if (o.scratches !== undefined) lauvS.scratches = o.scratches;
     lauvS.acc = 0;
   },
   cam(mode) { lauvS.camMode = mode; lauvS.snap = 1; if (mode === 'chase') { lauvS.camAz = lauvS.camEl = 0; lauvS.camIdle = 9; } },

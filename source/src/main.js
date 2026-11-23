@@ -642,6 +642,7 @@ window.__app = {
     const p = lv.pos, y = o.yaw !== undefined ? o.yaw : lv.yaw, pt = o.pitch !== undefined ? o.pitch : lv.pitch;
     lauvPlace(o.x !== undefined ? o.x : p[0], o.y !== undefined ? o.y : p[1], o.z !== undefined ? o.z : p[2], y, pt);
     if (o.u !== undefined) lv.setSpeed(o.u);
+    if (o.scratches !== undefined) lauvS.scratches = o.scratches;
     lauvS.acc = 0;
   },
   cam(mode) { lauvS.camMode = mode; lauvS.snap = 1; if (mode === 'chase') { lauvS.camAz = lauvS.camEl = 0; lauvS.camIdle = 9; } },
