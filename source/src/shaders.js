@@ -253,6 +253,7 @@ const PCOL = vec3f(.58, .66, .98);
 const SUNC = vec3f(2.5, 2.25, 1.9);
 const TAU = 6.2831853;
 const LOW = ${LV > 1};
+const FASTSH = ${FASTSH};
 const PER = ${PER}.;
 // the world repeats every PER metres in x and z: nearest image of a difference, a position moved into the base tile,
 // and a texture coordinate scaled so that a whole number of repeats fits in a tile (patterns then match across the seam)
@@ -279,7 +280,7 @@ fn fogIn(ro: vec3f, rd: vec3f, d: f32, z: f32, sun: vec3f) -> vec3f {
 }
 `;
 
-const S_B = S_G + /*wgsl*/`
+const S_B = /*wgsl*/`diagnostic(off, derivative_uniformity);` + S_G + /*wgsl*/`
 @group(0) @binding(0) var<uniform> g: G;
 @group(0) @binding(1) var sR: sampler;
 @group(0) @binding(2) var sC: sampler;
@@ -289,6 +290,8 @@ const S_B = S_G + /*wgsl*/`
 @group(0) @binding(6) var tD: texture_2d<f32>;
 @group(0) @binding(7) var tV: texture_3d<f32>;
 @group(0) @binding(8) var tM: texture_2d<f32>;
+// detail texture read with a negative LOD bias under TAA: the sub-pixel jitter averages samples, so the textures would otherwise come out blurrier than MSAA's
+fn sD(uv: vec2f) -> vec4f { return textureSampleBias(tD, sR, uv, ${TAA ? -.7 : 0}); }
 @group(1) @binding(0) var<uniform> tl: vec4f; // offset of the tile copy being drawn
 fn shUV(pw: vec3f) -> vec3f { let s = g.sm * vec4f(wt(pw), 1.); return vec3f(s.x * .5 + .5, .5 - s.y * .5, s.z - .0007); }
 fn shadow1(p: vec3f) -> f32 { let s = shUV(p); return textureSampleCompareLevel(tSh, sS, s.xy, s.z); }
@@ -297,8 +300,10 @@ fn shadow4(p: vec3f) -> f32 {
   return (textureSampleCompareLevel(tSh, sS, s.xy + vec2f(-e, -e), s.z) + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(e, -e), s.z)
         + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(-e, e), s.z) + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(e, e), s.z)) * .25;
 }
-fn shadow9(p: vec3f) -> f32 {
-  if (LOW) { return shadow1(p); }
+fn shadow9(p: vec3f, d: f32) -> f32 {
+  // 9 taps within 16 m, 4 to 70 m, one beyond: what the far taps would soften can't be seen there
+  if (LOW || d > 70.) { return shadow1(p); }
+  if (FASTSH || d > 16.) { return shadow4(p); }
   let s = shUV(p); let e = 2.1 / ${SHADOW}.; var a = 0.;
   for (var x = -1; x <= 1; x++) { for (var y = -1; y <= 1; y++) { a += textureSampleCompareLevel(tSh, sS, s.xy + vec2f(f32(x), f32(y)) * e, s.z); } }
   return a / 9.;
@@ -316,6 +321,7 @@ fn vehSh(p: vec3f) -> f32 {
 }
 fn cuv(p: vec3f) -> vec2f { return p.xz - g.sun.xz * (p.y / g.sun.y); }
 fn caus(p: vec3f, d: f32) -> vec3f {
+  if (d > 100.) { return vec3f(.33); } // the mix below is 100% flat from here: skip the 4 texture reads
   let q = cuv(p);
   let o = vec2f(.004, .0025);
   let q1 = pu(q, 3.3);
@@ -325,6 +331,7 @@ fn caus(p: vec3f, d: f32) -> vec3f {
   return mix(c, vec3f(.3), ss(50., 140., d));
 }
 fn caus2(p: vec3f, d: f32) -> f32 {
+  if (d > 100.) { return .33; }
   let q = cuv(p);
   let c = min(pow(textureSample(tW, sR, pu(q, 4.1)).r, 1.4) * 2.6 * (.45 + textureSample(tW, sR, pu(q.yx, 6.9) + .37).r * 1.3), 2.6);
   return mix(c, .33, ss(35., 100., d));
@@ -348,7 +355,7 @@ fn qrot(q: vec4f, v: vec3f) -> vec3f { return v + 2. * cross(q.xyz, cross(q.xyz,
 // ---------------------------------------------------------------- solid meshes (terrain, rocks, set pieces, sponges, coral)
 const W_SOLID = S_B + /*wgsl*/`
 struct VI { @location(0) p: vec3f, @location(1) n: vec4f, @location(2) a: vec4f, @location(3) b: vec4f, @location(4) c: vec4f };
-struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) op: vec3f, @location(3) on: vec3f,
+struct VO { @invariant @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) op: vec3f, @location(3) on: vec3f,
   @location(4) @interpolate(flat) m: vec4f, @location(5) @interpolate(flat) q: vec4f, @location(6) ao: f32 };
 @vertex fn vs(i: VI) -> VO {
   var o: VO;
@@ -364,7 +371,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
 struct TP { h: f32, c: f32, n: vec3f };
 fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   var w = pow(abs(n), vec3f(4.)); w /= (w.x + w.y + w.z);
-  let x = textureSample(tD, sR, p.zy * s); let y = textureSample(tD, sR, p.xz * s); let z = textureSample(tD, sR, p.xy * s);
+  let x = sD(p.zy * s); let y = sD(p.xz * s); let z = sD(p.xy * s);
   var o: TP;
   o.h = x.b * w.x + y.b * w.y + z.b * w.z;
   o.c = x.a * w.x + y.a * w.y + z.a * w.z;
@@ -378,12 +385,17 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let dist = length(i.wp - g.cam.xyz);
   let ts = select(1., i.m.z, mat >= 2);
   // texture scales are snapped so a whole number of repeats fits in a tile: the terrain's detail matches across the seam
-  let A = tri(i.op, on, pk(.1) * ts); let B = tri(i.op, on, pk(.43) * ts); let C = tri(i.op, on, pk(1.9) * ts); let F = tri(i.op, on, pk(6.7) * ts); let fk = ss(10., 1.5, dist) * f32(mat <= 1);
-  let Wd = textureSample(tD, sR, vec2f(i.op.x * pk(.06), i.op.y * .7 + i.op.z * pk(.7)));
-  let big = textureSample(tD, sR, i.op.xz * pk(.013) + i.op.y * .021).a;
-  let big2 = textureSample(tD, sR, i.op.zx * pk(.031) + i.op.y * .043 + .37).a;
+  // the fine layers only where they show: C (1.9/m) fades out by 60 m and is neutral past 130 m, F (6.7/m) is for the last 10 m
+  let A = tri(i.op, on, pk(.1) * ts); let B = tri(i.op, on, pk(.43) * ts);
+  var C = TP(.5, .5, vec3f(0.)); if (dist < 130.) { C = tri(i.op, on, pk(1.9) * ts); }
+  var F = TP(.5, .5, vec3f(0.)); let fk = ss(10., 1.5, dist) * f32(mat <= 1); if (fk > 0.) { F = tri(i.op, on, pk(6.7) * ts); }
+  var Wd = vec4f(0.); if (mat == 3) { Wd = sD(vec2f(i.op.x * pk(.06), i.op.y * .7 + i.op.z * pk(.7))); }
+  let big = sD(i.op.xz * pk(.013) + i.op.y * .021).a;
+  let big2 = sD(i.op.zx * pk(.031) + i.op.y * .043 + .37).a;
   var sgro = 0.;
-  let reg = textureSample(tD, sR, i.wp.xz * pk(.0035));
+  var sk = vec4f(0.); var sk2 = vec4f(0.);
+  if (mat == 2) { sk = sD(vec2f((i.op.x + i.op.z) * .33, i.op.y * .035)); sk2 = sD(vec2f((i.op.x - i.op.z) * 1.1, i.op.y * .11)); }
+  let reg = sD(i.wp.xz * pk(.0035));
   let gm = textureSample(tM, sR, i.wp.xz / PER + .5);
   let ca = caus(i.wp, dist);
   let hgt = A.h * .5 + B.h * .35 + C.h * .15;
@@ -476,7 +488,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let v1 = vol(i.wp + n0 * 1.5); let v2 = vol(i.wp + n0 * 4.5);
   let ao = (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45) * vao * ss(.12, .6, hgt);
   let z = zone(i.wp);
-  let E = sunE(i.wp.y, z) * shadow9(i.wp + n0 * .35) * vehSh(i.wp);
+  let E = sunE(i.wp.y, z) * shadow9(i.wp + n0 * .35, dist) * vehSh(i.wp);
   let ndl = sat(dot(N, L));
   let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z)) * ao;
   let dl = E * ndl * (.06 + mix(vec3f(.3), ca, ss(.05, .35, dot(n0, L))) * 2.3);
@@ -581,7 +593,7 @@ struct GO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   var n = normalize(i.n); if (!ff) { n = -n; }
   let V = normalize(g.cam.xyz - i.wp); let L = g.sun.xyz;
   let z = zone(i.wp);
-  let lt = textureSample(tD, sR, vec2f(i.uv.x * .13 + i.sd.x * 3.7, i.uv.y * .8 + i.sd.y * 5.3));
+  let lt = sD(vec2f(i.uv.x * .13 + i.sd.x * 3.7, i.uv.y * .8 + i.sd.y * 5.3));
   let vv = vol(i.wp + vec3f(0., .8, 0.));
   let E = sunE(i.wp.y, z) * shadow1(i.wp + L * .3);
   let ndl = dot(n, L);
@@ -662,7 +674,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
 @fragment fn fsManta(i: VO) -> @location(0) vec4f {
   let dist = length(i.wp - g.cam.xyz);
   let ca = caus(i.wp, dist);
-  let tx = textureSample(tD, sR, i.op.xz * .9 + i.sd);
+  let tx = sD(i.op.xz * .9 + i.sd);
   let n = normalize(i.n + (vec3f(tx.r, 0., tx.g) - vec3f(.5, 0., .5)) * .5); let L = g.sun.xyz; let V = normalize(g.cam.xyz - i.wp);
   let z = zone(i.wp); let vv = vol(i.wp);
   let top = ss(-.2, .25, normalize(i.n).y);
@@ -873,7 +885,22 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
     let w = (bw + .02) / (.02 + abs(r.a - zf) / zf);
     acc += r.rgb * w; ws += w;
   }
-  var c = textureLoad(tS, px, 0).rgb + acc / ws;
+  var sc = textureLoad(tS, px, 0).rgb;
+  if (${TAA}) {
+    // contrast-adaptive sharpening (CAS): the temporal filter softens a little; sharpen where there is room, per channel, on compressed colours
+    let fm = vec2i(textureDimensions(tS)) - 1;
+    let e0 = sc; let k0 = 1. / (1. + dot(e0, vec3f(.25, .5, .25)));
+    let nb = textureLoad(tS, clamp(px + vec2i(0, -1), vec2i(0), fm), 0).rgb; let nd = textureLoad(tS, clamp(px - vec2i(1, 0), vec2i(0), fm), 0).rgb;
+    let nf = textureLoad(tS, clamp(px + vec2i(1, 0), vec2i(0), fm), 0).rgb; let nh = textureLoad(tS, clamp(px + vec2i(0, 1), vec2i(0), fm), 0).rgb;
+    let e = e0 * k0; let bb = nb / (1. + dot(nb, vec3f(.25, .5, .25))); let dd = nd / (1. + dot(nd, vec3f(.25, .5, .25)));
+    let ff = nf / (1. + dot(nf, vec3f(.25, .5, .25))); let hh = nh / (1. + dot(nh, vec3f(.25, .5, .25)));
+    let mn = min(e, min(min(bb, dd), min(ff, hh))); let mx = max(e, max(max(bb, dd), max(ff, hh)));
+    let amp = sqrt(clamp(min(mn, vec3f(1.) - mx) / max(mx, vec3f(1e-4)), vec3f(0.), vec3f(1.)));
+    let wc = -amp * .2;
+    let sh = clamp((e + wc * (bb + dd + ff + hh)) / (1. + 4. * wc), vec3f(0.), vec3f(.999));
+    sc = sh / max(vec3f(1.) - vec3f(dot(sh, vec3f(.25, .5, .25))), vec3f(1e-3));
+  }
+  var c = sc + acc / ws;
   let bl = textureSampleLevel(tB, sC, uv, 0.).rgb;
   c = mix(c, bl, .06) + bl * .03;
   c *= g.mis.x;
@@ -888,5 +915,52 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
   c = pow(max(c, vec3f(0.)), vec3f(1. / 2.2));
   let n = ign(fc.xy) + ign(fc.xy + 37.) - 1.;
   return vec4f(c + n / 255., 1.);
+}
+`;
+
+// ---------------------------------------------------------------- temporal anti-aliasing (replaces MSAA)
+// The scene is drawn once per pixel with the projection shifted by a sub-pixel jitter (8-sample Halton). Here every
+// pixel finds where it was in the last frame (from its depth and the last view-projection), samples that history
+// with a Catmull-Rom filter, clamps it to the colours of the pixel's 3x3 neighbourhood (so what moved or changed
+// drops its old colour at once) and blends 12% of the new frame in. Colours are compressed by 1/(1+luma) first so the
+// bright sparkles and glints of the HDR scene don't smear.
+const W_TAA = W_FS + /*wgsl*/`
+struct T { pvp: mat4x4f, cam: vec4f, right: vec4f, up: vec4f, fwd: vec4f, res: vec4f, k: vec4f };
+@group(0) @binding(0) var<uniform> t: T;
+@group(0) @binding(1) var sC: sampler;
+@group(0) @binding(2) var tCur: texture_2d<f32>;
+@group(0) @binding(3) var tHis: texture_2d<f32>;
+@group(0) @binding(4) var tDp: texture_depth_2d;
+fn cmp(c: vec3f) -> vec3f { return c / (1. + dot(c, vec3f(.25, .5, .25))); }
+fn unc(c: vec3f) -> vec3f { return c / (1. - dot(c, vec3f(.25, .5, .25))); }
+fn his(uv: vec2f) -> vec3f {
+  // Catmull-Rom through 5 bilinear taps
+  let sz = t.res.xy; let p = uv * sz; let c = floor(p - .5) + .5; let f = p - c;
+  let w0 = f * (-.5 + f * (1. - .5 * f)); let w1 = 1. + f * f * (-2.5 + 1.5 * f); let w2 = f * (.5 + f * (2. - 1.5 * f)); let w3 = f * f * (-.5 + .5 * f);
+  let s = w1 + w2; let o = w2 / s;
+  let t0 = (c - 1.) * t.res.zw; let t12 = (c + o) * t.res.zw; let t3 = (c + 2.) * t.res.zw;
+  var r = textureSampleLevel(tHis, sC, vec2f(t12.x, t0.y), 0.).rgb * (s.x * w0.y) + textureSampleLevel(tHis, sC, vec2f(t0.x, t12.y), 0.).rgb * (w0.x * s.y)
+    + textureSampleLevel(tHis, sC, t12, 0.).rgb * (s.x * s.y) + textureSampleLevel(tHis, sC, vec2f(t3.x, t12.y), 0.).rgb * (w3.x * s.y)
+    + textureSampleLevel(tHis, sC, vec2f(t12.x, t3.y), 0.).rgb * (s.x * w3.y);
+  return max(r, vec3f(0.));
+}
+@fragment fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
+  let px = vec2i(fc.xy); let mx = vec2i(t.res.xy) - 1;
+  var m1 = vec3f(0.); var m2 = vec3f(0.); var cur = vec3f(0.);
+  for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
+    let c = cmp(min(textureLoad(tCur, clamp(px + vec2i(x, y), vec2i(0), mx), 0).rgb, vec3f(60.)));
+    if (x == 0 && y == 0) { cur = c; }
+    m1 += c; m2 += c * c;
+  } }
+  m1 /= 9.; let sd = sqrt(max(m2 / 9. - m1 * m1, vec3f(0.))) * 1.0;
+  let zl = t.fwd.w / max(textureLoad(tDp, px, 0), 1e-6);
+  let nd = fc.xy * t.res.zw * 2. - 1.;
+  let rv = t.fwd.xyz + t.right.xyz * (nd.x * t.right.w) - t.up.xyz * (nd.y * t.up.w);
+  let pc = t.pvp * vec4f(t.cam.xyz + rv * zl, 1.);
+  let uv = vec2f(pc.x / pc.w * .5 + .5, .5 - pc.y / pc.w * .5);
+  var a = t.k.x;
+  if (t.k.y > 0. || pc.w <= 0. || any(uv < vec2f(0.)) || any(uv > vec2f(1.))) { return vec4f(unc(cur), 1.); }
+  let h = clamp(cmp(his(uv)), m1 - sd, m1 + sd);
+  return vec4f(unc(mix(h, cur, a)), 1.);
 }
 `;
