@@ -4,12 +4,22 @@
 // ============================================================================
 // Waves: a sum of sines whose wave vectors are whole numbers of 2*PI/PER, so the sea repeats with the world (a torus).
 // surfWaveAt() here and wave() in the shader are the same function: the water, the hull and the camera agree.
-const SURF_SEA = 0.65;   // sea state scale (1 = about 0.2 m rms)
-const SURF_N = [[4, 2, 0.008], [7, -3, 0.015], [11, 4, 0.025], [17, -8, 0.035], [26, 9, 0.05], [38, -15, 0.06], [57, 20, 0.065], [83, -34, 0.06]];   // nx, nz, steepness a*k
-const SURF_W = SURF_N.map(([nx, nz, st], i) => {
-  const kx = TAU * nx / PER, kz = TAU * nz / PER, k = hypot(kx, kz);
-  return { kx, kz, a: SURF_SEA * st / k, w: 0.8 * sqrt(9.81 * k), ph: i * 1.7 + 0.5 };
-});
+// Sea state: a Pierson-Moskowitz spectrum for a fetch-limited wind sea (lauv-ocean-3d uses JONSWAP with U10 6-8 m/s), as 20 waves
+// from 57 m swell to 1.5 m chop, directions spread round the wind, wave vectors whole numbers of 2*PI/PER.
+const SURF_U10 = 7, SURF_SEA = 0.75, SURF_CHOP = 0.8, SURF_WIND = 0.35, SURF_NW = 20;
+const SURF_W = (() => {
+  const g = 9.81, kp = 0.769 * g / (SURF_U10 * SURF_U10), kmin = 0.11, r = Math.pow(4.2 / kmin, 1 / (SURF_NW - 1)), out = [];
+  for (let i = 0; i < SURF_NW; i++) {
+    const k0 = kmin * Math.pow(r, i), dk = k0 * (Math.sqrt(r) - 1 / Math.sqrt(r));
+    const S = 0.00405 * Math.pow(k0, -3) * Math.exp(-1.25 * (kp / k0) * (kp / k0));
+    const fr = (i * 0.618034) % 1, th = SURF_WIND + (fr - 0.5) * 2 * (0.5 + 0.7 * i / SURF_NW);
+    let nx = Math.round(k0 * Math.cos(th) * PER / TAU), nz = Math.round(k0 * Math.sin(th) * PER / TAU);
+    if (!nx && !nz) nx = 1;
+    const kx = TAU * nx / PER, kz = TAU * nz / PER, k = Math.hypot(kx, kz);
+    out.push({ kx, kz, a: SURF_SEA * Math.sqrt(2 * S * dk), w: 0.85 * Math.sqrt(g * k), ph: ((i * 2.399963) % 1) * TAU });
+  }
+  return out;
+})();
 const surfS = { h: 0, sx: 0, sz: 0, vy: 0 };
 // height, slope and vertical speed of the water at (x, z) at time t, into o
 function surfWaveAt(x, z, t, o) {
@@ -30,8 +40,9 @@ const SURF_NR = 130, SURF_NS = 256, SURF_TRAIL = 48;
 const W_SURFA = S_B + /*wgsl*/`
 struct SU { a: vec4f, w: array<vec4f, ${SURF_TRAIL}> }   // a: x speed, y rpm, z wave height at the camera, w the hull's height above the water; w: wake points (x, z, birth time, strength), newest first
 @group(1) @binding(1) var<uniform> su: SU;
-const WV = array<vec4f, 8>(${SURF_W.map((w) => `vec4f(${w.kx}, ${w.kz}, ${w.a}, ${w.w})`).join(', ')});
-const WPH = array<f32, 8>(${SURF_W.map((w) => w.ph).join(', ')});
+const NW = ${SURF_NW};
+const WV = array<vec4f, ${SURF_NW}>(${SURF_W.map((w) => `vec4f(${w.kx}, ${w.kz}, ${w.a}, ${w.w})`).join(', ')});
+const WPH = array<f32, ${SURF_NW}>(${SURF_W.map((w) => w.ph).join(', ')});
 const SK = 2.5;   // the sky is written in display units; the exposure above the water is 0.6 * 0.62
 const WIND = vec2f(.8, .35);
 // (height, d/dx, d/dz); the short waves fade out with distance so they do not alias
