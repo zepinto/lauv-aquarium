@@ -247,7 +247,7 @@ const S_G = /*wgsl*/`
 struct G { vp: mat4x4f, sm: mat4x4f, cam: vec4f, right: vec4f, up: vec4f, fwd: vec4f, sun: vec4f, res: vec4f, mis: vec4f };
 const SIG = vec3f(.058, .0235, .0195);
 const KD = vec3f(.056, .0245, .0170);
-const WCOL = vec3f(.16, .58, .90);
+const WCOL = vec3f(.10, .50, .95);
 const KDZ = vec3f(.034, .023, .018);
 const PCOL = vec3f(.58, .66, .98);
 const SUNC = vec3f(1.7, 1.6, 1.45);
@@ -387,7 +387,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     alb *= mix(.72, 1.15, bed) * (1. - .45 * ss(.12, .0, sf) * (1. - abs(on.y)));
     let enc = ss(.46, .6, big2 * .6 + B.c * .5) * ss(.3, .6, hgt);
     alb = mix(alb, mix(vec3f(.34, .17, .15), vec3f(.38, .27, .12), ss(.45, .6, A.c)) * (.5 + .8 * B.h), enc * .5);
-    alb = mix(alb, vec3f(.50, .50, .46) * (.5 + .7 * C.h), ss(.60, .70, B.c * .6 + C.c * .5) * .5);
+    alb = mix(alb, vec3f(.44, .44, .40) * (.5 + .7 * C.h), ss(.60, .70, B.c * .6 + C.c * .5) * .3);
     let alg = ss(-.1, .6, n0.y) * ss(.3, .52, B.c * .55 + big * .5);
     alb = mix(alb, vec3f(.05, .14, .06), alg * .75);
     alb *= (.22 + 1.3 * hgt) * mix(1., .62 + .76 * F.h, fk);
@@ -395,7 +395,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     if (mat == 0) {
       // sand on the flats: warm, fine grained, with ripples that run across the current
       sK = i.ao * ss(.55, .82, n0.y);
-      var sand = mix(vec3f(.40, .34, .23), vec3f(.52, .47, .35), ss(.3, .7, C.c));
+      var sand = mix(vec3f(.29, .24, .15), vec3f(.40, .35, .24), ss(.3, .7, C.c));
       sand *= .72 + .55 * B.h + .2 * (A.c - .5);
       sand = mix(sand, sand * vec3f(.7, .72, .68), ss(.55, .75, big2) * .6);
       let ph = TAU * (380. * i.wp.x + 285. * i.wp.z) / PER + 2.6 * (big - .5) + 1.4 * (C.c - .5);
@@ -404,7 +404,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
       sand *= 1. + .13 * rp;
       alb = mix(alb, sand, sK);
       rdir = vec2f(380., 285.) / 475.;
-      rdir *= cos(ph) * fade * .55;
+      rdir *= cos(ph) * fade * .8;
       gloss = mix(gloss, .06, sK); bump = mix(bump, .8, sK);
     }
   } else if (mat == 3) {
@@ -430,7 +430,6 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     if (hue > .9) { alb = vec3f(.78, .40, .15); }
     if (hue > .96) { alb = vec3f(.40, .32, .62); }
     alb *= (.4 + .8 * B.h) * (.5 + .9 * i.ao * i.ao);
-    alb = mix(alb, vec3f(.9, .8, .65), ss(.8, 1., i.ao) * .3);
     flu = .1; gloss = .2; bump = 1.5;
   }
   let rip = 0.;
@@ -485,7 +484,7 @@ fn pal(h: f32) -> vec3f {
   switch ty {
     case 0 { col = mix(vec3f(.11, .125, .022), vec3f(.04, .10, .04), s1); col = mix(col, vec3f(.25, .17, .025), step(.72, s2)); pr = vec4f(0., .9, 0., 0.); shp = vec2f(.5, .32); wav = 1.9; }
     case 1 { col = vec3f(.10, .11, .035); pr = vec4f(0., .2, 0., 0.); shp = vec2f(.05, .1); wav = .3; fls = .3; }
-    case 2 { col = mix(vec3f(.10, .26, .06), vec3f(.20, .36, .09), s1); col = mix(col, vec3f(.30, .30, .08), step(.85, s2)); pr = vec4f(0., .8, 0., 0.); shp = vec2f(.45, .35); wav = 1.4; fls = .6; }
+    case 2 { col = mix(vec3f(.16, .30, .05), vec3f(.30, .40, .08), s1); col = mix(col, vec3f(.38, .34, .08), step(.8, s2)); pr = vec4f(0., .8, 0., 0.); shp = vec2f(.45, .35); wav = 1.4; fls = .6; }
     case 3 { col = mix(vec3f(.15, .11, .03), vec3f(.22, .16, .05), s1); col = mix(col, vec3f(.10, .13, .04), step(.8, s2)); pr = vec4f(0., .85, 0., 0.); shp = vec2f(.7, .6); wav = 2.2; }
     case 4 { col = mix(vec3f(.30, .15, .02), vec3f(.42, .25, .04), s1); pr = vec4f(0., 1., 0., 0.); shp = vec2f(.5, .4); wav = 1.8; }
     case 5 { col = mix(vec3f(.26, .30, .08), vec3f(.34, .36, .12), s1); pr = vec4f(0., .8, 0., 0.); shp = vec2f(.6, .6); fls = 1.4; }
@@ -845,7 +844,7 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
   let l = mix(l0, l0 * l0 * (3. - 2. * l0), .55);
   c *= l / max(l0, 1e-4);
   c = mix(c, vec3f(l), ss(.55, 1., l) * .1);
-  c = mix(vec3f(l), c, .93) + vec3f(.008, .002, 0.);
+  c = mix(vec3f(l), c, 1.12) + vec3f(.008, .002, 0.);
   c = pow(max(c, vec3f(0.)), vec3f(1. / 2.2));
   let n = ign(fc.xy) + ign(fc.xy + 37.) - 1.;
   return vec4f(c + n / 255., 1.);

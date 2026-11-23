@@ -583,7 +583,7 @@ function frame(now) {
     y = y < OY + 3 ? OY + 3 : y > -0.6 ? -0.6 : y;
     F[YAW] = yaw; F[PIT] = pitch; F[VX] = vx; F[VY] = vy; F[VZ] = vz; F[MX] = x - F[CX]; F[MY] = y - F[CY]; F[MZ] = z - F[CZ];
     if (drive && drive.noclip) { F[CX] += F[MX]; F[CY] += F[MY]; F[CZ] += F[MZ]; } else collide();
-    if (drive) { drive.log.push(dtr); drive.dist += sqrt(F[MX] * F[MX] + F[MY] * F[MY] + F[MZ] * F[MZ]); if (drive.dist >= drive.len) drive.done = true; }
+    if (drive) { drive.log.push(dtr); drive.xs.push(F[CX]); drive.dist += sqrt(F[MX] * F[MX] + F[MY] * F[MY] + F[MZ] * F[MZ]); if (drive.dist >= drive.len) drive.done = true; }
     F[CX] = wrapT(F[CX]); F[CZ] = wrapT(F[CZ]); // keep the camera in the base tile so floats stay precise
   }
   render();
@@ -667,6 +667,9 @@ window.__world = {
   ready: true, stats: WSTAT, skip: SKIP, gpu: () => F[GPU],
   set(x, y, z, yaw, pitch) { F[CX] = wrapT(x); F[CY] = y; F[CZ] = wrapT(z); F[YAW] = yaw; F[PIT] = pitch; F[VX] = F[VY] = F[VZ] = 0; mdx = mdy = lkx = lky = l2x = l2y = 0; },
   pose(i) { lookAt(...POSES[i]); },
+  // y of the highest rock under (x, z) (from the collision bricks); setAbove puts the camera h metres above it
+  floor(x, z) { const ix = floor((wrapT(x) - OX) / VS), iz = floor((wrapT(z) - OZ) / VS); for (let y = NY - 2; y > 0; y--) if (cv(ix, y, iz) > 0) return OY + (y + 0.5) * VS; return OY; },
+  setAbove(x, z, h, yaw, pitch) { this.set(x, this.floor(x, z) + h, z, yaw, pitch); },
   // the ground map as a PNG data URL: sand yellow, rock grey, brighter = shallower floor
   mapImage() {
     const c = document.createElement('canvas'); c.width = NX; c.height = NZ; const g = c.getContext('2d'), im = g.createImageData(NX, NZ);
@@ -677,7 +680,7 @@ window.__world = {
   },
   state: () => ({ x: F[CX], y: F[CY], z: F[CZ], yaw: F[YAW], pitch: F[PIT], tile: PER }),
   drive(o) {
-    drive = { len: o.len || 768, dist: 0, log: [], done: false, noclip: !!o.noclip };
+    drive = { len: o.len || 768, dist: 0, log: [], xs: [], done: false, noclip: !!o.noclip };
     this.set(F[CX], o.y ?? F[CY], F[CZ], o.yaw ?? F[YAW], o.pitch || 0);
     kf = 1; ks = 1;
   },
@@ -685,6 +688,14 @@ window.__world = {
     if (!drive || !drive.done) return null;
     kf = ks = 0;
     const d = drive.log.slice(3).sort((a, b) => a - b), mean = d.reduce((a, b) => a + b, 0) / d.length;
-    return { frames: d.length, meters: drive.dist, max: d[d.length - 1], p95: d[floor(d.length * 0.95)], p99: d[floor(d.length * 0.99)], mean, hitches: d.filter((v) => v > 2.5 * mean + 8).length };
+    // frames within 6 m of a seam (x = +-HPER) against all the others
+    const near = [], rest = []; for (let i = 3; i < drive.log.length; i++) (abs(abs(drive.xs[i]) - HPER) < 6 ? near : rest).push(drive.log[i]);
+    const mx = (a) => a.reduce((m, v) => max(m, v), 0), av = (a) => a.reduce((s, v) => s + v, 0) / (a.length || 1);
+    // frames per second over consecutive 0.5 s windows (rAF in headless Chrome delivers frames in bursts, so single frame times are noisy)
+    const wins = []; for (let i = 3, t = 0, n = 0; i < drive.log.length; i++) { t += drive.log[i]; n++; if (t >= 500) { wins.push(n * 1000 / t); t = 0; n = 0; } }
+    wins.sort((a, b) => a - b);
+    return { frames: d.length, meters: +drive.dist.toFixed(1), mean: +mean.toFixed(2), p50: d[floor(d.length * 0.5)], p95: d[floor(d.length * 0.95)], p99: d[floor(d.length * 0.99)], max: d[d.length - 1], over50ms: d.filter((v) => v > 50).length,
+      winFpsMin: +(wins[0] || 0).toFixed(1), winFpsP10: +(wins[floor(wins.length * 0.1)] || 0).toFixed(1), winFpsMedian: +(wins[floor(wins.length / 2)] || 0).toFixed(1), windowsUnder30: wins.filter((v) => v < 30).length, windows: wins.length,
+      seamFrames: near.length, seamMean: +av(near).toFixed(2), seamMax: mx(near), otherMean: +av(rest).toFixed(2), otherMax: mx(rest) };
   },
 };

@@ -1,9 +1,9 @@
 // Scripted 2-tile drive of the free camera along +x (no collision) with frame timing and frame grabs near the seam.
-//   HEADLESS=1 node tools/drive.mjs PORT OUTPREFIX [y=-9] [z=-60] [tiles=2]
+//   HEADLESS=1 node tools/drive.mjs PORT OUTPREFIX [y=-9] [z=-60] [tiles=2] [--nograb]   (--nograb: timing only, the grabs slow frames)
 // For timing run it through flock like tools/fps.sh does (the shared GPU lock).
 import { launch } from './chrome.mjs';
 import { grab } from './grab.mjs';
-const [port, out, yS, zS, tilesS] = process.argv.slice(2);
+const args = process.argv.slice(2), grabOn = !args.includes('--nograb'), [port, out, yS, zS, tilesS] = args.filter((a) => a !== '--nograb');
 const y = +(yS ?? -9), z = +(zS ?? -60), tiles = +(tilesS ?? 2), yaw = Math.PI / 2;
 const b = await launch(), page = await b.newPage({ viewport: { width: 1920, height: 1080 } });
 page.on('pageerror', (e) => console.log('pageerror: ' + e.message));
@@ -19,7 +19,7 @@ for (;;) {
   const r = await page.evaluate(() => __world.driveResult());
   if (r) { console.log(JSON.stringify(r)); break; }
   const x = (await page.evaluate(() => __world.state())).x;
-  if (Math.abs(x) > tile / 2 - 12 && shot < 30 && Date.now() - last > 120) { last = Date.now(); await grab(page, `${out}_${String(shot++).padStart(2, '0')}_x${x.toFixed(1)}.png`); }
-  await page.waitForTimeout(30);
+  if (grabOn && Math.abs(x) > tile / 2 - 12 && shot < 30 && Date.now() - last > 120) { last = Date.now(); await grab(page, `${out}_${String(shot++).padStart(2, '0')}_x${x.toFixed(1)}.png`); }
+  await page.waitForTimeout(grabOn ? 30 : 250);
 }
 await b.close();

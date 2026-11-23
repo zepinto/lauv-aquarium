@@ -22,7 +22,7 @@ const MESAS = [
 // vertical ring arches: cx, cy, cz, yaw, major radius, minor radius, y squash
 const ARCHES = [
   [-35, -10, -158, 0.3, 5.5, 1.5, 1.2],
-  [-13, -9, -5, 1.57, 9, 2.0, 1.15],
+  [-13, -11, -5, 0, 8.5, 2.0, 1.0], // across the canyon
   [-85, -10, 78, 0.5, 5, 1.4, 1.2],
   [124, -9, -48, 1.2, 4.5, 1.3, 1.2],
 ];
@@ -206,11 +206,11 @@ function makeWorld(D, T, POSES) {
     const x = T.wp[k] + rr(-0.75, 0.75), z = T.wp[k + 2] + rr(-0.75, 0.75), y = T.wp[k + 1], sa = T.vs[k / 3];
     if (nearPose(x, z, 1.5) || y > -2) continue;
     const meadow = sstep(0.5, 0.62, pfbm(x, 5, z, 0.018, 3)) * sstep(0.4, 0.8, sa), u = rnd();
-    if (u < meadow * 0.55) {
-      const bl = 6 + (rnd() * 6 | 0), a0 = rnd() * TAU, ln = rr(0.35, 0.9);
-      for (let j = 0; j < bl; j++) leaf(small, x + rr(-0.12, 0.12), y - 0.04, z + rr(-0.12, 0.12), ln * rr(0.6, 1.3), a0 + rr(-1.5, 1.5), rr(0.05, 0.5), rr(0.025, 0.045), 0, 2, rnd(), rnd(), rr(0.3, 0.7));
+    if (u < meadow * 0.2) { // a bushy clump
+      const bl = 14 + (rnd() * 10 | 0), ln = rr(0.4, 0.95);
+      for (let j = 0; j < bl; j++) leaf(small, x + rr(-0.16, 0.16), y - 0.04, z + rr(-0.16, 0.16), ln * rr(0.55, 1.25), rnd() * TAU, rr(0.04, 0.4), rr(0.03, 0.055), 0, 2, rnd(), rnd(), rr(0.3, 0.7));
     } else if (sa < 0.4 && u < 0.2 * sstep(0.45, 0.6, pfbm(x, 9, z, 0.05, 2))) {
-      for (let j = 0; j < 3; j++) leaf(small, x + rr(-0.1, 0.1), y - 0.05, z + rr(-0.1, 0.1), rr(0.15, 0.4), rnd() * TAU, rr(0.1, 0.8), rr(0.03, 0.06), 0, 7, rnd(), rnd(), rr(0.3, 0.8));
+      for (let j = 0; j < 7; j++) leaf(small, x + rr(-0.15, 0.15), y - 0.05, z + rr(-0.15, 0.15), rr(0.15, 0.45), rnd() * TAU, rr(0.1, 0.9), rr(0.03, 0.06), 0, rnd() < 0.5 ? 5 : 7, rnd(), rnd(), rr(0.3, 0.8));
     }
   }
 
@@ -354,7 +354,7 @@ function makeWorld(D, T, POSES) {
     for (let i = 0; i < n; i++) fish.push(x, y, z, R, rnd(), dir * 1.9 / R, spd, ss_);
   }
   const mantas = [];
-  for (let m = 0; m < 5; m++) mantas.push(rr(OX, OX + PER), rr(-12, -8), rr(OZ, OZ + PER), rr(26, 46), rnd() * 6, (rnd() < 0.5 ? 1 : -1) * rr(0.045, 0.085), rr(3.6, 5.4), rnd());
+  for (let m = 0; m < 5; m++) mantas.push(rr(OX, OX + PER), rr(-12, -8), rr(OZ, OZ + PER), rr(26, 46), rnd() * 6, (rnd() < 0.5 ? 1 : -1) * rr(0.045, 0.085), rr(2.4, 3.4), rnd());
 
   // --- drifting particles
   const snow = new Float32Array(9000 * 4);
