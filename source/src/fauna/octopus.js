@@ -5,7 +5,7 @@
 // rock. When the LAUV comes near it blanches, flashes dark with white spots, inks, jets mantle-first with its arms
 // trailing to the den, squeezes in, and later peeks out and comes back to its perch. Geometry (body rings, 8 arms of
 // 16 rings, 2 eyes) is built on the CPU every frame for the animals that are near the camera: about 0.1 ms each.
-const OCT_N = 6, OCT_NA = 8, OCT_NS = 16, OCT_NRB = 20, OCT_BR = 17, OCT_AR = 9, OCT_ER = 9, OCT_EC = 10;
+const OCT_N = 6, OCT_NA = 8, OCT_NS = 22, OCT_NRB = 24, OCT_BR = 20, OCT_AR = 10, OCT_ER = 9, OCT_EC = 10;
 const OCT_VA = OCT_NA * OCT_NS * OCT_AR, OCT_VB = OCT_NRB * OCT_BR, OCT_VE = OCT_ER * OCT_EC, OCT_VPO = OCT_VA + OCT_VB + 2 * OCT_VE;
 const OCT_MAXINK = 128, OCT_SEE = 150;
 const OCT_OFF = /[?&]oct=0/.test(location.search);   // dev: oct=0 leaves the octopuses out, to time what they cost
@@ -46,6 +46,7 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
   var N = normalize(i.n);
   if (!ff) { N = N; }
   let dist = length(i.wp - g.cam.xyz);
+  if (dist < 1.0 && ign(i.cp.xy) > (dist - .3) / .7) { discard; }   // nothing blocks the lens
   let pale = i.sk.x; let dark = i.sk.y; let pap = i.sk.z; let mot = i.sk.w; let sand = i.mi.y; let seed = i.mi.z * 91.;
   // skin coordinates in metres, continuous around the tube
   let R = select(.08, .035, part > .25);
@@ -69,13 +70,13 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
     alb = mix(skin, alb, ss(0., .3, i.mi.w));   // mi.w: how open the eye is (blinks)
     gloss = 1.; spec = 3.;
   } else {
-    let base = mix(vec3f(.21, .18, .145), vec3f(.40, .34, .25), sand);
+    let base = mix(vec3f(.30, .165, .105), vec3f(.46, .34, .24), sand);
     let m1 = vn3(q * vec3f(14., 30., 30.) + seed) * .6 + vn3(q * 60. + seed * 2.) * .4;
     let m2 = vn3(q * vec3f(40., 85., 85.) + 11. + seed + t * .05);
     // chromatophores: broad warm and dark patches with fine flecks, drifting slowly like clouds
     let cl = vn3(vec3f(q.x * 11., q.y * 24., q.z * 24.) + vec3f(t * .07, 0., seed));
-    var col = base * (1. + (m1 - .5) * 1.1 * mot);
-    col = mix(col, base * vec3f(.52, .38, .30), ss(.55, .8, cl) * mot * .7);
+    var col = base * (1. + (m1 - .5) * 1.4 * mot);
+    col = mix(col, base * vec3f(.42, .32, .28), ss(.5, .75, cl) * mot * .8);
     col = mix(col, base * vec3f(1.35, 1.25, 1.15), ss(.62, .9, m2) * mot * .4);
     // mantle and arms are a touch darker above than below
     let under = ss(.1, .9, -N.y);
@@ -112,7 +113,7 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
     N = normalize(abs(det) * N - grad * .0032 * ss(5., 1.2, dist));
     // papillae catch the light: pale tips, dark crevices between them
     alb = alb * (1. - .3 * pap * ss(.45, .0, h)) + vec3f(.34, .31, .26) * pap * ss(.55, .95, h) * (1. - dark * .6) * .5;
-    gloss = mix(.55, .25, pap);
+    gloss = mix(.6, .3, pap);
   }
   alb = max(alb, vec3f(.004));
   let L = g.sun.xyz; let V = normalize(g.cam.xyz - i.wp);
@@ -195,7 +196,7 @@ function octNew(i) {
     den: new Float64Array(3), dout: new Float64Array(3), front: new Float64Array(3), perch: new Float64Array(3), perchN: new Float64Array([0, 1, 0]), wp: new Float64Array(3),
     tip: new Float64Array(24), ideal: new Float64Array(24), pl: new Uint8Array(8), stepT: new Float32Array(8).fill(-1), stepA: new Float64Array(24), stepB: new Float64Array(24),
     phi: new Float32Array(8), rho: new Float32Array(8), alen: new Float32Array(8), aph: new Float32Array(8),
-    scale: 0.92 + 0.22 * octRn(), sand: 0.4, hue: octRn(),
+    scale: 1.15 + 0.2 * octRn(), sand: 0.4, hue: octRn(),
     pale: 0, dark: 0.05, pap: 0.85, mot: 0.75, curl: 0.2, lean: 1, flat: 0, breath: 0, pulse: 0, open: 1, blinkT: 3 + octRn() * 4,
     jetT: 0, jetN: 0, built: false, fidget: 2, idT: 0, curious: false, curArm: 2, cx: 0, cy: 0, cz: 0, bph: 0, blink: 0, ox: 0, oz: 0, camD: 99, near: false, mx: 0, my: 0, mz: 0, lastDir: 0, inkT: 0, alarmT: 0, lastD: 99, vis: false, slot: 0, wigAmp: 0.012, home: false, pathI: 0, flick: 0,
   };
@@ -302,7 +303,7 @@ function octIdeals(O, lead) {
 // The first part is a circular arc from the base to the goal (its length chosen so the chord fits), the rest curls up in a
 // spiral beyond the goal. The arc bulges towards a hint direction, a travelling wave wriggles it.
 const octCh = new Float64Array(OCT_NS * 3);
-const octArmR = (u) => 0.004 + 0.04 * Math.pow(1 - u, 1.05);
+const octArmR = (u) => 0.006 + 0.066 * Math.pow(1 - u, 1.15);
 function octArmChain(O, bx, by, bz, gx, gy, gz, L, upx, upy, upz, upk, latk, sg, curl, wig, ph, t, twist) {
   const ch = octCh, NS = OCT_NS;
   let cx = gx - bx, cy = gy - by, cz = gz - bz; const cl0 = octLen(cx, cy, cz) || 1e-4; cx /= cl0; cy /= cl0; cz /= cl0;
@@ -364,12 +365,12 @@ function octStaticIdx() {
   grid(OCT_VA + OCT_VB, OCT_ER, OCT_EC); grid(OCT_VA + OCT_VB + OCT_VE, OCT_ER, OCT_EC);
   return new Uint16Array(idx);
 }
-const OCT_PROF = [[0, 0], [0.05, 0.062], [0.1, 0.080], [0.16, 0.088], [0.25, 0.079], [0.36, 0.066], [0.48, 0.078], [0.66, 0.094], [0.84, 0.086], [0.95, 0.056], [1, 0]];
+const OCT_PROF = [[0, 0], [0.04, 0.07], [0.09, 0.098], [0.15, 0.11], [0.24, 0.095], [0.34, 0.078], [0.46, 0.1], [0.64, 0.135], [0.82, 0.125], [0.94, 0.085], [1, 0]];
 function octProf(u) { for (let k = 1; k < OCT_PROF.length; k++) if (u <= OCT_PROF[k][0]) { const a = OCT_PROF[k - 1], b = OCT_PROF[k], f = (u - a[0]) / (b[0] - a[0]); return a[1] + (b[1] - a[1]) * f; } return 0; }
 const octSp = new Float64Array(OCT_NRB * 12);   // per ring: centre(3) tangent(3) front(3) rS rF dr ds
 function octBuild(O, ox, oy, oz) {
   octSk0 = q8(O.pale); octSk1 = q8(O.dark); octSk2 = q8(O.pap); octSk3 = q8(O.mot); octMi1 = q8(O.sand); octMi2 = q8(O.hue);
-  const P = O.P, A = O.A, F = O.F, NRB = OCT_NRB, sc = O.scale, len = 0.30 * sc, step = len / (NRB - 1);
+  const P = O.P, A = O.A, F = O.F, NRB = OCT_NRB, sc = O.scale, len = 0.36 * sc, step = len / (NRB - 1);
   const sx = A[1] * F[2] - A[2] * F[1], sy = A[2] * F[0] - A[0] * F[2], sz = A[0] * F[1] - A[1] * F[0];
   let cx = P[0], cy = P[1], cz = P[2];
   const mantle = 1 - 0.24 * O.pulse + 0.035 * O.breath, flat = O.flat;
@@ -416,7 +417,7 @@ function octBuild(O, ox, oy, oz) {
   // arms
   const NS = OCT_NS, NA = OCT_NA; vi = 0;
   for (let i = 0; i < NA; i++) {
-    const c = Math.cos(O.phi[i]), s = Math.sin(O.phi[i]), rb = 0.05 * sc;
+    const c = Math.cos(O.phi[i]), s = Math.sin(O.phi[i]), rb = 0.07 * sc;
     const dx = F[0] * c + sx * s, dy = F[1] * c + sy * s, dz = F[2] * c + sz * s;
     const bx = P[0] + dx * rb, by = P[1] + dy * rb, bz = P[2] + dz * rb;
     const L = O.alen[i] * sc;
@@ -426,8 +427,8 @@ function octBuild(O, ox, oy, oz) {
     const planted = O.pl[i] === 1 && O.state <= OS.CRAWL;
     octArmChain(O, bx, by, bz, gx, gy, gz, L, A[0], A[1], A[2], planted ? 0.35 : 0.8, planted ? 0.9 : 0.3, (i & 1) ? 1 : -1, O.curl, O.wigAmp, O.aph[i], g_octT, planted ? 0.15 * Math.sin(O.aph[i] * 3) : 0.8 + 0.7 * Math.sin(O.aph[i] * 3));
     // keep the nodes out of the rock
-    if (O.near) for (let k = 2; k < NS; k++) {
-      const x = octCh[k * 3], y = octCh[k * 3 + 1], z = octCh[k * 3 + 2], r = octArmR(k / (NS - 1)), d = sdAt(x, y, z);
+    if (O.near) for (let k = 3; k < NS; k++) {
+      const x = octCh[k * 3], y = octCh[k * 3 + 1], z = octCh[k * 3 + 2], r = octArmR(k / (NS - 1)) * sc, d = sdAt(x, y, z);
       if (d > -r && d < 0.98) { octN(x, y, z); const p = Math.min(d + r, 0.12); octCh[k * 3] += _on[0] * p; octCh[k * 3 + 1] += _on[1] * p; octCh[k * 3 + 2] += _on[2] * p; }
     }
     // rings by parallel transport, ref vector = the underside
@@ -438,10 +439,10 @@ function octBuild(O, ox, oy, oz) {
       let d = rx * tx + ry * ty + rz * tz; rx -= tx * d; ry -= ty * d; rz -= tz * d; let rl = octLen(rx, ry, rz);
       if (rl < 1e-4) { rx = ty; ry = -tx; rz = 0; rl = octLen(rx, ry, rz) || 1; if (rl < 1e-4) { rx = 1; rl = 1; } } rx /= rl; ry /= rl; rz /= rl;
       const wx = ty * rz - tz * ry, wy = tz * rx - tx * rz, wz = tx * ry - ty * rx;
-      const u = k / (NS - 1); let rad = octArmR(u) * sc * (k < 3 ? 1.2 : 1);
+      const u = k / (NS - 1); const rad = octArmR(u) * sc, wq = Math.max(0, 1 - u / 0.32), web = 1 + 1.9 * wq * wq;   // the web: arm bases widen sideways until they meet
       for (let j = 0; j < OCT_AR; j++) {
         const an = j / (OCT_AR - 1) * TAU, ca = Math.cos(an), sa = Math.sin(an), nx = rx * ca + wx * sa, ny = ry * ca + wy * sa, nz = rz * ca + wz * sa;
-        octPut(vi++, octCh[k * 3] + nx * rad, octCh[k * 3 + 1] + ny * rad, octCh[k * 3 + 2] + nz * rad, nx + tx * 0.25, ny + ty * 0.25, nz + tz * 0.25, u * L, an, 128, 255);
+        octPut(vi++, octCh[k * 3] + (rx * ca + wx * sa * web) * rad, octCh[k * 3 + 1] + (ry * ca + wy * sa * web) * rad, octCh[k * 3 + 2] + (rz * ca + wz * sa * web) * rad, nx + tx * 0.25, ny + ty * 0.25, nz + tz * 0.25, u * L, an, 128, 255);
       }
     }
   }
@@ -458,7 +459,8 @@ function octInkAdd(x, y, z, vx, vy, vz, s0, life, a0) {
 function octInkBurst(O, dx, dy, dz) {
   for (let k = 0; k < 22; k++) {
     const a = octRn() * TAU, b = octRn() * 2 - 1, r = Math.sqrt(1 - b * b), ux = r * Math.cos(a), uy = b, uz = r * Math.sin(a), sp = 0.14 + 0.22 * octRn();
-    octInkAdd(O.P[0] + O.A[0] * 0.22 + ux * 0.12 - dx * 0.1, O.P[1] + O.A[1] * 0.22 + uy * 0.1 - dy * 0.1, O.P[2] + O.A[2] * 0.22 + uz * 0.12 - dz * 0.1, ux * sp - dx * 0.15, uy * sp * 0.6 + 0.12 + 0.1 * octRn(), uz * sp - dz * 0.15, 0.24 + 0.16 * octRn(), 13 + 5 * octRn(), 0.55 + 0.25 * octRn());
+    const h = 0.2 + 0.9 * (k / 22) * (0.6 + 0.4 * octRn()), w = 0.8 - 0.4 * (k / 22);
+    octInkAdd(O.P[0] + O.A[0] * h + ux * 0.14 * w - dx * 0.1, O.P[1] + O.A[1] * h + uy * 0.1 - dy * 0.1, O.P[2] + O.A[2] * h + uz * 0.14 * w - dz * 0.1, ux * sp * 0.7 - dx * 0.15, 0.25 + 0.35 * octRn() + uy * 0.1, uz * sp * 0.7 - dz * 0.15, 0.28 + 0.2 * octRn(), 15 + 5 * octRn(), 0.55 + 0.25 * octRn());
   }
 }
 // a thin haze round the blob that spreads for longer: the ink disperses slowly
@@ -476,7 +478,7 @@ function octInkStep(dt) {
     const dm = Math.exp(-dt * 0.9), sd = k.p[o + 6] * 40, px = k.p[o], py = k.p[o + 1], pz = k.p[o + 2];
     k.v[i * 3] = k.v[i * 3] * dm + Math.sin(py * 2.3 + t * 0.6 + sd) * 0.05 * dt; k.v[i * 3 + 1] = k.v[i * 3 + 1] * dm + (Math.sin(px * 1.7 + pz * 1.3 + t * 0.5 + sd) * 0.03 + 0.01) * dt; k.v[i * 3 + 2] = k.v[i * 3 + 2] * dm + Math.cos(py * 2.1 - t * 0.55 + sd) * 0.05 * dt;
     k.p[o] += k.v[i * 3] * dt; k.p[o + 1] += k.v[i * 3 + 1] * dt; k.p[o + 2] += k.v[i * 3 + 2] * dt;
-    k.p[o + 3] = k.s0[i] * (1 + 4.2 * Math.sqrt(a));
+    k.p[o + 3] = k.s0[i] * (1 + 4.6 * Math.sqrt(a));
     // alpha: grows in over the first moments, thins out as the cloud spreads
     k.p[o + 5] = Math.min(1, a / 0.03) * Math.pow(1 - a, 1.3) * k.a0[i];
   }
@@ -567,7 +569,7 @@ function octStep(O, dt) {
   const P = O.P, A = O.A, F = O.F, V = O.V, lvp = lv.pos;
   O.t += dt;
   const dx = wrapD(lvp[0] - P[0]), dy = lvp[1] - P[1], dz = wrapD(lvp[2] - P[2]), dist = octLen(dx, dy, dz);
-  const spd = octLen(lv.v[0], lv.v[1], lv.v[2]), alertD = 4.2 + 2.8 * clamp(spd / 1.6, 0, 1);
+  const spd = octLen(lv.v[0], lv.v[1], lv.v[2]), alertD = 3.4 + 2.0 * clamp(spd / 1.6, 0, 1);
   O.lastD = dist;
   O.blinkT -= dt; if (O.blinkT < 0) { O.blinkT = 2.5 + octRn() * 5; O.blink = 0.2; }
   if (O.blink > 0) { O.blink -= dt; O.open = O.blink > 0 ? 1 - Math.sin(Math.PI * O.blink / 0.2) : 1; } else O.open = 1;
@@ -595,7 +597,7 @@ function octStep(O, dt) {
         octTurn(O, dt, O.perchN[0], O.perchN[1], O.perchN[2], fx, fy, fz, crawl ? 3 : 1.5);
         O.lean += (lean - O.lean) * Math.min(1, dt * 2); O.flat += (0 - O.flat) * Math.min(1, dt * 3); O.curl += ((crawl ? 0.4 : 0.3) - O.curl) * Math.min(1, dt * 3);
         octSkin(O, dt, 0, crawl ? 0.08 : 0.05 + ds * 0.4 + 0.07 * Math.sin(g_octT * 0.3 + O.i), crawl ? 0.5 : dist < 14 ? 0.98 : 0.85, crawl ? 0.55 : dist < 14 ? 0.5 : 0.8, 1.6);
-        O.wigAmp += ((crawl ? 0.05 : 0.035) - O.wigAmp) * Math.min(1, dt * 2);
+        O.wigAmp += ((crawl ? 0.07 : 0.055) - O.wigAmp) * Math.min(1, dt * 2);
         if (crawl || dist >= 14) O.curious = false;
         if (O.vis) octCrawlArms(O, dt, crawl ? 0.12 : 0);
         if (!crawl && O.t > O.restT && dist > 12 && octPickWp(O)) { octState(O, OS.CRAWL); }
