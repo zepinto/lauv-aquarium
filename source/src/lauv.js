@@ -174,7 +174,7 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   let n = .6 + .4 * sin(i.uv.x * 5. + i.b.z * 30. + i.b.x * 4.) * sin(i.uv.y * 4.3 + i.b.z * 17. - i.b.x * 3.);
   let al = pow(max(1. - r2, 0.), 2.) * n * i.b.w;
   let E = sunE(i.wp.y, z) * (.3 + .7 * i.sh);
-  var c = vec3f(.34, .29, .22) * (E * .55 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * .9);
+  var c = vec3f(.62, .54, .42) * (E * .8 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * 1.5);
   c = c * T + fg * (1. - T);
   return vec4f(min(max(c * al, vec3f(0.)), vec3f(12.)), al * mix(.5, 1., T));
 }
@@ -198,7 +198,7 @@ const lauvRope = new Float64Array(LAUV_NS * 6), lauvRopeVB = new ArrayBuffer(LAU
 let lauvRopeLen = 1, lauvRopeOn = 0;
 const lauvTmp = new Float64Array(3);
 let LV_GPU = null;
-const LAUV_OFF = /[?&]veh=0/.test(location.search);   // dev: leave the vehicle out of the frame, to time what it costs
+const LAUV_REP = /[?&]veh=(\d+)/.test(location.search) ? +/[?&]veh=(\d+)/.exec(location.search)[1] : 1, LAUV_OFF = LAUV_REP === 0;   // dev: veh=0 leaves the vehicle out of the frame, veh=N draws it N times, to time what it costs
 
 // ---------------------------------------------------------------- signed distance for contact and camera: terrain SDF plus hooks
 function lauvSdf(x, y, z) {
@@ -295,7 +295,7 @@ function lauvParticles(dt) {
     lauvP[o] += lauvPV[i * 3] * dt; lauvP[o + 1] += lauvPV[i * 3 + 1] * dt; lauvP[o + 2] += lauvPV[i * 3 + 2] * dt;
     const s0 = lauvPL[i * 2 + 1];
     if (kind < 0.5) { lauvP[o + 3] = s0 * (0.8 + 0.4 * a); lauvP[o + 7] = a > 0.8 ? (1 - a) / 0.2 : 1; if (lauvP[o + 1] > -0.05) lauvP[o + 7] = 0; }
-    else { lauvP[o + 3] = s0 * (1 + 2.2 * sqrt(a)); lauvP[o + 7] = 0.55 * (a < 0.1 ? a / 0.1 : 1) * (1 - a) * (1 - a); }
+    else { lauvP[o + 3] = s0 * (1 + 2.2 * sqrt(a)); lauvP[o + 7] = 0.85 * (a < 0.08 ? a / 0.08 : 1) * (1 - a) * (1 - a); }
   }
 }
 
@@ -380,7 +380,7 @@ function lauvUpdate() {
 }
 function lauvDraw(r) {
   const g = LV_GPU; if (LAUV_OFF) return;
-  r.setPipeline(g.pVeh); r.setBindGroup(1, g.bg); r.setVertexBuffer(0, g.vb); r.setIndexBuffer(g.ib, 'uint32'); r.drawIndexed(g.nI);
+  r.setPipeline(g.pVeh); r.setBindGroup(1, g.bg); r.setVertexBuffer(0, g.vb); r.setIndexBuffer(g.ib, 'uint32'); for (let k = 0; k < LAUV_REP; k++) r.drawIndexed(g.nI);
   if (lauvRopeOn) { r.setPipeline(g.pRope); r.setVertexBuffer(0, g.vbRope); r.draw(LAUV_NS * 2); }
 }
 function lauvDrawParticles(r) {
@@ -401,6 +401,9 @@ const LAUV_KEYMAP = { ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD
 function lauvKeyEvent(code, v) { const c = LAUV_KEYMAP[code]; if (c) { lauvKey(c, v); return true; } return false; }
 function lauvReleaseKeys() { for (const k in lauvKeys) lauvKeys[k] = 0; }
 
+// C cycles the camera: chase (eases back behind), free (the mouse orbit stays), side, front
+function lauvCycleCam() { const m = ['chase', 'free', 'side', 'front'], S = lauvS; S.camMode = m[(m.indexOf(S.camMode) + 1) % m.length]; if (S.camMode === 'chase') { S.camAz = S.camEl = 0; } S.snap = 1; }
+
 // ---------------------------------------------------------------- pose helpers
 function lauvPlace(x, y, z, yaw, pitch) { lv.setPose(x, y, z, yaw, pitch || 0); lauvS.snap = 1; lauvS.camYaw = yaw; }
 function lauvFace(px, py, pz, tx, ty, tz) { lauvPlace(px, py, pz, atan2(tx - px, -(tz - pz)), 0); }
@@ -410,7 +413,7 @@ const lauvWrapA = (a) => atan2(sin(a), cos(a));
 function lauvCamera(dt) {
   const S = lauvS, R = lv.R, P = lv.pos, fx = R[0], fy = R[1], fz = R[2], mode = S.camMode;
   const tx = P[0] + fx * 0.05, ty = P[1] + fy * 0.05 + 0.03, tz = P[2] + fz * 0.05;
-  const hy = lv.yaw; let yawRef = S.camYaw;
+  const hy = lv.yaw; let yawRef = S.snap ? hy : S.camYaw; if (S.snap) S.camYaw = hy;
   if (mode === 'chase' || mode === 'free') { yawRef += lauvWrapA(hy - yawRef) * (1 - exp(-dt * 2.6)); S.camYaw = yawRef; } else yawRef = S.camYaw = hy;
   let az = S.camAz, el = S.camEl, dist = S.camDist, baseEl = 0.2 + lv.pitch * 0.35;
   if (mode === 'chase') dist = 2.5 + 0.35 * abs(lv.v[0]);

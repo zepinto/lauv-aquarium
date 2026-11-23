@@ -578,6 +578,7 @@ const key = (e, v) => {
     default: if (v && !e.repeat) {
       if (e.code === 'KeyH') { hud = !hud; hTot = 0; hPer = 1e9; info.textContent = ''; }
       else if (e.code === 'KeyM') mute();
+      else if (e.code === 'KeyC') lauvCycleCam();
       else if (e.code === 'Escape') ui(true);
       else if (e.code >= 'Digit1' && e.code <= 'Digit6') { const p = POSES[e.code.charCodeAt(5) - 49]; lauvFace(...p); }
     }
@@ -647,12 +648,13 @@ window.__app = {
   state() {
     const hd = ((lv.yaw * 180 / PI) % 360 + 360) % 360;
     return { x: lv.pos[0], y: lv.pos[1], z: lv.pos[2], depth: -lv.pos[1], u: lv.v[0], roll: lv.roll, pitch: lv.pitch, yaw: lv.yaw, heading: hd, scratches: lauvS.scratches, fouled: lv.fouled > 0,
-      throttle: lv.in.throttle, rpm: lv.rpm, thrust: lv.thrust, fins: Array.from(lv.servo), cam: lauvS.camMode, fps: lauvS.fps, paused: lauvS.paused };
+      throttle: lv.in.throttle, gpu: F[GPU], particles: lauvPN, contact: lauvHit.n, rpm: lv.rpm, thrust: lv.thrust, fins: Array.from(lv.servo), cam: lauvS.camMode, fps: lauvS.fps, paused: lauvS.paused };
   },
   key(cmd, down) { lauvKey(cmd, down); },
   pause(b) { lauvS.paused = !!b; },
-  hold(o) { lauvS.hold = o || null; },   // {steer, pitch} held regardless of the keyboard (tests)
+  hold(o) { lauvS.hold = o || null; lv.in.steer = o ? o.steer || 0 : 0; lv.in.pitch = o ? o.pitch || 0 : 0; },   // {steer, pitch} held regardless of the keyboard (tests)
   addCollider(fn) { lauvColliders.push(fn); },   // fn(x, y, z) -> signed distance in metres, > 0 inside the obstacle
+  puff(x, y, z, n = 8) { for (let i = 0; i < n; i++) lauvEmit(x + rr(-.3, .3), y + rr(0, .3), z + rr(-.3, .3), rr(0.2, 0.45), 1, 0, 0.05, 0, 3.5, 1); },
   sound,   // test: build the audio graph without a gesture
   vehicle: lv,
   // test helper: advance the simulation by sec seconds at 60 Hz regardless of the frame rate
