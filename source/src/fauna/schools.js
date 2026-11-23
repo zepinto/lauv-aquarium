@@ -29,22 +29,26 @@ const SC_SPECIES = [
     pat: 6, back: [0.07, 0.22, 0.38], belly: [0.82, 0.88, 0.88], metal: 0.85, accent: [0.04, 0.08, 0.10], fin: [0.85, 0.72, 0.12] },
   { name: 'yellow tang', len: 0.20, H: 0.22, W: 0.055, peak: 0.40, tail: [0.26, 0.26, 0.5], dorsal: [0.26, 0.90, 0.11], anal: [0.55, 0.88, 0.09], pect: 1, rings: 9, sides: 8,
     pat: 7, back: [0.98, 0.80, 0.03], belly: [0.98, 0.84, 0.10], metal: 0.1, accent: [0.95, 0.95, 0.9], fin: [0.98, 0.78, 0.05] },
+  { name: 'glassfish', len: 0.10, H: 0.14, W: 0.045, peak: 0.40, tail: [0.26, 0.24, 0.6], dorsal: [0.30, 0.60, 0.07], anal: [0.55, 0.80, 0.08], pect: 0, rings: 7, sides: 6,
+    pat: 8, back: [0.80, 0.52, 0.30], belly: [0.90, 0.80, 0.64], metal: 0.5, accent: [0.4, 0.25, 0.15], fin: [0.85, 0.68, 0.5] },
 ];
 // ---- what is where: sp species, n fish per school, kind 0 travelling school / 1 bait ball / 2 hovering group at a rock, count schools
 // R leash or ball radius (m), speed in body lengths per second (ball: m/s), fear = radius at which the vehicle is felt (m), y range, rock = needs an outcrop
 const SC_PLAN = [
   { sp: 0, n: 6144, kind: 1, count: 1, R: 2.7, speed: 1.0, fear: 1.3, ymin: -17, ymax: -7, hole: 1 },
   { sp: 0, n: 2048, kind: 1, count: 1, R: 1.9, speed: 0.9, fear: 1.2, ymin: -17, ymax: -6, hole: 1 },
-  { sp: 0, n: 384, kind: 0, count: 2, R: 3.0, speed: 5, fear: 2.4, ymin: -16, ymax: -5 },
-  { sp: 6, n: 128, kind: 0, count: 3, R: 4.0, speed: 4.5, fear: 2.4, ymin: -16, ymax: -4 },
-  { sp: 5, n: 64, kind: 0, count: 4, R: 2.6, speed: 2.5, fear: 2.0, ymin: -18, ymax: -6 },
+  { sp: 0, n: 512, kind: 0, count: 3, R: 3.0, speed: 5, fear: 2.4, ymin: -16, ymax: -5 },
+  { sp: 6, n: 160, kind: 0, count: 3, R: 4.0, speed: 4.5, fear: 2.4, ymin: -16, ymax: -4 },
+  { sp: 5, n: 96, kind: 0, count: 5, R: 2.6, speed: 2.5, fear: 2.0, ymin: -18, ymax: -6 },
   { sp: 2, n: 96, kind: 2, count: 4, R: 2.2, speed: 1.2, fear: 1.8, rock: 1, above: 2.6 },
-  { sp: 4, n: 48, kind: 0, count: 3, R: 2.0, speed: 2.0, fear: 1.8, ymin: -18, ymax: -6 },
-  { sp: 3, n: 32, kind: 0, count: 3, R: 2.2, speed: 1.6, fear: 1.8, ymin: -18, ymax: -6 },
+  { sp: 4, n: 64, kind: 0, count: 4, R: 2.0, speed: 2.0, fear: 1.8, ymin: -18, ymax: -6 },
+  { sp: 3, n: 40, kind: 0, count: 4, R: 2.2, speed: 1.6, fear: 1.8, ymin: -18, ymax: -6 },
   { sp: 7, n: 32, kind: 2, count: 3, R: 1.6, speed: 1.2, fear: 1.6, rock: 1, above: 1.4 },
+  { sp: 8, n: 480, kind: 2, count: 2, R: 3.0, speed: 1.0, fear: 2.2, rock: 1, above: 2.2 },
   { sp: 1, n: 48, kind: 2, count: 6, R: 1.1, speed: 1.4, fear: 1.5, rock: 1, above: 1.1 },
 ];
 const SC_SCH = [], SC_RANGE = [];   // schools (JS side) and, per species, [first fish, fish count]
+const scMode = { compute: true, draw: true }; // tests: switch the two halves of the piece off to time them
 let scNF = 0, scReady = false, scCur = 0, scFloor = null;
 const SC_CELL = 3, SC_GN = 128;
 
@@ -279,6 +283,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
 
 // ---- JS side ----------------------------------------------------------------------------------------------------------
 const scBuf = { A: null, B: null, sch: null, k: null, spt: null, vb: null, ib: null }, scMeshes = [];
+let scQS = null, scQB, scQR, scQBusy = false, scMs = 0; // timestamps round the compute pass
 let scBoids, scBGC = [], scBGR = [], scPipe, scFrame = 0, scT = 0;
 const scSchData = new ArrayBuffer(96 * 64), scSchF = new Float32Array(scSchData), scSchU = new Uint32Array(scSchData);
 const scK = new ArrayBuffer(80), scKF = new Float32Array(scK), scKU = new Uint32Array(scK);
@@ -397,9 +402,12 @@ function scStep(dt) {
   scKF[7] = hypot(vx, vy, vz); scKF[8] = vx; scKF[9] = vy; scKF[10] = vz;
   scKF[12] = dt; scKF[13] = scT; scKF[14] = scFrame++; scKU[16] = scNF;
   Q.writeBuffer(scBuf.k, 0, scK);
-  const e = device.createCommandEncoder(), c = e.beginComputePass();
+  const e = device.createCommandEncoder(), ts = scQS && !scQBusy;
+  const c = e.beginComputePass(ts ? { timestampWrites: { querySet: scQS, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } } : {});
   c.setPipeline(scBoids); c.setBindGroup(0, scBGC[scCur]); c.dispatchWorkgroups(Math.ceil(scNF / 64)); c.end();
+  if (ts) { e.resolveQuerySet(scQS, 0, 2, scQB, 0); e.copyBufferToBuffer(scQB, 0, scQR, 0, 16); }
   Q.submit([e.finish()]);
+  if (ts) { scQBusy = true; scQR.mapAsync(GPUMapMode.READ).then(() => { const t = new BigUint64Array(scQR.getMappedRange().slice(0)); scMs = Number(t[1] - t[0]) / 1e6; scQR.unmap(); scQBusy = false; }); }
   scCur ^= 1;
 }
 
@@ -420,6 +428,7 @@ FAUNA.push({
     scBuf.A = device.createBuffer({ size: maxFish * 48, usage: GA }); scBuf.B = device.createBuffer({ size: maxFish * 48, usage: GA });
     scBuf.sch = device.createBuffer({ size: 96 * 64, usage: GA });
     scBuf.k = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    if (hasTS) { scQS = device.createQuerySet({ type: 'timestamp', count: 2 }); scQB = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }); scQR = device.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }); }
     // compute
     const mc = mod(SC_W_BOIDS);
     scBoids = device.createComputePipeline({ layout: 'auto', compute: { module: mc, entryPoint: 'main' } });
@@ -435,7 +444,7 @@ FAUNA.push({
       fragment: { module: md, entryPoint: 'fs', targets: [{ format: HDR }] }, primitive: { topology: 'triangle-list', cullMode: 'none' },
       depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' }, multisample: { count: AA } });
     window.__fish = {
-      ready: () => scReady, count: () => scNF,
+      ready: () => scReady, count: () => scNF, mode: scMode, computeMs: () => scMs,
       schools: () => SC_SCH.map((s, i) => ({ i, species: SC_SPECIES[s.sp].name, n: s.n, kind: s.kind, x: s.px, y: s.py, z: s.pz, R: s.R0, hd: s.hd })),
       // put the LAUV d metres from school i, looking at it (from the side given by yaw offset), speed u
       face(i, d = 8, u = 0, off = 0) { const s = SC_SCH[i], a = off, px = s.px - sin(a) * d, pz = s.pz + cos(a) * d; lauvPlace(px, s.py, pz, a, 0); lv.setSpeed(u); },
@@ -466,12 +475,12 @@ FAUNA.push({
   update(dt) {
     if (!SC_ON || !scBoids) return;
     if (!scReady) { if (!window.__app) return; scMakeWorld(); scReady = true; }
-    if (dt <= 0) return;
+    if (dt <= 0 || !scMode.compute) return;
     scT += dt; scMoveAnchors(dt); scWriteSchools();
     const n = dt > 0.05 ? 2 : 1; for (let i = 0; i < n; i++) scStep(dt / n);
   },
   draw(r) {
-    if (!scReady) return;
+    if (!scReady || !scMode.draw) return;
     curTile = -1; r.setBindGroup(0, bg0); useTile(r, 4);
     r.setPipeline(scPipe); r.setBindGroup(2, scBGR[scCur]); r.setVertexBuffer(0, scBuf.vb); r.setIndexBuffer(scBuf.ib, 'uint32');
     for (let s = 0; s < SC_SPECIES.length; s++) { const rg = SC_RANGE[s], m = scMeshes[s]; if (rg) r.drawIndexed(m.ni, rg[1], m.i0, m.v0, rg[0]); }
