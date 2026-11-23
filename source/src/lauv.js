@@ -103,12 +103,12 @@ fn rotX(p: vec3f, a: f32) -> vec3f { let c = cos(a); let s = sin(a); return vec3
   else if (part == 4u) { p = rotZ(p, -vu.fins.z, .245); n = rotZ(n, -vu.fins.z, 0.); }
   else if (part == 5u) { p = rotY(p, vu.fins.w, .245); n = rotY(n, vu.fins.w, 0.); }
   let w = vec3f(dot(vu.r0.xyz, p) + vu.r0.w, dot(vu.r1.xyz, p) + vu.r1.w, dot(vu.r2.xyz, p) + vu.r2.w) + tl.xyz;
-  o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = vec3f(dot(vu.r0.xyz, n), dot(vu.r1.xyz, n), dot(vu.r2.xyz, n)); o.c = i.c; o.m = i.m; o.lp = i.p;
+  o.cp = proj(w); o.wp = w; o.n = vec3f(dot(vu.r0.xyz, n), dot(vu.r1.xyz, n), dot(vu.r2.xyz, n)); o.c = i.c; o.m = i.m; o.lp = i.p;
   return o;
 }
 // the kelp strand dragged by the propeller: vertices are already in the world
 @vertex fn vsW(i: VI) -> VO {
-  var o: VO; let w = i.p + tl.xyz; o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = i.n.xyz; o.c = i.c; o.m = i.m; o.lp = i.p; return o;
+  var o: VO; let w = i.p + tl.xyz; o.cp = proj(w); o.wp = w; o.n = i.n.xyz; o.c = i.c; o.m = i.m; o.lp = i.p; return o;
 }
 fn lh(p: vec3f) -> f32 { var q = fract(p * vec3f(.1031, .1030, .0973)); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
 fn lvn(p: vec3f) -> f32 {
@@ -180,7 +180,7 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
 @vertex fn vs(@builtin(vertex_index) vi: u32, @location(0) a: vec4f, @location(1) b: vec4f) -> PO {
   var o: PO; let q = vec2f(f32(vi & 1u), f32(vi >> 1u)) * 2. - 1.;
   let c = a.xyz + tl.xyz; let w = c + (g.right.xyz * q.x + g.up.xyz * q.y) * a.w;
-  o.cp = g.vp * vec4f(w, 1.); o.uv = q; o.b = b; o.wp = c; o.sh = shadow1(c);
+  o.cp = proj(w); o.uv = q; o.b = b; o.wp = c; o.sh = shadow1(c);
   return o;
 }
 @fragment fn fs(i: PO) -> @location(0) vec4f {
@@ -519,14 +519,19 @@ const lauvWrapA = (a) => atan2(sin(a), cos(a));
 function lauvCamera(dt) {
   const S = lauvS, R = lv.R, P = lv.pos, fx = R[0], fy = R[1], fz = R[2], mode = S.camMode;
   const tx = P[0] + fx * 0.05, ty = P[1] + fy * 0.05 + 0.03, tz = P[2] + fz * 0.05;
+  // at the surface the chase camera rises into the air (S.surfK: 1 on the surface, 0 below a metre); diving drops it through the waterline
+  const dpt = lv.surfY - P[1], sk = clamp(1 - (dpt - 0.3) / 0.9, 0, 1); S.surfK = (S.surfK || 0) + (sk - (S.surfK || 0)) * (1 - exp(-dt * 2.2)); if (S.snap) S.surfK = sk;
+  const sfc = mode === 'surface' || mode === 'surflow' || mode === 'surfhigh';
   const hy = lv.yaw; let yawRef = S.snap ? hy : S.camYaw; if (S.snap) S.camYaw = hy;
   if (mode === 'chase' || mode === 'free') { yawRef += lauvWrapA(hy - yawRef) * (1 - exp(-dt * 2.6)); S.camYaw = yawRef; } else yawRef = S.camYaw = hy;
   let az = S.camAz, el = S.camEl, dist = S.camDist, baseEl = 0.2 + lv.pitch * 0.35;
-  if (mode === 'chase') dist = 2.5 + 0.35 * abs(lv.v[0]);
+  if (mode === 'chase') { dist = 2.5 + 0.35 * abs(lv.v[0]); baseEl += 0.1 * S.surfK; }
   else if (mode === 'side') { az = 0; el = 0; baseEl = 0.06; dist = 1.9; }
   else if (mode === 'front') { az = 0; el = 0; baseEl = 0.1; dist = 2.1; }
   else if (mode === 'top') { az = 0; el = 0; baseEl = 1.45; dist = 3.2; }
   else if (mode === 'surface') { dist = 4.5; baseEl = 0.35; }
+  else if (mode === 'surflow') { dist = 3.4; baseEl = 0.05; az += 0.7; }
+  else if (mode === 'surfhigh') { dist = 5.2; baseEl = 1.15; }
   else if (mode === 'free') { baseEl = 0.25; dist = 3.6; }
   if (mode === 'chase' && S.camIdle > 1.8) { const k = exp(-dt * 1.4); S.camAz *= k; S.camEl *= k; az = S.camAz; el = S.camEl; }
   S.camIdle += dt;
@@ -536,8 +541,8 @@ function lauvCamera(dt) {
   if (mode === 'side') { const sl = hypot(R[6], R[8]) || 1; dx = R[6] / sl * cos(e); dz = R[8] / sl * cos(e); }
   else if (mode === 'front') { const fl = hypot(fx, fz) || 1; dx = fx / fl * cos(e); dz = fz / fl * cos(e); }
   let px = tx + dx * dist, py = ty + dy * dist, pz = tz + dz * dist;
-  if (mode === 'surface') py = 1.7;
-  if (mode !== 'surface') {   // rock avoidance: walk from the target towards the wanted position and stop in front of the rock
+  if (mode === 'surface') py = lv.surfY + 1.7; else if (mode === 'surflow') py = lv.surfY + 0.3;
+  if (!sfc) {   // rock avoidance: walk from the target towards the wanted position and stop in front of the rock
     const n = max(2, Math.ceil(dist / 0.2)); let last = dist;
     for (let i = 1; i <= n; i++) { const t = i / n, d = t * dist; if (d > 0.7 && lauvSdf(tx + (px - tx) * t, ty + (py - ty) * t, tz + (pz - tz) * t) > -0.35) { last = max((i - 1) / n * dist, 1.3); break; } }
     if (last < dist) { const k = last / dist; px = tx + (px - tx) * k; py = ty + (py - ty) * k; pz = tz + (pz - tz) * k; }
@@ -551,7 +556,10 @@ function lauvCamera(dt) {
     const s = lauvSdf(S.cpx, S.cpy, S.cpz) + 0.3; if (s <= 0 || !lauvGrad(S.cpx, S.cpy, S.cpz)) break;
     S.cpx += lauvN[0] * s; S.cpy += lauvN[1] * s; S.cpz += lauvN[2] * s;
   }
-  if (mode !== 'surface' && S.cpy > -0.15) S.cpy = -0.15;
+  if (!sfc) {
+    const top = -0.15 + 4 * S.surfK; if (S.cpy > top) S.cpy = top;
+    if (S.surfK > 0.55) { const fl = lv.surfY + 0.22 + 0.2 * ((S.surfK - 0.55) / 0.45); if (S.cpy < fl) S.cpy = fl; }   // above the waves while the hull floats
+  }
   lookAt(S.cpx, S.cpy, S.cpz, S.tx, S.ty, S.tz);
 }
 
