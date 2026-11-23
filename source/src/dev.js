@@ -1,4 +1,3 @@
-// ============================================================================
 // development tools: only in dev.html (npm run build:dev), never in index.html
 // ============================================================================
 //   F    fly the camera along the scripted path (FLY in main.js), one minute through the whole world
@@ -39,3 +38,5 @@
     } else if (/Digit[1-6]/.test(e.code)) stop();
   });
 }
+=======
+// development tools: none (the world piece's test hooks, __world, live at the end of main.js)

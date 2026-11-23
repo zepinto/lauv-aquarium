@@ -1,46 +1,41 @@
 // ============================================================================
 // world layout + procedural content generation (load-time only)
+// The world is a torus: everything is generated inside one PER x PER tile with wrapped coordinates and drawn repeated.
+// Units are metres; the vehicle is 1.8 m long, the sea floor is at about -19 m, the surface at 0.
 // ============================================================================
-
+const fract = (x) => x - floor(x);
 // designed rock masses: ax, az, bx, bz, radius, top, overhang, waist
 const MESAS = [
-  [-37, -42, -33, -22, 9, -7, 3.5, 2], [-29, -15, -33, 5, 12, -14, 3, 2], [-36, 11, -30, 27, 9, -5, 4, 2],   // west wall of the main canyon
-  [30, -45, 35, -27, 9, -9, 4, 2], [37, -20, 31, -3, 11, -16, 3, 2], [32, 5, 35, 9, 7, -8, 4, 2],          // east wall
-  [19, -15, 19, -15, 4.4, -6, 2, 1.5],   // pillar with window
-  [6, -88, 6, -88, 10, -34, 0, 0],       // mound in the kelp basin
-  [0, -106, 0, -106, 8, 3, 2, 2],        // pillar reaching the surface
-  [44, 6, 47, -8, 7, -17, 3, 1],         // ship supports
-  [33, 29, 37, 12, 9, -19, -6.5, 0],     // sloped sunlit wall beside the wreck
-  [74, 14, 74, 14, 8, -15, 3, 1],
-  [-84, -34, -80, -12, 10, -7, 6, 2], [-78, -6, -83, 12, 12, -13, 5, 2], [-82, 18, -79, 32, 9, -8, 6, 2],   // sponge canyon west wall
-  [-17, 62, -19, 78, 10, -6, 9, 3], [-21, 84, -18, 100, 11, -9, 8, 3],     // grotto overhang cliff
-  [22, 67, 24, 80, 7, -11, 6, 2],        // grotto coral rock
-  [-16, 122, 34, 122, 9, -27, 3, 2],     // grotto far wall
+  // reef ridges
+  [-150, -120, -100, -95, 8, -3, 2, 1.5], [-60, -150, -10, -165, 9, -4, 3, 2], [40, -130, 95, -150, 7, -6, 3, 1], [130, -90, 150, -40, 9, -3.5, 3, 2],
+  [-170, -20, -165, 40, 8, -5, 2, 1.5], [-110, 60, -70, 95, 9, -4, 4, 2], [-30, 95, 25, 110, 8, -3, 3, 2], [80, 90, 120, 120, 8, -5, 2, 2], [150, 100, 175, 150, 7, -6, 2, 1],
+  // the canyon: two walls 12 m apart
+  [-30, -35, -33, 20, 11, -4, 3, 2], [4, -30, 2, 26, 11, -5, 3, 2],
+  // pinnacles and a pillar that reaches the surface
+  [-8, 62, -8, 62, 4.4, -3, 2, 1.5], [100, -30, 100, -30, 6, 2, 2, 2], [-120, 130, -120, 130, 5, -4, 2, 1],
+  // patch reefs (bommies)
+  [-130, -170, -130, -170, 7, -8, 1.5, 1], [0, -100, 0, -100, 6, -9, 1, 1], [60, -60, 60, -60, 6, -10, 1, 1], [110, -130, 110, -130, 5, -8, 1.5, 1], [-80, -60, -80, -60, 7, -7, 1.5, 1],
+  [-60, 10, -60, 10, 6, -9, 1, 1], [150, 20, 150, 20, 6, -10, 1, 1], [-170, 120, -170, 120, 7, -8, 1.5, 1], [-20, -180, -20, -180, 5, -9, 1, 1], [40, 170, 40, 170, 6, -8, 1.5, 1],
+  [100, 170, 100, 170, 7, -7, 1.5, 1], [-100, 150, -100, 150, 6, -9, 1, 1], [20, 130, 20, 130, 5, -9, 1, 1], [140, -150, 140, -150, 6, -9, 1, 1], [-80, 180, -80, 180, 5, -10, 1, 1],
+  [-190, -80, -190, -80, 6, -8, 1.5, 1], [60, 30, 60, 30, 5, -10, 1, 1], [-45, 150, -45, 150, 4, -11, 1, 1], [170, 160, 170, 160, 5, -9, 1, 1],
 ];
 // vertical ring arches: cx, cy, cz, yaw, major radius, minor radius, y squash
 const ARCHES = [
-  [-23, -9.5, -16, 0.3, 4.2, 1.4, 1.2],
-  [0, -45, -34, 1.57, 14, 2.7, 1.2],
-  [-40, -45, 44, 1.57, 10, 2.2, 1.3],
+  [-35, -10, -158, 0.3, 5.5, 1.5, 1.2],
+  [-13, -11, -5, 0, 8.5, 2.0, 1.0], // across the canyon
+  [-85, -10, 78, 0.5, 5, 1.4, 1.2],
+  [124, -9, -48, 1.2, 4.5, 1.3, 1.2],
 ];
 // carved tunnels: ax, ay, az, radius, bx, by, bz
 const HOLES = [
-  [19, -21, -23, 2.5, 19, -21, -7],
-  [9, -37, 108, 4.2, 9, -34, 136],
+  [-38.4, -12, -169, 2.6, -31.6, -12, -146],
+  [143, -11, -66, 2.4, 137, -11, -48],
 ];
-// regions kept free of random mesas: ax, az, bx, bz, radius, softness
+// regions kept free of the large rock plateaus: ax, az, bx, bz, radius, softness
 const CLEARS = [
-  [0, -45, 0, 35, 22, 10], [0, -86, 0, -86, 46, 12], [42, 24, 74, 6, 22, 10], [72, -26, 72, -26, 26, 10],
-  [-60, -36, -60, 36, 13, 8], [-60, 42, -18, 46, 12, 8], [4, 58, 8, 100, 24, 10], [-34, -74, -56, -46, 11, 8],
+  [70, 40, 70, 40, 34, 12], [-20, -90, 20, -80, 24, 10], [-130, 0, -120, 20, 22, 10], [100, 150, 110, 160, 20, 10], [-60, 120, -30, 150, 20, 8],
 ];
-const PURPLE = [6, 84];
-const zoneP = (x, z) => sstep(44, 26, hypot(x - PURPLE[0], z - PURPLE[1]));
-const MAGENTA = [[14, 6, 13], [-4, 20, 9], [6, 84, 30], [-58, 8, 10], [50, 30, 12], [8, -70, 10], [-12, -98, 9], [-36, 44, 9], [-46, -60, 9], [24, 42, 8], [-56, 26, 9], [-44, 38, 8], [-10, 44, 8], [12, 24, 8], [-50, -45, 8]];
-const magAt = (x, z) => {
-  let m = sstep(0.54, 0.66, fbm(x * 0.03, 7, z * 0.03, 3)) * 0.9;
-  for (const p of MAGENTA) m = max(m, sstep(p[2], p[2] * 0.45, hypot(x - p[0], z - p[1])));
-  return m * sstep(0.3, 0.55, fbm(x * 0.17, 1, z * 0.17, 2) + m * 0.25);
-};
+const SHIP = [70, 40]; // x, z of the wreck
 
 function primBuffer() {
   const a = [];
@@ -52,11 +47,14 @@ function primBuffer() {
 }
 
 // ---------------------------------------------------------------- terrain mesh from the density grid
-function buildTerrain(D) {
-  const sn = surfaceNets(D, NX, NY, NZ), nv = sn.nv, gp = sn.pos;
-  const smp = sampler3(D, NX, NY, NZ);
+// MAP: the GPU's ground map (NX x NZ x 4 floats: sand, floor height, reef noise, distance to rock)
+function buildTerrain(D, MAP) {
+  const sn = surfaceNetsP(D, NX, NY, NZ), nv = sn.nv, gp = sn.pos;
+  const smp = sampler3P(D, NX, NY, NZ);
+  const sandAt = (x, z) => MAP[((floor((wrapT(x) - OX) / VS) & (NX - 1)) + NX * (floor((wrapT(z) - OZ) / VS) & (NZ - 1))) * 4];
+  const flrAt = (x, z) => MAP[((floor((wrapT(x) - OX) / VS) & (NX - 1)) + NX * (floor((wrapT(z) - OZ) / VS) & (NZ - 1))) * 4 + 1];
   const vb = new ArrayBuffer(nv * 16), vf = new Float32Array(vb), v8 = new Int8Array(vb);
-  const wp = new Float32Array(nv * 3), wn = new Float32Array(nv * 3);
+  const wp = new Float32Array(nv * 3), wn = new Float32Array(nv * 3), vs = new Float32Array(nv);
   for (let k = 0; k < nv; k++) {
     const x = gp[k * 3], y = gp[k * 3 + 1], z = gp[k * 3 + 2], e = 0.8;
     let nx = smp(x - e, y, z) - smp(x + e, y, z), ny = smp(x, y - e, z) - smp(x, y + e, z), nz = smp(x, y, z - e) - smp(x, y, z + e);
@@ -64,7 +62,9 @@ function buildTerrain(D) {
     const X = OX + x * VS, Y = OY + y * VS, Z = OZ + z * VS;
     wp[k * 3] = vf[k * 4] = X; wp[k * 3 + 1] = vf[k * 4 + 1] = Y; wp[k * 3 + 2] = vf[k * 4 + 2] = Z;
     wn[k * 3] = nx; wn[k * 3 + 1] = ny; wn[k * 3 + 2] = nz;
-    v8[k * 16 + 12] = round(nx * 127); v8[k * 16 + 13] = round(ny * 127); v8[k * 16 + 14] = round(nz * 127); v8[k * 16 + 15] = 127;
+    // the vertex's fourth normal byte carries how sandy the ground is (sand on the flats, bare rock higher up)
+    const sa = sandAt(X, Z) * sstep(3.2, 0.7, Y - flrAt(X, Z)); vs[k] = sa;
+    v8[k * 16 + 12] = round(nx * 127); v8[k * 16 + 13] = round(ny * 127); v8[k * 16 + 14] = round(nz * 127); v8[k * 16 + 15] = round(sa * 127);
   }
   // bucket quads into the XZ culling grid
   const nq = sn.ni / 6, key = new Uint8Array(nq), cnt = new Uint32Array(CELLS * CELLS + 1);
@@ -78,33 +78,33 @@ function buildTerrain(D) {
   for (let c = 0; c < CELLS * CELLS; c++) cnt[c + 1] += cnt[c];
   const ib = new Uint32Array(sn.ni), fill = cnt.slice();
   for (let q = 0; q < nq; q++) { const o = fill[key[q]]++ * 6; for (let j = 0; j < 6; j++) ib[o + j] = sn.idx[q * 6 + j]; }
-  return { vb, ib, nv, wp, wn, smp, start: cnt, lo, hi };
+  return { vb, ib, nv, wp, wn, vs, smp, sandAt, flrAt, start: cnt, lo, hi };
 }
 
 // ---------------------------------------------------------------- instance stores
-function makeWorld(D, T, flyPts, POSES) {
+const PROP_IDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 26, 27]; // meshes drawn from cell-sorted prop stores
+function makeWorld(D, T, POSES) {
   const gi = (x, y, z) => x + NX * (y + NY * z);
-  const smp = T.smp;
+  const smp = T.smp, sandAt = T.sandAt;
   const Dw = (x, y, z) => smp((x - OX) / VS, (y - OY) / VS, (z - OZ) / VS);
   const nCells = CELLS * CELLS;
-  const cellOf = (x, z) => clamp(floor((x - OX) / CELLW), 0, CELLS - 1) + CELLS * clamp(floor((z - OZ) / CELLW), 0, CELLS - 1);
+  const cellOf = (x, z) => clamp(floor((wrapT(x) - OX) / CELLW), 0, CELLS - 1) + CELLS * clamp(floor((wrapT(z) - OZ) / CELLW), 0, CELLS - 1);
+  const dist2 = (x, z, px, pz) => hypot(wrapD(x - px), wrapD(z - pz));
   const big = Array.from({ length: nCells }, () => []), small = Array.from({ length: nCells }, () => []);
   // Medium and Low keep every 2nd / 4th leaf (but every kelp stem), made wider; the random stream is the same
   let nth = 0;
-  const leaf = (L, x, y, z, len, yaw, tilt, wid, hA, type, s1, s2, bend) => { if (type === 1 || !(nth++ % THIN)) L[cellOf(x, z)].push(x, y, z, len, yaw, tilt, type === 1 ? wid : wid * (1 + LV / 2), hA, type, s1, s2, bend); };
-  const glint = (...a) => { nth++ % THIN || glints.push(...a); };
-  const solids = []; // per mesh id: arrays of 12 floats
-  const props = Array.from({ length: 6 }, () => Array.from({ length: nCells }, () => []));
-  const solid = (mesh, x, y, z, sc, q, mat, seed, ts = 1, bob = 0) => { (mesh > 3 && mesh < 10 ? props[mesh - 4][cellOf(x, z)] : (solids[mesh] ||= [])).push(x, y, z, sc, q[0], q[1], q[2], q[3], mat, seed, ts, bob); };
+  const leaf = (L, x, y, z, len, yaw, tilt, wid, hA, type, s1, s2, bend) => { if (type === 1 || !(nth++ % THIN)) L[cellOf(x, z)].push(wrapT(x), y, wrapT(z), len, yaw, tilt, type === 1 ? wid : wid * (1 + LV / 2), hA, type, s1, s2, bend); };
+  const solids = []; // per mesh id: arrays of 12 floats (the ship)
+  const props = {}; for (const id of PROP_IDS) props[id] = Array.from({ length: nCells }, () => []);
+  const solid = (mesh, x, y, z, sc, q, mat, seed, ts = 1, bob = 0) => { (props[mesh] ? props[mesh][cellOf(x, z)] : (solids[mesh] ||= [])).push(wrapT(x), y, wrapT(z), sc, q[0], q[1], q[2], q[3], mat, seed, ts, bob); };
   const chunks = Array.from({ length: NCHUNK }, () => Array.from({ length: nCells }, () => []));
-  const glints = [];
-  const rel = (i, f, r) => { const p = POSES[i]; let fx = p[3] - p[0], fz = p[5] - p[2]; const l = hypot(fx, fz); fx /= l; fz /= l; return [p[0] + fx * f - fz * r, p[2] + fz * f + fx * r]; };
+  const nearPose = (x, z, r = 3) => { for (const p of POSES) if (dist2(x, z, p[0], p[2]) < r) return true; return false; };
   const bubbles = [], kelpAbs = new Float32Array((NX / 2) * (NY / 2) * (NZ / 2));
 
   // --- surface queries
   const fl = [];
   const floorsAt = (x, z) => {
-    const ix = clamp(round((x - OX) / VS), 1, NX - 2), iz = clamp(round((z - OZ) / VS), 1, NZ - 2);
+    const ix = round((wrapT(x) - OX) / VS) & (NX - 1), iz = round((wrapT(z) - OZ) / VS) & (NZ - 1);
     fl.length = 0; let ceil = 3;
     for (let gy = NY - 2; gy >= 0; gy--) {
       const d = D[gi(ix, gy, iz)], da = D[gi(ix, gy + 1, iz)];
@@ -129,63 +129,51 @@ function makeWorld(D, T, flyPts, POSES) {
   };
   const pickV = () => ((rnd() * T.nv) | 0) * 3;
   const tangent = (n) => { let t = abs(n[1]) < 0.9 ? [n[2], 0, -n[0]] : [1, 0, 0]; const l = hypot(...t); t = t.map((v) => v / l); return [t, [n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]]]; };
-  const nearFly = (x, y, z, r) => { for (const p of flyPts) if (hypot(x - p[0], z - p[2]) < r && y < p[1] + 3 && y > p[1] - 13) return true; return false; };
-  const nearPose = (x, z, r = 3) => { for (const p of POSES) if (hypot(x - p[0], z - p[2]) < r) return true; return false; };
-  // --- kelp columns
+  const gy = (x, z) => { const f = floorsAt(x, z); return f.length ? f[f.length - 2] : -19; };
+
+  // --- kelp columns: giant kelp from the rocky floor up to the surface
   const column = (x, y, z, H, kind, dens = 1) => {
     const strands = 2 + (rnd() < 0.6) + (rnd() < 0.3), ph = rnd() * TAU, tw = rr(0.1, 0.28), sr = rr(0.2, 0.55), sc = rr(0.75, 1.25);
     const la = rnd() * TAU, lm = rr(0, 0.11), full = rr(0.55, 1.3) * dens;
     const stem = (s, h) => { const a = ph + s * TAU / strands + h * tw, r = sr * (1 - 0.6 * h / H), ln = lm * h * h / H; return [x + cos(a) * r + cos(la) * ln, z + sin(a) * r + sin(la) * ln, a]; };
     for (let s = 0; s < strands; s++) for (let h = 0; h < H - 1; h += 1.7) { const p = stem(s, h); leaf(big, p[0], y + h, p[1], 2.1, p[2] + PI / 2, 0.1, 0.17, h, 1, rnd(), rnd(), 0.3); }
-    const n = floor(H * 30 * full);
+    const n = floor(H * 26 * full);
     for (let i = 0; i < n; i++) {
       const t = pow(rnd(), 0.9), h = t * H, p = stem((rnd() * strands) | 0, h);
-      const L = ((0.55 + 0.75 * rnd() * rnd()) * (1 - 0.5 * t * t) * sc + 0.25) * (kind === 1 ? 1.25 : 1.15);
+      const L = ((0.55 + 0.75 * rnd() * rnd()) * (1 - 0.5 * t * t) * sc + 0.25) * (kind === 1 ? 1.2 : 1.15);
       const tilt = mix(rr(0.4, 1.0), rr(0.15, 0.45), t);
       const type = kind === 1 ? (rnd() < 0.8 ? 3 : 4) : kind === 2 ? (rnd() < 0.5 ? 4 : 0) : 0;
       leaf(big, p[0], y + h, p[1], L, rnd() * TAU, tilt, L * (kind === 1 ? rr(0.09, 0.13) : rr(0.15, 0.21)) + 0.03, h, type, rnd(), rnd(), rr(0.38, 0.95));
     }
-    for (let i = floor(H * (kind === 1 ? 16 : 13)); i > 0; i--) { const h = rnd() * H, a = rnd() * TAU, r = rr(0.15, 0.8) * (1 - 0.5 * h / H), ln = lm * h * h / H; glint(x + cos(a) * r + cos(la) * ln, y + h, z + sin(a) * r + sin(la) * ln, h, rnd(), kind === 1 ? rnd() : rnd() * 0.6, rr(0.018, 0.05), 0); }
     // light absorption footprint for the skylight bake
-    const hx = round((x - OX) / VS / 2), hz = round((z - OZ) / VS / 2);
-    for (let hy = floor((y - OY) / VS / 2); hy <= floor((y + H - OY) / VS / 2); hy++) {
-      if (hy >= 0 && hy < NY / 2 && hx > 0 && hx < NX / 2 - 1 && hz > 0 && hz < NZ / 2 - 1) kelpAbs[hx + NX / 2 * (hy + NY / 2 * hz)] += 0.17;
-    }
+    const hx = round((wrapT(x) - OX) / VS / 2) % (NX / 2), hz = round((wrapT(z) - OZ) / VS / 2) % (NZ / 2);
+    for (let hy = floor((y - OY) / VS / 2); hy <= floor((y + H - OY) / VS / 2); hy++) if (hy >= 0 && hy < NY / 2) kelpAbs[hx + NX / 2 * (hy + NY / 2 * hz)] += 0.17;
   };
-  const KELPZ = [[-32, -5, 13, 0.85], [0, -86, 46, 1], [72, -26, 27, 0.9], [-60, -4, 11, 0.8], [0, -36, 12, 0.55], [-17, -8, 6, 0.8], [15, -8, 6, 0.8], [-4, 120, 20, 0.4], [-45, -63, 15, 0.9], [62, -26, 12, 0.9], [-100, 70, 30, 0.8], [100, 60, 30, 0.8], [-95, -90, 32, 0.8], [105, -85, 30, 0.7]];
-  const NOKELP = [[-5, -106.5, 8], [4.6, -109.4, 10], [14.2, -112.3, 12], [-26, -100, 6], [-20.5, -101.7, 4.5], [-14.8, -104.5, 6], [-7.5, -107.8, 7], [4, 112, 11], [2, 4, 15], [42, 22, 12], [6, 78, 19], [-58, -16, 8], [9, -66, 9], [8, -76, 8]];
+  // kelp forests: x, z, radius, density
+  const KELPZ = [[-120, -110, 42, 1], [-20, -10, 36, 1], [-110, 95, 40, 0.9], [130, -85, 36, 0.9], [60, -140, 30, 0.8], [-170, 10, 30, 0.7], [110, 140, 38, 0.8], [10, 105, 30, 0.7], [-30, -170, 26, 0.8], [175, 40, 26, 0.7]];
+  const NOKELP = [[SHIP[0], SHIP[1], 26], [-8, -5, 7]];
   const kelpDens = (x, z) => {
-    for (const p of NOKELP) if (hypot(x - p[0], z - p[1]) < p[2]) return 0;
-    let d = sstep(0.52, 0.64, fbm(x * 0.022, 4, z * 0.022, 3)) * 0.5;
-    for (const p of KELPZ) d = max(d, p[3] * sstep(p[2], p[2] * 0.75, hypot(x - p[0], z - p[1])));
+    for (const p of NOKELP) if (dist2(x, z, p[0], p[1]) < p[2]) return 0;
+    let d = sstep(0.55, 0.66, pfbm(x, 4, z, 0.022, 3)) * 0.35;
+    for (const p of KELPZ) d = max(d, p[3] * sstep(p[2], p[2] * 0.7, dist2(x, z, p[0], p[1])));
     return d;
   };
   const occ = new Set();
-  rseed(1);
-  const tryColumn = (x, z, kind, force, dens = 1) => {
-    const key = floor(x / 2.3) * 4096 + floor(z / 2.3);
-    if (occ.has(key)) return;
+  rseed(2);
+  const tryColumn = (x, z, kind, dens = 1) => {
+    const key = floor((wrapT(x) - OX) / 2.3) * 4096 + floor((wrapT(z) - OZ) / 2.3);
+    if (occ.has(key) || sandAt(x, z) > 0.5) return;
     const f = floorsAt(x, z); const c = [];
-    for (let i = 0; i < f.length; i += 2) if (f[i + 1] > 9) c.push(i);
+    for (let i = 0; i < f.length; i += 2) if (f[i + 1] > 8) c.push(i);
     if (!c.length) return;
     const i = c[(rnd() * c.length) | 0], y = f[i];
-    if (grad(x, y, z)[1] < 0.55) return;
-    if (!force && flyPts.some((p) => hypot(x - p[0], z - p[2]) < 5)) return;
+    if (grad(x, y, z)[1] < 0.55 || nearPose(x, z, 5)) return;
     occ.add(key);
-    column(x, y - 0.3, z, min(f[i + 1] - rr(0.8, 5), force ? rr(30, 42) : rr(15, 40)), kind, dens);
+    column(x, y - 0.3, z, min(f[i + 1] - rr(0.6, 2.5), rr(14, 28)), kind, dens);
   };
-  // hand-placed columns framing the viewpoints: x, z, kind, density
-  for (const p of [[...rel(0, 11, -8.5), 0], [...rel(0, 16, -10.5), 0], [...rel(0, 21, -9), 0], [...rel(0, 9, 7), 0], [...rel(0, 14, 9.5), 0], [...rel(0, 19, 8), 0], [...rel(0, 26, 6), 0],
-    [...rel(5, 6.5, 5.2), 1], [...rel(5, 12, 7), 1], [...rel(5, 15, -8), 0], [...rel(5, 22, -5), 1], [...rel(3, 12, -5.5), 0], [...rel(3, 16, 5.5), 0], [...rel(3, 20, -4.5), 0], [...rel(3, 25, 6), 0], [...rel(3, 13, 8), 0], [...rel(3, 30, -7), 0], [24, 62, 1], [-6, 96, 1], [20, 96, 2], [-10, 70, 0], [16, 52, 1],
-    [...rel(4, 15, -9), 0, 1.2], [...rel(4, 19, -13), 0, 1.2], [...rel(4, 23, -8.5), 0, 1.2], [...rel(4, 25, -15), 0, 1.2],
-    [...rel(4, 25, 0.5), 2, 1.2], [...rel(4, 27, -3), 2, 1.2], [...rel(4, 28, 3.5), 2, 1.2], [...rel(4, 31, 0), 0, 1.3], [...rel(4, 33, -5), 0, 1.3], [...rel(4, 33, 5), 0, 1.3], [...rel(4, 21, 9), 0, 1.2], [...rel(4, 27, 11), 0, 1.2],
-    [...rel(2, 6.5, -5.5), 0, 1.5], [...rel(2, 9.5, -8), 0, 1.3], [...rel(2, 8, 6), 0, 1.4], [...rel(2, 12, 3.6), 0, 1.3], [...rel(2, 17, -2.5), 0, 1.2], [...rel(2, 21, 4), 0, 1.2], [...rel(2, 12, -4.5), 2, 1.2], [...rel(2, 27, -9), 0, 1.2], [...rel(2, 30, 8.5), 0, 1.2], [...rel(2, 37, -3), 0, 1.1],
-    [...rel(2, 13.5, 6.5), 0, 1.3], [...rel(2, 14.5, -7), 0, 1.3], [...rel(2, 6.5, 6.5), 0, 1.3], [...rel(2, 9, -8), 2, 1.3]]) tryColumn(p[0], p[1], p[2], true, p[3]);
-  // random columns across the world
-  rseed(2);
-  for (let i = 0; i < 15000; i++) {
-    const a = rnd() * TAU, r = sqrt(rnd()) * 170, x = cos(a) * r, z = sin(a) * r;
-    if (rnd() < kelpDens(x, z)) tryColumn(x, z, zoneP(x, z) > 0.5 && rnd() < 0.5 ? 1 : rnd() < 0.03 ? 2 : 0);
+  for (let i = 0; i < 30000; i++) {
+    const x = rr(OX, OX + PER), z = rr(OZ, OZ + PER);
+    if (rnd() < kelpDens(x, z)) tryColumn(x, z, rnd() < 0.18 ? 1 : rnd() < 0.05 ? 2 : 0);
   }
 
   // --- clusters of ribbon leaves on the ground
@@ -195,131 +183,126 @@ function makeWorld(D, T, flyPts, POSES) {
       leaf(big, x + cos(a) * r, y - 0.15, z + sin(a) * r, L, a, rr(0.05, tmax), rr(wmin, wmax), sway, type, rnd(), rnd(), rr(0.3, 0.8));
     }
   };
-  const HOT = [[0, 5, 30], [42, 30, 24], [6, 82, 34], [-58, 10, 24], [4, -88, 30], [-36, 44, 18], [-46, -60, 20]];
-  const hot = (x, z) => { let h = 0.4; for (const p of HOT) h = max(h, sstep(p[2], p[2] * 0.4, hypot(x - p[0], z - p[1]))); return h; };
+  const hot = (x, z) => { let h = 0.3; for (const p of KELPZ) h = max(h, p[3] * sstep(p[2] * 1.2, p[2] * 0.5, dist2(x, z, p[0], p[1]))); return h; };
   rseed(3);
-  for (let i = 0; i < 40000; i++) {
-    const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2], ny = T.wn[k + 1];
-    if (hypot(x, z) > 172 || y > -6) continue;
-    const h = hot(x, z), zp = zoneP(x, z), u = rnd();
-    if (nearFly(x, y, z, 4) || hypot(x + 1, z - 2) < 9 || nearPose(x, z, 8)) continue;
-    if (ny > 0.75 && u < 0.10 * h) cluster(x, y, z, 8 + rnd() * 14 | 0, 2, 1.0, 3.0, 0.13, 0.26, 0.6, 2.5);
-    else if (ny > 0.6 && u < 0.10 * h + 0.07 * max(zp, h * 0.4)) cluster(x, y, z, 10 + rnd() * 18 | 0, rnd() < 0.8 ? 3 : 4, 0.9, 2.6, 0.14, 0.28, 0.9, 1.5);
-    else if (ny < -0.35 && u < 0.5 * max(zp, 0.2)) { // hanging fronds
-      const n = 12 + rnd() * 20 | 0;
-      for (let j = 0; j < n; j++) leaf(big, x + rr(-0.6, 0.6), y + 0.2, z + rr(-0.6, 0.6), rr(0.8, 3.2), rnd() * TAU, PI - rr(0, 0.4), rr(0.08, 0.18), 0, zp > 0.3 || rnd() < 0.5 ? 6 : 0, rnd(), rnd(), rr(0.3, 0.6));
-    } else if (ny > -0.2 && ny < 0.8 && u < 0.07) { // wall tufts
-      const yaw = atan2(T.wn[k + 2], T.wn[k]), n = 5 + rnd() * 7 | 0;
-      for (let j = 0; j < n; j++) leaf(big, x, y, z, rr(0.5, 1.4), yaw + rr(-0.9, 0.9), rr(0.3, 1.1), rr(0.06, 0.12), 0.5, zp > 0.4 && rnd() < 0.6 ? 3 : 0, rnd(), rnd(), rr(0.2, 0.6));
+  for (let i = 0; i < 90000; i++) {
+    const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2], ny = T.wn[k + 1], sa = T.vs[k / 3];
+    if (y > -3 || sa > 0.5 || nearPose(x, z, 6)) continue;
+    const h = hot(x, z), u = rnd();
+    if (ny > 0.6 && u < 0.10 * h) cluster(x, y, z, 6 + rnd() * 10 | 0, rnd() < 0.7 ? 3 : 4, 0.8, 2.2, 0.12, 0.22, 0.8, 1.5);
+    else if (ny < -0.35 && u < 0.35) { // red algae hanging from overhangs
+      const n = 10 + rnd() * 16 | 0;
+      for (let j = 0; j < n; j++) leaf(big, x + rr(-0.6, 0.6), y + 0.2, z + rr(-0.6, 0.6), rr(0.5, 2.0), rnd() * TAU, PI - rr(0, 0.4), rr(0.06, 0.14), 0, 6, rnd(), rnd(), rr(0.3, 0.6));
+    } else if (ny > -0.2 && ny < 0.8 && u < 0.05) { // tufts on rock walls
+      const yaw = atan2(T.wn[k + 2], T.wn[k]), n = 4 + rnd() * 6 | 0;
+      for (let j = 0; j < n; j++) leaf(big, x, y, z, rr(0.4, 1.1), yaw + rr(-0.9, 0.9), rr(0.3, 1.1), rr(0.05, 0.1), 0.5, rnd() < 0.5 ? 3 : 7, rnd(), rnd(), rr(0.2, 0.6));
     }
   }
-  // --- ground cover: dense carpets of small tufts in the magenta patches
-  rseed(4);
-  for (const p of MAGENTA) for (let i = p[2] * p[2] * PI * 45; i > 0; i--) {
-    const a = rnd() * TAU, r = sqrt(rnd()) * p[2], x = p[0] + cos(a) * r, z = p[1] + sin(a) * r;
-    if (rnd() > magAt(x, z) + 0.12 || nearPose(x, z)) continue;
-    const f = floorsAt(x, z); if (!f.length) continue;
-    const y = f[f.length - 2]; if (grad(x, y, z)[1] < 0.7) continue;
-    const nl = 2 + (rnd() * 3 | 0), yw = rnd() * TAU;
-    for (let j = 0; j < nl; j++) leaf(small, x, y - 0.03, z, rr(0.08, 0.26), yw + j * TAU / nl + rr(-0.4, 0.4), rr(0.15, 0.85), rr(0.035, 0.07), 0, 5, rnd(), rnd(), rr(0.3, 0.7));
-    if (rnd() < 0.3) for (let j = 0; j < 2; j++) leaf(small, x + rr(-0.2, 0.2), y - 0.04, z + rr(-0.2, 0.2), rr(0.2, 0.55), rnd() * TAU, rr(0.05, 0.6), rr(0.03, 0.06), 0, 7, rnd(), rnd(), rr(0.3, 0.8));
-    if (rnd() < 0.3) glint(x, y + rr(0.08, 0.22), z, 0, rnd(), 0.82 + rnd() * 0.18, rr(0.01, 0.02), 0);
-  }
+  // --- sea grass meadows on the sand, short turf on the rock
   rseed(5);
-  for (let i = 0; i < 620000; i++) {
+  for (let i = 0; i < 900000; i++) {
     const k = pickV(), ny = T.wn[k + 1];
     if (ny < 0.72) continue;
-    const x = T.wp[k] + rr(-0.45, 0.45), z = T.wp[k + 2] + rr(-0.45, 0.45), y = T.wp[k + 1];
-    if (hypot(x, z) > 170 || nearPose(x, z)) continue;
-    const m = magAt(x, z), zp = zoneP(x, z), u = rnd();
-    if (m > 0.3 && u < m * 0.9) for (let j = 0; j < 4; j++) leaf(small, x + rr(-0.1, 0.1), y - 0.05, z + rr(-0.1, 0.1), rr(0.12, 0.34), rnd() * TAU, rr(0.05, 0.75), rr(0.04, 0.08), 0, 5, rnd(), rnd(), rr(0.3, 0.7));
-    else if (u < m * 0.9 + 0.5 * max(zp, hot(x, z)) * sstep(0.42, 0.6, fbm(x * 0.09, 9, z * 0.09, 2))) for (let j = 0; j < 3; j++) leaf(small, x + rr(-0.1, 0.1), y - 0.05, z + rr(-0.1, 0.1), rr(0.25, 0.7), rnd() * TAU, rr(0.1, 0.8), rr(0.05, 0.1), 0, 7, rnd(), rnd(), rr(0.3, 0.8));
+    const x = T.wp[k] + rr(-0.75, 0.75), z = T.wp[k + 2] + rr(-0.75, 0.75), y = T.wp[k + 1], sa = T.vs[k / 3];
+    if (nearPose(x, z, 1.5) || y > -2) continue;
+    const meadow = sstep(0.5, 0.62, pfbm(x, 5, z, 0.018, 3)) * sstep(0.4, 0.8, sa), u = rnd();
+    if (u < meadow * 0.34) { // a bushy clump
+      const bl = 16 + (rnd() * 10 | 0), ln = rr(0.4, 0.95);
+      for (let j = 0; j < bl; j++) leaf(small, x + rr(-0.16, 0.16), y - 0.04, z + rr(-0.16, 0.16), ln * rr(0.55, 1.25), rnd() * TAU, rr(0.04, 0.4), rr(0.03, 0.055), 0, 2, rnd(), rnd(), rr(0.3, 0.7));
+    } else if (sa < 0.4 && u < 0.2 * sstep(0.45, 0.6, pfbm(x, 9, z, 0.05, 2))) {
+      for (let j = 0; j < 7; j++) leaf(small, x + rr(-0.15, 0.15), y - 0.05, z + rr(-0.15, 0.15), rr(0.15, 0.45), rnd() * TAU, rr(0.1, 0.9), rr(0.03, 0.06), 0, rnd() < 0.5 ? 5 : 7, rnd(), rnd(), rr(0.3, 0.8));
+    }
   }
 
-  // --- sponges and coral (clustered on rock)
+  // --- sponges and corals on rock: scattered singles, then gardens
   const spots = [];
-  const ZS = [[-58, 8, 30, 1], [0, 0, 30, 0.7], [6, 84, 36, 0.9], [4, -88, 22, 0.6], [44, 20, 24, 0.5]];
-  const zw = (x, z) => { let h = 0.45; for (const p of ZS) h = max(h, p[3] * sstep(p[2], p[2] * 0.4, hypot(x - p[0], z - p[1]))); return h; };
+  const PIECE = (kind) => { // mesh, mat, scale for a coral garden (0) or a sponge garden (1)
+    const u = rnd();
+    if (kind === 0) return u < 0.34 ? [7, 5, rr(0.5, 1.5)] : u < 0.5 ? [10, 5, rr(0.5, 1.3)] : u < 0.68 ? [26, 5, rr(0.5, 1.3)] : u < 0.86 ? [8, 5, rr(0.5, 1.4)] : [9, 4, rr(0.4, 1)];
+    return u < 0.3 ? [4, 4, rr(0.35, 1)] : u < 0.55 ? [5, 4, rr(0.35, 0.9)] : u < 0.72 ? [6, 4, rr(0.4, 1)] : u < 0.85 ? [9, 4, rr(0.4, 1)] : [27, 5, rr(0.6, 1.5)];
+  };
+  const place = (n0, ny, nz, nx, p, mesh, mat, sc, sd) => {
+    const l = hypot(nx, ny + 0.9, nz), ux = nx / l, uy = (ny + 0.9) / l, uz = nz / l;
+    solid(mesh, p[0] - ux * 0.1 * sc, p[1] - uy * 0.1 * sc, p[2] - uz * 0.1 * sc, sc, qMul(qFromY(ux, uy, uz), qAxis(0, 1, 0, rnd() * TAU)), mat, sd, 1, 0);
+  };
   rseed(6);
-  for (let i = 0; i < 13000; i++) {
-    const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2];
-    if (hypot(x, z) > 170 || y > -8 || T.wn[k + 1] < -0.15 || rnd() > zw(x, z) || nearFly(x, y, z, 3)) continue;
-    const n0 = [T.wn[k], T.wn[k + 1], T.wn[k + 2]], [t1, t2] = tangent(n0), coral = T.wn[k + 1] > 0.85 || rnd() < 0.35, cnt = coral ? 2 + rnd() * 5 | 0 : 3 + rnd() * 9 | 0, sd = rnd();
+  for (let i = 0; i < 20000; i++) {
+    const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2], ny = T.wn[k + 1];
+    if (y > -4 || ny < -0.15 || T.vs[k / 3] > 0.35 || rnd() > 0.5 * hot(x, z) + 0.12 || nearPose(x, z, 2)) continue;
+    const n0 = [T.wn[k], ny, T.wn[k + 2]], [t1, t2] = tangent(n0), cnt = 2 + rnd() * 5 | 0, sd = rnd(), kind = rnd() < 0.55 ? 0 : 1;
     for (let j = 0; j < cnt; j++) {
       const a = rr(-1, 1) * (0.5 + cnt * 0.13), b = rr(-1, 1) * (0.5 + cnt * 0.13);
       const s = snap(x + t1[0] * a + t2[0] * b, y + t1[1] * a + t2[1] * b, z + t1[2] * a + t2[2] * b, n0);
       if (!s) continue;
-      let ux = s[3], uy = s[4] + (coral ? 0.9 : 1.1), uz = s[5]; const l = hypot(ux, uy, uz); ux /= l; uy /= l; uz /= l;
-      const q = qMul(qFromY(ux, uy, uz), qAxis(0, 1, 0, rnd() * TAU)), sc = coral ? rr(0.5, 1.5) : rr(0.35, 0.9) * (rnd() < 0.1 ? 1.6 : 1);
-      solid(coral ? 7 + (rnd() * 3 | 0) : 4 + (rnd() * 3 | 0), s[0] - ux * 0.12 * sc, s[1] - uy * 0.12 * sc, s[2] - uz * 0.12 * sc, sc, q, coral ? 5 : 4, fract(sd + rr(-0.03, 0.03)), 1, 0);
+      const [mesh, mat, sc] = PIECE(kind);
+      place(n0, s[4], s[5], s[3], s, mesh, mat, sc, fract(sd + rr(-0.03, 0.03)));
     }
-    if (!coral && rnd() < 0.3) spots.push([x + n0[0], y + n0[1] + 0.5, z + n0[2]]);
+    if (kind === 1 && rnd() < 0.3) spots.push([x + n0[0], y + n0[1] + 0.5, z + n0[2]]);
   }
-
-  // dense sponge / coral gardens: x, z, radius, count
+  // gardens: a few dozen dense patches. Rock vertices are bucketed in 8 m squares to find the ones around a centre.
+  const GB = 48, gbk = Array.from({ length: GB * GB }, () => []);
+  for (let k = 0; k < T.nv; k++) if (T.vs[k] < 0.3 && T.wn[k * 3 + 1] > -0.1 && T.wp[k * 3 + 1] > -17 && T.wp[k * 3 + 1] < -2.5) gbk[(floor((wrapT(T.wp[k * 3]) - OX) / 8) % GB) + GB * (floor((wrapT(T.wp[k * 3 + 2]) - OZ) / 8) % GB)].push(k * 3);
   rseed(7);
-  for (const g of [[-68, -6, 9, 260], [-66, 6, 7, 160], [16, 72, 7, 200], [-6, 74, 6, 120], [-13, -2, 6, 80], [8, -88, 8, 160], [44, 12, 7, 120], [-62, 22, 6, 140], [-47, 40, 6, 140], [-30, 47, 6, 120], [-12, 48, 5, 100], [14, 28, 6, 140], [28, 45, 6, 120], [-36, -76, 6, 130], [-49, -58, 6, 130], [-58, -38, 6, 120]]) {
-    let made = 0;
-    for (let i = 0; i < 400000 && made < g[3]; i++) {
-      const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2];
-      if (hypot(x - g[0], z - g[1]) > g[2] || y > -14 || T.wn[k + 1] < -0.1 || nearFly(x, y, z, 2.2)) continue;
-      made++;
-      const coral = T.wn[k + 1] > 0.85 || rnd() < 0.3, nx = T.wn[k], ny = T.wn[k + 1] + (coral ? 0.9 : 1.1), nz = T.wn[k + 2], l = hypot(nx, ny, nz);
-      const sc = coral ? rr(0.5, 1.4) : rr(0.35, 0.9) * (rnd() < 0.15 ? 1.7 : 1);
-      solid(coral ? 7 + (rnd() * 3 | 0) : 4 + (rnd() * 3 | 0), x - nx / l * 0.1 * sc, y - ny / l * 0.1 * sc, z - nz / l * 0.1 * sc, sc, qMul(qFromY(nx / l, ny / l, nz / l), qAxis(0, 1, 0, rnd() * TAU)), coral ? 5 : 4, rnd(), 1, 0);
+  let gardens = 0;
+  for (let t = 0; t < 4000 && gardens < 64; t++) {
+    const c = gbk[(rnd() * GB * GB) | 0]; if (c.length < 40) continue;
+    const k0 = c[(rnd() * c.length) | 0], cx = T.wp[k0], cz = T.wp[k0 + 2], R = rr(4, 8), kind = rnd() < 0.5 ? 0 : 1, want = floor(R * R * rr(2.5, 4.5));
+    if (nearPose(cx, cz, R)) continue;
+    const near = []; // vertices within R of the centre
+    for (let gx = -1; gx <= 1; gx++) for (let gz = -1; gz <= 1; gz++) {
+      const bx = (floor((wrapT(cx) - OX) / 8) + gx + GB) % GB, bz = (floor((wrapT(cz) - OZ) / 8) + gz + GB) % GB;
+      for (const k of gbk[bx + GB * bz]) if (dist2(T.wp[k], T.wp[k + 2], cx, cz) < R) near.push(k);
+    }
+    if (near.length < 12) continue;
+    gardens++;
+    const sd = rnd();
+    for (let m = 0; m < want; m++) {
+      const k = near[(rnd() * near.length) | 0], x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2];
+      const [mesh, mat, sc] = PIECE(kind);
+      place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [x + rr(-0.3, 0.3), y, z + rr(-0.3, 0.3)], mesh, mat, sc, fract(sd + rr(-0.05, 0.05)));
     }
   }
-  // --- rocks: floating boulder clusters + scattered ground rocks
-  const BOULD = [[-11, -11, -105, 14, 5], [-56, -19, -18, 18, 6], [10, -13, -88, 22, 7], [24, -15, -24, 22, 7], [-18, -12, 4, 14, 6], [30, -14, 30, 16, 6], [36, -12, -70, 22, 8], [-30, -13, -84, 16, 7], [-58, -14, 0, 14, 6], [19, -13, 98, 18, 6], [62, -9, 34, 14, 6]];
+  // --- rocks: boulders lying about, then rubble, then pebbles and shells on the sand
   rseed(8);
-  for (let i = 0; i < 9; i++) { const a = rnd() * TAU, r = rr(60, 150); BOULD.push([cos(a) * r, rr(-20, -9), sin(a) * r, 10 + rnd() * 12 | 0, rr(5, 9)]); }
-  for (const b of BOULD) for (let i = 0; i < b[3]; i++) {
-    const sc = rnd() < 0.12 ? rr(1.8, 3.2) : rr(0.35, 1.5);
-    const x = b[0] + rr(-1, 1) * b[4], y = b[1] + rr(-1, 1) * b[4] * 0.6, z = b[2] + rr(-1, 1) * b[4];
-    if (Dw(x, y, z) > -sc) continue;
-    const bob = rr(0.12, 0.4), sd = rnd();
-    solid(rnd() * 4 | 0, x, min(y, -2 - sc), z, sc, qRand(), 1, sd, 1, bob);
-    if (sc > 1.1) for (let j = 0; j < 7; j++) solid(rnd() * 4 | 0, x + rr(-1.6, 1.6) * sc, min(y, -2 - sc) + rr(-1.4, 1) * sc, z + rr(-1.6, 1.6) * sc, rr(0.1, 0.35), qRand(), 1, sd, 1, bob);
+  for (let i = 0; i < 4000; i++) {
+    const k = pickV(); if (T.wn[k + 1] < 0.6 || T.wp[k + 1] > -2 || nearPose(T.wp[k], T.wp[k + 2], 6) || rnd() > 0.28) continue;
+    const sc = (rnd() < 0.1 ? rr(1.4, 2.6) : rr(0.3, 1.2)) * (T.vs[k / 3] > 0.5 ? 0.6 : 1), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2], sd = rnd();
+    solid(rnd() * 4 | 0, x, y + sc * 0.15, z, sc, qRand(), 1, sd, 1, 0);
+    if (sc > 0.9) for (let j = 0; j < 6; j++) solid(rnd() * 4 | 0, x + rr(-1.6, 1.6) * sc, y + sc * 0.1 + rr(0, 0.3), z + rr(-1.6, 1.6) * sc, rr(0.12, 0.4), qRand(), 1, sd, 1, 0);
   }
-  rseed(9);
-  for (let i = 0; i < 2600; i++) {
-    const k = pickV(); if (T.wn[k + 1] < 0.7 || hypot(T.wp[k], T.wp[k + 2]) > 170 || nearFly(T.wp[k], T.wp[k + 1], T.wp[k + 2], 6)) continue;
-    const sc = rr(0.25, 1.3) * (rnd() < 0.1 ? 2 : 1);
-    solid(rnd() * 4 | 0, T.wp[k], T.wp[k + 1] + sc * 0.2, T.wp[k + 2], sc, qRand(), 1, rnd(), 1, 0);
-  }
-
   rseed(10);
   for (let i = 0; i < 60000; i++) {
     const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2], ny = T.wn[k + 1];
-    if (hypot(x, z) > 172 || y > -3 || (ny > 0.8 && rnd() < 0.6) || nearFly(x, y, z, 3.5)) continue;
-    const sc = (0.35 + 2.1 * pow(rnd(), 2.6)) * (ny > 0.8 ? 0.5 : 1), q = qRand();
-    chunks[(sc > 1.15 ? 3 : 0) + (rnd() * 3 | 0)][cellOf(x, z)].push(x - T.wn[k] * sc * 0.3, y - ny * sc * 0.3, z - T.wn[k + 2] * sc * 0.3, sc, q[0], q[1], q[2], q[3], 1, rnd(), sc > 1.15 ? 0 : 96, 0);
+    if (y > -3 || (ny > 0.8 && rnd() < 0.7) || T.vs[k / 3] > 0.6 || nearPose(x, z, 3.5)) continue;
+    const sc = (0.3 + 1.8 * pow(rnd(), 2.6)) * (ny > 0.8 ? 0.5 : 1), q = qRand();
+    chunks[(sc > 1.1 ? 3 : 0) + (rnd() * 3 | 0)][cellOf(x, z)].push(x - T.wn[k] * sc * 0.3, y - ny * sc * 0.3, z - T.wn[k + 2] * sc * 0.3, sc, q[0], q[1], q[2], q[3], 1, rnd(), sc > 1.1 ? 0 : 96, 0);
   }
   rseed(11);
-  for (let i = 0; i < 170000; i++) { // pebbles and rubble on the sea floor
+  for (let i = 0; i < 260000; i++) { // pebbles, shells and rubble
     const k = pickV(), x = T.wp[k] + rr(-0.4, 0.4), z = T.wp[k + 2] + rr(-0.4, 0.4), y = T.wp[k + 1];
-    if (T.wn[k + 1] < 0.8 || hypot(x, z) > 170 || nearFly(x, y, z, 1.3)) continue;
-    const sc = 0.05 + 0.3 * pow(rnd(), 2), q = qRand();
-    nth++ % THIN || chunks[6][cellOf(x, z)].push(x, y - sc * 0.25, z, sc, q[0], q[1], q[2], q[3], 1, rnd(), 44, 0);
+    if (T.wn[k + 1] < 0.8 || nearPose(x, z, 1.3) || (T.vs[k / 3] > 0.6 && rnd() < 0.6)) continue;
+    const sc = 0.04 + 0.22 * pow(rnd(), 2.4), q = qRand();
+    nth++ % THIN || chunks[6][cellOf(x, z)].push(wrapT(x), y - sc * 0.3, wrapT(z), sc, q[0], q[1], q[2], q[3], 1, rnd(), 44, 0);
   }
-  // --- set pieces
-  const gy = (x, z) => { const f = floorsAt(x, z); return f.length ? f[f.length - 2] : -45; };
-  solid(10, -5, gy(-5, -4) - 0.6, -4, 1, qMul(qAxis(0, 1, 0, 1.2), qMul(qAxis(0, 0, 1, 0.16), qAxis(1, 0, 0, -0.3))), 2, 0.3, 1, 0);          // whale fluke
-  solid(11, 59.5, -23, 6, 1, qMul(qAxis(0, 1, 0, -PI / 2), qMul(qAxis(0, 0, 1, -0.1), qAxis(1, 0, 0, 0.32))), 3, 0.5, 1, 0); // ship hull
-  // barrel sponges in front of viewpoint 4, small sponges around the fluke base
+  // --- the wreck, on its sand shelf
+  const shipY = gy(SHIP[0], SHIP[1]) + 7.6;
+  solid(11, SHIP[0], shipY, SHIP[1], 1, qMul(qAxis(0, 1, 0, 0.5), qMul(qAxis(0, 0, 1, -0.07), qAxis(1, 0, 0, 0.2))), 3, 0.5, 1, 0);
   rseed(12);
-  for (const b of [[7, 3.2, 1.3, 4], [8.4, 4.6, 1.0, 6], [9.6, 2.6, 1.5, 4], [11, 5, 1.1, 5], [8, -3.6, 1.2, 4], [12.5, 2, 1.2, 6], [9, 3.9, 0.8, 4]]) { const p = rel(3, b[0], b[1]), c = POSES[3]; let ux = (c[0] - p[0]) * 0.07, uz = (c[2] - p[1]) * 0.07; const l = hypot(ux, 1, uz); solid(b[3], p[0], gy(p[0], p[1]) - 0.1, p[1], b[2], qFromY(ux / l, 1 / l, uz / l), 4, rnd(), 1, 0); }
-  for (let i = 0; i < 9; i++) { const a = rnd() * TAU; const x = -5 + cos(a) * rr(1.2, 2.6), z = -4 + sin(a) * rr(1.5, 4); solid(6, x, gy(x, z) + 0.05, z, rr(0.4, 0.9), qAxis(0, 1, 0, rnd() * 6), 4, rnd(), 1, 0); }
+  for (let i = 0; i < 40; i++) { // debris and rubble around it
+    const a = rnd() * TAU, r = rr(8, 22), x = SHIP[0] + cos(a) * r, z = SHIP[1] + sin(a) * r;
+    solid(rnd() * 4 | 0, x, gy(x, z) + 0.1, z, rr(0.3, 1.1), qRand(), 1, rnd(), 1, 0);
+  }
 
-  // --- bubbles
-  const VENTS = [[4, -44, -3], [4.5, -44, -3.5], [-1, -44, 2], [2, -44, -1], [5.5, -44, -7], [3, -44, -9], [6, -44, -90], [8, -44, -84], [4, -44, -93], [-9, -44, 3], [5, -35, -86], [9, -37, -92], [40, -44, 20], [-56, -44, 12], [10, -44, 80], [-2, -44, 30], [0, -44, -30], [12, -44, 2], [6, -44, -2], [46, -44, 30], [-20, -44, -103], [-52, -44, -12], [4, -44, 70], [9, -44, -74], [4, -44, -78], [14, -44, 26], [26, -44, 40], [-45, -44, -64], [-55, -44, -40], [-58, -44, 22], [-40, -44, 40], [-14, -44, 45], [-1, -44, -9], [-7, -44, -6]];
+  // --- bubbles from vents in the sand
+  const VENTS = [];
   rseed(13);
-  for (const s of spots) if (rnd() < 0.28) VENTS.push(s);
+  for (let i = 0; i < 14; i++) { const k = pickV(); if (T.vs[k / 3] > 0.5 && T.wn[k + 1] > 0.9) VENTS.push([T.wp[k], T.wp[k + 1], T.wp[k + 2]]); }
+  for (const s of spots) if (rnd() < 0.15) VENTS.push(s);
   for (const v of VENTS) {
-    const n = 90 + rnd() * 70 | 0, y0 = v[1] === -44 ? gy(v[0], v[2]) : v[1];
+    const n = 60 + rnd() * 50 | 0, y0 = v[1];
     for (let i = 0; i < n; i++) {
-      const sz = rnd() < 0.24 ? rr(0.1, 0.3) : rr(0.025, 0.08);
-      bubbles.push(v[0] + rr(-0.3, 0.3), y0, v[2] + rr(-0.3, 0.3), sz, rnd(), rr(1.1, 2.4) * (0.6 + sz * 3), -y0 - 0.2, rr(0.05, 0.16));
+      const sz = rnd() < 0.24 ? rr(0.05, 0.14) : rr(0.012, 0.04);
+      bubbles.push(v[0] + rr(-0.2, 0.2), y0, v[2] + rr(-0.2, 0.2), sz, rnd(), rr(1.1, 2.4) * (0.6 + sz * 5), -y0 - 0.2, rr(0.05, 0.16));
     }
   }
 
@@ -339,15 +322,15 @@ function makeWorld(D, T, flyPts, POSES) {
     return { buf, n, start, lo, hi };
   };
 
-  // --- half-res volume: r = openness, g = skylight
+  // --- half-res volume (wraps in x and z): r = openness, g = skylight
   const hx = NX / 2, hy = NY / 2, hz = NZ / 2, volD = new Uint8Array(hx * hy * hz * 2);
   let Lp = new Float32Array(hx * hz).fill(1), Ln = new Float32Array(hx * hz), tmp = new Float32Array(hx * hz);
   for (let y = hy - 1; y >= 0; y--) {
-    for (let z = 0; z < hz; z++) for (let x = 0; x < hx; x++) { const i = x + hx * z; tmp[i] = (Lp[x > 0 ? i - 1 : i] + 2 * Lp[i] + Lp[x < hx - 1 ? i + 1 : i]) * 0.25; }
+    for (let z = 0; z < hz; z++) for (let x = 0; x < hx; x++) { const i = x + hx * z; tmp[i] = (Lp[(x > 0 ? i - 1 : i + hx - 1)] + 2 * Lp[i] + Lp[x < hx - 1 ? i + 1 : i - hx + 1]) * 0.25; }
     for (let z = 0; z < hz; z++) for (let x = 0; x < hx; x++) {
-      const i = x + hx * z, b = (tmp[z > 0 ? i - hx : i] + 2 * tmp[i] + tmp[z < hz - 1 ? i + hx : i]) * 0.25;
-      const g0 = gi(x * 2, y * 2, z * 2);
-      const d = (D[g0] + D[g0 + 1] + D[g0 + NX] + D[g0 + NX + 1] + D[g0 + NX * NY] + D[g0 + NX * NY + 1] + D[g0 + NX * NY + NX] + D[g0 + NX * NY + NX + 1]) * 0.125;
+      const i = x + hx * z, b = (tmp[z > 0 ? i - hx : i + hx * (hz - 1)] + 2 * tmp[i] + tmp[z < hz - 1 ? i + hx : i - hx * (hz - 1)]) * 0.25;
+      const x1 = (x * 2 + 1) % NX, z1 = (z * 2 + 1) % NZ, y0 = y * 2, y1 = y * 2 + 1;
+      const d = (D[gi(x * 2, y0, z * 2)] + D[gi(x1, y0, z * 2)] + D[gi(x * 2, y1, z * 2)] + D[gi(x1, y1, z * 2)] + D[gi(x * 2, y0, z1)] + D[gi(x1, y0, z1)] + D[gi(x * 2, y1, z1)] + D[gi(x1, y1, z1)]) * 0.125;
       const o = x + hx * (y + hy * z);
       const l = b * clamp(0.5 - d / 1.5, 0, 1) * (1 - min(kelpAbs[o], 0.5));
       Ln[i] = l;
@@ -356,21 +339,22 @@ function makeWorld(D, T, flyPts, POSES) {
     const t = Lp; Lp = Ln; Ln = t;
   }
 
-  // --- ground map: r magenta cover, b purple zone, a sand
+  // --- ground map (wraps): r sand, a patchiness
   const gm = new Uint8Array(512 * 512 * 4);
   for (let j = 0; j < 512; j++) for (let i = 0; i < 512; i++) {
-    const x = (i + 0.5) / 512 * 384 - 192, z = (j + 0.5) / 512 * 384 - 192, o = (i + 512 * j) * 4;
-    gm[o] = magAt(x, z) * 255; gm[o + 2] = zoneP(x, z) * 255; gm[o + 3] = sstep(0.42, 0.6, fbm(x * 0.04, 3, z * 0.04, 3)) * 255;
+    const x = (i + 0.5) / 512 * PER + OX, z = (j + 0.5) / 512 * PER + OZ, o = (i + 512 * j) * 4;
+    gm[o] = sandAt(x, z) * 255; gm[o + 3] = sstep(0.42, 0.6, pfbm(x, 3, z, 0.04, 3)) * 255;
   }
 
-  // --- fish schools + mantas
+  // --- fish schools + mantas (the fauna pieces replace these)
   const fish = [];
   rseed(14);
-  const SCH = [[-2, -36, -10, 15, 520, 0.3, 1, 0.945], [8, -30, -70, 22, 420, 0.32, -1], [48, -30, 14, 18, 360, 0.3, 1], [-58, -30, -8, 11, 420, 0.28, -1, 0.3], [8, -36, 84, 16, 320, 0.28, 1],
-    [-90, -28, -70, 25, 300, 0.3, 1], [95, -30, 70, 25, 300, 0.3, -1], [0, -22, 20, 30, 380, 0.34, -1], [-30, -30, -100, 18, 300, 0.3, 1], [16, -36, 30, 12, 300, 0.3, 1], [-48, -34, -58, 12, 300, 0.3, -1], [-45, -35, 38, 14, 320, 0.3, 1]];
-  for (const s of SCH) { const ss = s[7] === undefined ? rnd() : s[7]; for (let i = 0; i < s[4]; i++) fish.push(s[0], s[1], s[2], s[3], rnd(), s[6] * 1.9 / s[3], s[5], ss); }
+  for (let s = 0; s < 16; s++) {
+    const x = rr(OX, OX + PER), z = rr(OZ, OZ + PER), y = rr(-14, -6), R = rr(10, 22), n = 200 + rnd() * 200 | 0, spd = 0.3 * rr(0.9, 1.1), dir = rnd() < 0.5 ? 1 : -1, ss_ = rnd();
+    for (let i = 0; i < n; i++) fish.push(x, y, z, R, rnd(), dir * 1.9 / R, spd, ss_);
+  }
   const mantas = [];
-  for (const m of [[1, -28, 3.5, 14, 3.012, 0.085, 3.6, 0.1], [49, -31, 24.5, 5, 0.029, -0.08, 3.7, 0.4], [0, -14, -80, 34, 0.3, 0.06, 5.2, 0.7], [-50, -18, 20, 26, 5, -0.075, 3.8, 0.55], [10, -16, 86, 26, 2.2, 0.07, 4.4, 0.85], [20, -11, -20, 46, 4.2, -0.045, 5.6, 0.25]]) mantas.push(...m);
+  for (let m = 0; m < 5; m++) mantas.push(rr(OX, OX + PER), rr(-12, -8), rr(OZ, OZ + PER), rr(26, 46), rnd() * 6, (rnd() < 0.5 ? 1 : -1) * rr(0.045, 0.085), rr(2.4, 3.4), rnd());
 
   // --- drifting particles
   const snow = new Float32Array(9000 * 4);
@@ -387,9 +371,8 @@ function makeWorld(D, T, flyPts, POSES) {
     for (let c = 0; c < nCells; c++) { const a = L[c]; for (let i = 0; i < a.length; i += 12) { for (let j = 0; j < 12; j++) data[k++] = a[i + j]; lo[c] = min(lo[c], a[i + 1] - 3); hi[c] = max(hi[c], a[i + 1] + 3); } }
     return { data, n, start, lo, hi };
   };
-  return { gy, glints: new Float32Array(glints), chunks: chunks.map(packC), props: props.map(packC), big: pack(big), bigF: pack(big, 2, 1.5), small: pack(small), solids: { data: new Float32Array(sol.data), ranges: sol.ranges }, bubbles: new Float32Array(bubbles), volD, gm, fish: new Float32Array(fish), mantas: new Float32Array(mantas), snow };
+  return { gy, chunks: chunks.map(packC), props: PROP_IDS.map((id) => packC(props[id])), big: pack(big), bigF: pack(big, 2, 1.5), small: pack(small), solids: { data: new Float32Array(sol.data), ranges: sol.ranges }, bubbles: new Float32Array(bubbles), volD, gm, fish: new Float32Array(fish), mantas: new Float32Array(mantas), snow, shipPos: [SHIP[0], shipY, SHIP[1]] };
 }
-const fract = (x) => x - floor(x);
 
 // ---------------------------------------------------------------- procedural meshes
 function meshChunk(sd, sub = 2, det = sub > 2) {
@@ -438,38 +421,6 @@ function meshTubes() {
   }
   return m;
 }
-// stone whale fluke: SDF of tapered capsules -> surface nets
-function meshFluke() {
-  const C = [];
-  const chain = (pts, zs) => { for (let i = 0; i < pts.length - 1; i++) C.push([...pts[i], ...pts[i + 1], zs]); };
-  chain([[0, -1.6, 3.7, 1.2], [0, 1.8, 2.35, 0.98], [0, 4.6, 1.0, 0.76], [0, 6.9, 0.1, 0.6]], 0.8);
-  chain([[0, 6.6, 0.1, 0.72], [1.9, 7.9, 0, 0.98], [3.9, 8.8, -0.1, 0.9], [5.7, 9.8, -0.25, 0.64], [7.0, 11.2, -0.4, 0.38], [7.7, 12.8, -0.55, 0.2], [7.9, 14.1, -0.65, 0.1]], 0.18);
-  chain([[0, 6.6, 0.1, 0.72], [-1.7, 8.3, 0.05, 0.96], [-3.3, 9.7, -0.05, 0.88], [-4.7, 11.2, -0.2, 0.64], [-5.6, 12.9, -0.4, 0.38], [-6.0, 14.6, -0.5, 0.2], [-5.9, 15.9, -0.6, 0.1]], 0.18);
-  const sdf = (x, y, z) => {
-    let d = 1e9;
-    for (const c of C) {
-      const zs = c[8], pz = z / zs, az = c[2] / zs, bz = c[6] / zs;
-      const bax = c[4] - c[0], bay = c[5] - c[1], baz = bz - az, pax = x - c[0], pay = y - c[1], paz = pz - az;
-      const h = clamp((pax * bax + pay * bay + paz * baz) / (bax * bax + bay * bay + baz * baz), 0, 1);
-      const e = (hypot(pax - bax * h, pay - bay * h, paz - baz * h) - mix(c[3], c[7], h)) * zs;
-      const k = 0.45, hh = max(k - abs(d - e), 0) / k;
-      d = min(d, e) - hh * hh * k * 0.25;
-    }
-    return d;
-  };
-  const vs = 0.09, ox = -7.6, oy = -2.6, oz = -2.2, nx = 186, ny = 216, nz = 76, D = new Float32Array(nx * ny * nz);
-  for (let z = 0; z < nz; z++) for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) D[x + nx * (y + ny * z)] = -sdf(ox + x * vs, oy + y * vs, oz + z * vs);
-  const sn = surfaceNets(D, nx, ny, nz), smp = sampler3(D, nx, ny, nz);
-  const vb = new ArrayBuffer(sn.nv * 16), f = new Float32Array(vb), s = new Int8Array(vb);
-  for (let k = 0; k < sn.nv; k++) {
-    const x = sn.pos[k * 3], y = sn.pos[k * 3 + 1], z = sn.pos[k * 3 + 2], e = 0.7;
-    let ax = smp(x - e, y, z) - smp(x + e, y, z), ay = smp(x, y - e, z) - smp(x, y + e, z), az = smp(x, y, z - e) - smp(x, y, z + e);
-    const l = hypot(ax, ay, az) || 1;
-    f[k * 4] = ox + x * vs; f[k * 4 + 1] = oy + y * vs; f[k * 4 + 2] = oz + z * vs;
-    s[k * 16 + 12] = round(ax / l * 127); s[k * 16 + 13] = round(ay / l * 127); s[k * 16 + 14] = round(az / l * 127); s[k * 16 + 15] = 127;
-  }
-  return { vb, ib: new Uint32Array(sn.idx), nv: sn.nv };
-}
 // sunken ship (bow at +x): keel with stem and stern posts, curved ribs, hull planking with a breach,
 // raised stern castle with transom, deck remnants, two masts with yards, bowsprit
 function meshShip() {
@@ -515,9 +466,8 @@ function meshShip() {
   for (let x = -Lh + 2; x < Lh - 2; x += rr(1.8, 3.2)) m.sweep([[x, sheer(x) - 0.25, -hb(x)], [x, sheer(x) - 0.2, 0], [x, sheer(x) - 0.25, hb(x)]], 0.26, 0.26, up);
   for (let z = -3.9; z <= 3.9; z += 0.62) { let x = -Lh + rr(1, 5); while (x < Lh - 4) { const x1 = min(x + rr(3, 9), Lh - 3.5); if (rnd() < 0.6) { const pts = []; for (let xx = x; xx <= x1; xx += 1) if (hb(xx) > abs(z) + 0.3) pts.push([xx, sheer(xx) - 0.05, z]); if (pts.length > 1) m.sweep(pts, 0.56, 0.07, up); } x = x1 + rr(0.5, 3); } }
   // foremast with yard, broken main mast, bowsprit
-  m.sweep([[7, -Dp + 0.6, 0], [7.1, 1, 0], [7.4, 8, 0.3], [7.8, 15, 0.8]], (k) => 0.62 - k * 0.1, (k) => 0.62 - k * 0.1, () => [1, 0, 0]);
-  m.sweep([[7.5, 9.5, -5.2], [7.5, 9.6, 0.3], [7.5, 9.2, 5.6]], 0.26, 0.26, up);
-  m.sweep([[7.7, 13.2, -3.2], [7.7, 13.3, 3.6]], 0.2, 0.2, up);
+  m.sweep([[7, -Dp + 0.6, 0], [7.1, 1, 0], [7.25, 5, 0.2], [7.4, 9.5, 0.4]], (k) => 0.62 - k * 0.1, (k) => 0.62 - k * 0.1, () => [1, 0, 0]);
+  m.sweep([[7.3, 6.8, -5.2], [7.3, 6.9, 0.3], [7.3, 6.5, 5.6]], 0.26, 0.26, up);
   m.sweep([[-3, -Dp + 0.6, 0], [-3.2, 1, 0.2], [-3.9, 6, 1.0], [-5.2, 9.5, 2.6]], (k) => 0.74 - k * 0.1, (k) => 0.74 - k * 0.1, () => [1, 0, 0]);
   m.sweep([[Lh + 1.4, 2.6, 0], [Lh + 8, 5.2, 0.2]], 0.34, 0.34, up);
   return m;
@@ -555,3 +505,10 @@ function meshFish() {
   m.tri(a, b, c); m.tri(a, c, d);
   return m;
 }
+
+// table coral: a wide wavy plate on a short stalk
+function meshTable() { return meshLathe([[0, 0, 0.4], [0.1, 0, 0.5], [0.09, 0.3, 0.7], [0.14, 0.44, 0.8], [0.55, 0.5, 1], [0.95, 0.56, 1], [0.88, 0.62, 0.9], [0.4, 0.6, 0.55], [0, 0.58, 0.4]], 22, 0.3, 0); }
+// brain / boulder coral: a grooved dome
+function meshBrain() { return meshLathe([[0, 0, 0.4], [0.5, 0, 0.6], [0.64, 0.18, 0.9], [0.58, 0.5, 1], [0.34, 0.72, 1], [0, 0.78, 1]], 24, 0.14, 18); }
+// encrusting sponge / massive coral: a low lumpy mound
+function meshMound() { return meshLathe([[0, 0, 0.4], [0.7, 0, 0.6], [0.9, 0.18, 0.9], [0.78, 0.46, 1], [0.46, 0.62, 0.9], [0, 0.66, 0.7]], 16, 0.45, 0); }

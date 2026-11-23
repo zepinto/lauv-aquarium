@@ -2,14 +2,15 @@
 //   npm run build            minified
 //   npm run build:readable   unminified, for debugging
 //   npm run build:dev        ../dev.html: unminified, plus the development tools in src/dev.js
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transformSync } from 'esbuild';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const FILES = ['quality.js', 'math.js', 'shaders.js', 'world.js', 'main.js', 'audio.js']; // concatenation order matters
+const FAUNA = readdirSync(path.join(here, 'src', 'fauna')).filter((f) => f.endsWith('.js')).sort().map((f) => 'fauna/' + f);
+const FILES = ['quality.js', 'math.js', 'lauvphys.js', 'shaders.js', 'world.js', 'lauv.js', 'registry.js', ...FAUNA, 'main.js', 'audio.js']; // concatenation order matters
 const dev = process.argv.includes('--dev'), readable = dev || process.argv.includes('--readable');
 const out = dev ? 'dev.html' : 'index.html';
 if (dev) FILES.push('dev.js');
@@ -31,5 +32,6 @@ if (readable) {
   html = tpl.replace(/<style>([^]*?)(?=<\/style>)/, css).replace(/>\s+</g, '><').replace('/*SCRIPT*/', () => code).replace(/<script>\s+/, '<script>').replace(/\s+<\/script>/, '</script>');
 }
 writeFileSync(path.join(here, '..', out), html);
+copyFileSync(path.join(here, 'lauv-omst.glb'), path.join(here, '..', 'lauv-omst.glb')); // the model is served next to the page
 const gz = gzipSync(Buffer.from(html), { level: 9 }).length;
 console.log(`${out}: ${(html.length / 1024).toFixed(1)} kB${readable ? ' (readable)' : ''}, ${(gz / 1024).toFixed(1)} kB gzipped`);

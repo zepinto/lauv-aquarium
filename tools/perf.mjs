@@ -10,11 +10,11 @@ for (const q of qs) {
   page.on('pageerror', e => console.log('pageerror: ' + e.message));
   await page.goto('http://127.0.0.1:' + port + '/' + (process.env.PAGE || 'index.html') + '?' + q);
   await page.waitForFunction(() => window.__perf && document.querySelector('#d:not([disabled])')?.offsetParent, null, { timeout: 260000 });
-  await page.click('#d').catch(() => {});
+  await page.evaluate(() => window.__app ? __app.start() : document.querySelector('#d').click());
   await page.waitForTimeout(1500);
   const rows = [];
   for (const p of POSES) {
-    await page.evaluate(p => dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit' + p })), p);
+    await page.evaluate(p => { if (window.__world) { __world.pose(p - 1); __app.cam('chase'); } else dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit' + p })); }, p);
     await page.waitForTimeout(2500);
     const r = await page.evaluate(() => new Promise(res => { const ts = [], g = [], t0 = performance.now(), P = window.__perf; let n = -1;
       function f(t) { ts.push(t); if (P.n !== n) { n = P.n; g.push([...P.raw, P.cpu || 0]); } if (t - t0 < 4000) requestAnimationFrame(f); else res({ ts, g }); } requestAnimationFrame(f); }));

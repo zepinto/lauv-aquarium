@@ -27,6 +27,9 @@ grade your own work. Loop until the critic picks ours.
   max ≈ 2 m/s. Roll is held at 0 automatically (roll controller on the fins).
 - Commands (keyboard, also gamepad if cheap): left / right (rudder), up / down (climb / dive, elevator),
   thrust up / thrust down (throttle steps, a little reverse allowed). Arrows + W/S by default; show them on screen once.
+- Mobile (multi-touch, landscape): one finger sets the speed (a throttle slider on one side, it stays where it is
+  released), the other finger drives a 4-way stick on the other side (left / right / climb / dive), both at once.
+  Big, thumb-sized, semi-transparent controls in the OMST look; works on phones and tablets.
 - Kelp can foul the propeller (thrust drops, the vehicle drags a strand; reversing clears it). It hits rocks and the
   bottom: real contact (stops, bounces, scrapes), sediment puff, sound, and a scratch counter that is the only "score".
 - At the surface the camera shows the scene from above the water (sky, sun, waves, the vehicle awash, the
@@ -59,6 +62,7 @@ octopuses (change colour and texture, ink, jet away and hide in rocks), plus sma
 `ready` (bool, world built), `start()` (skip the menu, start playing), `set({x,y,z,yaw,pitch,u})` (vehicle pose,
 speed m/s), `cam(mode)` ('chase', 'side', 'front', 'top', 'surface', 'free'), `state()` (x, y, z, depth, u, roll,
 pitch, yaw, scratches, fouled, fps), `key(cmd, down)` (cmd: left right up down thrustUp thrustDown), `pause(bool)`.
+`step(dt)` (while paused: advance the vehicle, every animal, particles and animation time by dt; the next rAF draws it; every new system must hook into it).
 URL: `res=1` (no dynamic resolution), `seed=`, `hud=0`, `t=` (fixed time of day/animation if useful).
 
 ## Tools (from the repo root; playwright-core is in the root node_modules: run `npm i` there too)
@@ -67,6 +71,8 @@ URL: `res=1` (no dynamic resolution), `seed=`, `hud=0`, `t=` (fixed time of day/
 - `tools/fps.sh PORT shots.json OUTPREFIX` — same plus fps/p95 per shot, under the shared GPU lock.
 - `python3 tools/blind.py OUTDIR SECRET.json ours.png:bar.jpg ...` — blind A/B pairs for the critic. Keep SECRET out
   of the critic's folder.
+- `node tools/clip.mjs PORT clip.json shots/<piece>/clipN` — deterministic clip (pause + step(dt) + grab per frame): an
+  MP4 and a contact sheet for the behaviour critic. Needs __app.step.
 - Frames: view PNG/JPG with the Read tool. ffmpeg, `uvx yt-dlp` are available.
 
 ## Report back

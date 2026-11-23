@@ -36,6 +36,23 @@ const fbm = (x, y, z, o = 4) => {
   return s / (1 - 2 * a);
 };
 
+// periodic noise: lattice values repeat every PER metres in x and z. f is the base frequency (1/m); it is snapped so a
+// whole number of lattice cells fits in the tile. Octaves double the cell count, so every octave wraps too.
+const pvnoise = (x, y, z, per) => {
+  const ix = floor(x), iy = floor(y), iz = floor(z);
+  let fx = x - ix, fy = y - iy, fz = z - iz;
+  fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); fz = fz * fz * (3 - 2 * fz);
+  const x0 = ((ix % per) + per) % per, x1 = (x0 + 1) % per, z0 = ((iz % per) + per) % per, z1 = (z0 + 1) % per;
+  const a = mix(mix(ihash(x0, iy, z0), ihash(x1, iy, z0), fx), mix(ihash(x0, iy + 1, z0), ihash(x1, iy + 1, z0), fx), fy);
+  const b = mix(mix(ihash(x0, iy, z1), ihash(x1, iy, z1), fx), mix(ihash(x0, iy + 1, z1), ihash(x1, iy + 1, z1), fx), fy);
+  return mix(a, b, fz);
+};
+const pfbm = (wx, y, wz, f, o = 4, seed = 0) => {
+  let per = max(1, round(PER * f)), a = 0.5, s = 0, u = wx * per / PER, v = y * f + seed, w = wz * per / PER;
+  for (let i = 0; i < o; i++) { s += a * pvnoise(u, v, w, per); u = u * 2 + 17.1; v = v * 2 + 31.7; w = w * 2 + 5.3; per *= 2; a *= 0.5; }
+  return s / (1 - 2 * a);
+};
+
 // quaternion helpers (return plain arrays; load-time only)
 const qAxis = (x, y, z, a) => { const l = hypot(x, y, z) || 1, s = sin(a / 2) / l; return [x * s, y * s, z * s, cos(a / 2)]; };
 const qMul = (a, b) => [
@@ -51,8 +68,13 @@ const qFromY = (nx, ny, nz) => {
 };
 
 // world grid
-const NX = 512, NY = 80, NZ = 512, VS = 0.75, OX = -192, OY = -56, OZ = -192;
-const CELLS = 16, CELLW = 24; // culling grid over XZ
+// The world is a torus in x and z: one tile PER metres wide (the density grid wraps, nothing is generated outside it)
+// and the renderer draws the neighbouring copies. The tile is [OX, OX + PER) in both x and z.
+const NX = 512, NY = 56, NZ = 512, VS = 0.75, OX = -192, OY = -36, OZ = -192, PER = NX * VS, HPER = PER / 2;
+const CELLS = 16, CELLW = PER / CELLS; // culling grid over XZ
+// into the tile [-HPER, HPER) / the nearest image of a difference
+const wrapT = (v) => v - PER * floor((v + HPER) / PER);
+const wrapD = (d) => d - PER * round(d / PER);
 const NCHUNK = 7; // 3 small + 3 large rock chunk meshes + pebbles
 
 // ---------------------------------------------------------------- naive surface nets
@@ -112,6 +134,78 @@ function surfaceNets(D, nx, ny, nz) {
   }
   return { pos: pos.subarray(0, nv * 3), idx: idx.subarray(0, ni), nv, ni };
 }
+
+// Surface nets over a grid that wraps in x and z (cell (nx-1) joins cell 0). Quads that cross the seam get copies of
+// the far cell's vertex moved by one tile, so the mesh covers [0, nx] x [0, nz] (a quad is made once, by the cell on
+// the high side of the edge, and may reach up to one cell below 0).
+function surfaceNetsP(D, nx, ny, nz) {
+  const sl = nx * ny, VID = new Int32Array(sl * nz).fill(-1);
+  let pos = new Float32Array(1 << 20), nv = 0, idx = new Uint32Array(1 << 21), ni = 0;
+  for (let z = 0; z < nz; z++) {
+    const z1 = (z + 1) % nz, o0 = sl * z, o1 = sl * z1;
+    for (let y = 0; y < ny - 1; y++) for (let x = 0; x < nx; x++) {
+      const x1 = (x + 1) % nx, a0 = x + nx * y, a1 = x1 + nx * y, a2 = x + nx * (y + 1), a3 = x1 + nx * (y + 1);
+      const d0 = D[o0 + a0], d1 = D[o0 + a1], d2 = D[o0 + a2], d3 = D[o0 + a3], d4 = D[o1 + a0], d5 = D[o1 + a1], d6 = D[o1 + a2], d7 = D[o1 + a3];
+      const m = (d0 > 0) | ((d1 > 0) << 1) | ((d2 > 0) << 2) | ((d3 > 0) << 3) | ((d4 > 0) << 4) | ((d5 > 0) << 5) | ((d6 > 0) << 6) | ((d7 > 0) << 7);
+      if (m === 0 || m === 255) continue;
+      let sx = 0, sy = 0, sz = 0, n = 0, t;
+      if ((d0 > 0) !== (d1 > 0)) { t = d0 / (d0 - d1); sx += t; n++; }
+      if ((d2 > 0) !== (d3 > 0)) { t = d2 / (d2 - d3); sx += t; sy += 1; n++; }
+      if ((d4 > 0) !== (d5 > 0)) { t = d4 / (d4 - d5); sx += t; sz += 1; n++; }
+      if ((d6 > 0) !== (d7 > 0)) { t = d6 / (d6 - d7); sx += t; sy += 1; sz += 1; n++; }
+      if ((d0 > 0) !== (d2 > 0)) { t = d0 / (d0 - d2); sy += t; n++; }
+      if ((d1 > 0) !== (d3 > 0)) { t = d1 / (d1 - d3); sy += t; sx += 1; n++; }
+      if ((d4 > 0) !== (d6 > 0)) { t = d4 / (d4 - d6); sy += t; sz += 1; n++; }
+      if ((d5 > 0) !== (d7 > 0)) { t = d5 / (d5 - d7); sy += t; sx += 1; sz += 1; n++; }
+      if ((d0 > 0) !== (d4 > 0)) { t = d0 / (d0 - d4); sz += t; n++; }
+      if ((d1 > 0) !== (d5 > 0)) { t = d1 / (d1 - d5); sz += t; sx += 1; n++; }
+      if ((d2 > 0) !== (d6 > 0)) { t = d2 / (d2 - d6); sz += t; sy += 1; n++; }
+      if ((d3 > 0) !== (d7 > 0)) { t = d3 / (d3 - d7); sz += t; sx += 1; sy += 1; n++; }
+      if (nv * 3 + 3 > pos.length) { const p2 = new Float32Array(pos.length * 2); p2.set(pos); pos = p2; }
+      pos[nv * 3] = x + sx / n; pos[nv * 3 + 1] = y + sy / n; pos[nv * 3 + 2] = z + sz / n;
+      VID[x + nx * (y + ny * z)] = nv++;
+    }
+  }
+  const dup = new Map();
+  // vertex of cell (cx, cy, cz); cx or cz may be -1: the copy from the far side, one tile down
+  const ref = (cx, cy, cz) => {
+    const wx = cx < 0 ? cx + nx : cx, wz = cz < 0 ? cz + nz : cz, v = VID[wx + nx * (cy + ny * wz)];
+    if (cx >= 0 && cz >= 0) return v;
+    const key = v * 4 + (cx < 0 ? 1 : 0) + (cz < 0 ? 2 : 0);
+    let r = dup.get(key);
+    if (r === undefined) {
+      if (nv * 3 + 3 > pos.length) { const p2 = new Float32Array(pos.length * 2); p2.set(pos); pos = p2; }
+      pos[nv * 3] = pos[v * 3] - (cx < 0 ? nx : 0); pos[nv * 3 + 1] = pos[v * 3 + 1]; pos[nv * 3 + 2] = pos[v * 3 + 2] - (cz < 0 ? nz : 0);
+      r = nv++; dup.set(key, r);
+    }
+    return r;
+  };
+  const emit = (s0, a, b, c, d) => {
+    if (ni + 6 > idx.length) { const i2 = new Uint32Array(idx.length * 2); i2.set(idx); idx = i2; }
+    if (s0) { idx[ni++] = a; idx[ni++] = b; idx[ni++] = c; idx[ni++] = a; idx[ni++] = c; idx[ni++] = d; }
+    else { idx[ni++] = a; idx[ni++] = c; idx[ni++] = b; idx[ni++] = a; idx[ni++] = d; idx[ni++] = c; }
+  };
+  for (let z = 0; z < nz; z++) {
+    const z1 = (z + 1) % nz, o0 = sl * z, o1 = sl * z1;
+    for (let y = 0; y < ny - 1; y++) for (let x = 0; x < nx; x++) {
+      const vi = VID[x + nx * (y + ny * z)]; if (vi < 0) continue;
+      const x1 = (x + 1) % nx, i0 = o0 + x + nx * y, s0 = D[i0] > 0;
+      if ((D[o0 + x1 + nx * y] > 0) !== s0 && y > 0) emit(s0, vi, ref(x, y - 1, z), ref(x, y - 1, z - 1), ref(x, y, z - 1));
+      if ((D[i0 + nx] > 0) !== s0) emit(s0, vi, ref(x, y, z - 1), ref(x - 1, y, z - 1), ref(x - 1, y, z));
+      if ((D[o1 + x + nx * y] > 0) !== s0 && y > 0) emit(s0, vi, ref(x - 1, y, z), ref(x - 1, y - 1, z), ref(x, y - 1, z));
+    }
+  }
+  return { pos: pos.subarray(0, nv * 3), idx: idx.subarray(0, ni), nv, ni };
+}
+// trilinear sampler over a grid that wraps in x and z (grid coords)
+const sampler3P = (D, nx, ny, nz) => (x, y, z) => {
+  x -= nx * floor(x / nx); z -= nz * floor(z / nz); y = clamp(y, 0, ny - 1.001);
+  const ix = x | 0, iy = y | 0, iz = z | 0, fx = x - ix, fy = y - iy, fz = z - iz, ix1 = ix + 1 === nx ? 0 : ix + 1, iz1 = iz + 1 === nz ? 0 : iz + 1;
+  const sl = nx * ny, r0 = nx * iy + sl * iz, r1 = nx * iy + sl * iz1, u = nx * (iy + 1);
+  const a = mix(mix(D[ix + r0], D[ix1 + r0], fx), mix(D[ix + r0 + nx], D[ix1 + r0 + nx], fx), fy);
+  const b = mix(mix(D[ix + r1], D[ix1 + r1], fx), mix(D[ix + r1 + nx], D[ix1 + r1 + nx], fx), fy);
+  return mix(a, b, fz);
+};
 
 // trilinear sampler factory over a scalar grid (grid coords)
 const sampler3 = (D, nx, ny, nz) => (x, y, z) => {
