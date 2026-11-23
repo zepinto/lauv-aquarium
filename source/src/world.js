@@ -36,6 +36,20 @@ const CLEARS = [
   [70, 40, 70, 40, 34, 12], [-20, -90, 20, -80, 24, 10], [-130, 0, -120, 20, 22, 10], [100, 150, 110, 160, 20, 10], [-60, 120, -30, 150, 20, 8],
 ];
 const SHIP = [70, 40]; // x, z of the wreck
+// extra outcrops on a jittered grid so there is a lit rock mass in the mid-ground wherever one looks
+{
+  const hsh = (i, j, k) => { let h = Math.imul(i * 73856093 ^ j * 19349663 ^ k * 83492791, 2654435761); h ^= h >>> 15; return (h >>> 0) / 4294967296; };
+  const SPLIT = 8, CW = PER / SPLIT;
+  for (let i = 0; i < SPLIT; i++) for (let j = 0; j < SPLIT; j++) {
+    const x = OX + (i + 0.2 + 0.6 * hsh(i, j, 1)) * CW, z = OZ + (j + 0.2 + 0.6 * hsh(i, j, 2)) * CW;
+    let ok = hsh(i, j, 7) < 0.8;
+    for (const m of MESAS) { const d = hypot(wrapD(x - m[0]), wrapD(z - m[1])), d2 = hypot(wrapD(x - m[2]), wrapD(z - m[3])); if (min(d, d2) < 22) ok = false; }
+    if (hypot(wrapD(x - SHIP[0]), wrapD(z - SHIP[1])) < 36) ok = false;
+    if (!ok) continue;
+    const r = 3 + 3 * hsh(i, j, 3), len = hsh(i, j, 4) < 0.4 ? 14 * hsh(i, j, 5) : 0, a = hsh(i, j, 6) * TAU;
+    MESAS.push([x, z, x + cos(a) * len, z + sin(a) * len, r, -5.5 - 6 * hsh(i, j, 8), 2 + 2 * hsh(i, j, 9), 1 + hsh(i, j, 10)]);
+  }
+}
 
 function primBuffer() {
   const a = [];
@@ -154,14 +168,15 @@ function makeWorld(D, T, POSES) {
   const NOKELP = [[SHIP[0], SHIP[1], 26], [-8, -5, 7]];
   const kelpDens = (x, z) => {
     for (const p of NOKELP) if (dist2(x, z, p[0], p[1]) < p[2]) return 0;
-    let d = sstep(0.55, 0.66, pfbm(x, 4, z, 0.022, 3)) * 0.35;
-    for (const p of KELPZ) d = max(d, p[3] * sstep(p[2], p[2] * 0.7, dist2(x, z, p[0], p[1])));
-    return d;
+    let d = sstep(0.55, 0.66, pfbm(x, 4, z, 0.022, 3)) * 0.3;
+    for (const p of KELPZ) d = max(d, p[3] * 0.8 * sstep(p[2], p[2] * 0.7, dist2(x, z, p[0], p[1])));
+    // clearings with the seabed showing, and stands of different density
+    return d * (1 - 0.95 * sstep(0.48, 0.58, pfbm(x, 11, z, 0.03, 3))) * (0.45 + 0.55 * pfbm(x, 12, z, 0.07, 2));
   };
   const occ = new Set();
   rseed(2);
   const tryColumn = (x, z, kind, dens = 1) => {
-    const key = floor((wrapT(x) - OX) / 2.3) * 4096 + floor((wrapT(z) - OZ) / 2.3);
+    const key = floor((wrapT(x) - OX) / 3.2) * 4096 + floor((wrapT(z) - OZ) / 3.2);
     if (occ.has(key) || sandAt(x, z) > 0.5) return;
     const f = floorsAt(x, z); const c = [];
     for (let i = 0; i < f.length; i += 2) if (f[i + 1] > 8) c.push(i);
@@ -169,9 +184,9 @@ function makeWorld(D, T, POSES) {
     const i = c[(rnd() * c.length) | 0], y = f[i];
     if (grad(x, y, z)[1] < 0.55 || nearPose(x, z, 5)) return;
     occ.add(key);
-    column(x, y - 0.3, z, min(f[i + 1] - rr(0.6, 2.5), rr(14, 28)), kind, dens);
+    column(x, y - 0.3, z, min(f[i + 1] - rr(0.6, 2.5), rnd() < 0.3 ? rr(5, 12) : rr(13, 28)), kind, dens * rr(0.6, 1.1));
   };
-  for (let i = 0; i < 30000; i++) {
+  for (let i = 0; i < 40000; i++) {
     const x = rr(OX, OX + PER), z = rr(OZ, OZ + PER);
     if (rnd() < kelpDens(x, z)) tryColumn(x, z, rnd() < 0.18 ? 1 : rnd() < 0.05 ? 2 : 0);
   }
@@ -205,8 +220,8 @@ function makeWorld(D, T, POSES) {
     if (ny < 0.72) continue;
     const x = T.wp[k] + rr(-0.75, 0.75), z = T.wp[k + 2] + rr(-0.75, 0.75), y = T.wp[k + 1], sa = T.vs[k / 3];
     if (nearPose(x, z, 1.5) || y > -2) continue;
-    const meadow = sstep(0.5, 0.62, pfbm(x, 5, z, 0.018, 3)) * sstep(0.4, 0.8, sa), u = rnd();
-    if (u < meadow * 0.34) { // a bushy clump
+    const meadow = sstep(0.46, 0.56, pfbm(x, 5, z, 0.014, 3)) * sstep(0.4, 0.8, sa), u = rnd();
+    if (u < meadow * 0.6) { // a bushy clump
       const bl = 16 + (rnd() * 10 | 0), ln = rr(0.4, 0.95);
       for (let j = 0; j < bl; j++) leaf(small, x + rr(-0.16, 0.16), y - 0.04, z + rr(-0.16, 0.16), ln * rr(0.55, 1.25), rnd() * TAU, rr(0.04, 0.4), rr(0.03, 0.055), 0, 2, rnd(), rnd(), rr(0.3, 0.7));
     } else if (sa < 0.4 && u < 0.2 * sstep(0.45, 0.6, pfbm(x, 9, z, 0.05, 2))) {
@@ -262,6 +277,28 @@ function makeWorld(D, T, POSES) {
       place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [x + rr(-0.3, 0.3), y, z + rr(-0.3, 0.3)], mesh, mat, sc, fract(sd + rr(-0.05, 0.05)));
     }
   }
+  // --- mini reefs: boulder heaps crusted with coral and sponge, with grass about them, spread over the sand so every view has a landmark
+  rseed(15);
+  const MR = [];
+  for (let t = 0; t < 60000 && MR.length < 150; t++) {
+    const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2];
+    if (T.wn[k + 1] < 0.9 || y > -8 || y < -24 || nearPose(x, z, 8) || dist2(x, z, SHIP[0], SHIP[1]) < 14) continue;
+    if (MR.some((p) => dist2(x, z, p[0], p[1]) < 30)) continue;
+    MR.push([x, z]);
+    const nb = 5 + (rnd() * 5 | 0), top = [];
+    for (let b = 0; b < nb; b++) {
+      const a = rnd() * TAU, r = rnd() * 2.2, sc = rr(0.9, 2.3), bx = x + cos(a) * r, bz = z + sin(a) * r, by = gy(bx, bz) + sc * (0.2 + 0.35 * rnd());
+      solid(rnd() * 4 | 0, bx, by, bz, sc, qRand(), 1, rnd(), 1, 0); top.push([bx, by + sc * 0.6, bz, sc]);
+    }
+    const sd = rnd(), kind = rnd() < 0.6 ? 0 : 1;
+    for (let m = 0; m < 34; m++) {
+      const q = top[(rnd() * top.length) | 0], a = rnd() * TAU, r = rnd() * q[3] * 0.6;
+      const [mesh, mat, sc] = PIECE(kind), px = q[0] + cos(a) * r, pz = q[2] + sin(a) * r;
+      place(null, 1, 0, 0, [px, rnd() < 0.5 ? q[1] + rr(-0.4, 0.1) : gy(px, pz), pz], mesh, mat, sc, fract(sd + rr(-0.05, 0.05)));
+    }
+    for (let m = 0; m < 10; m++) { const a = rnd() * TAU, r = rr(2, 5), px = x + cos(a) * r, pz = z + sin(a) * r, py = gy(px, pz); for (let j = 0; j < 14; j++) leaf(small, px + rr(-0.2, 0.2), py - 0.04, pz + rr(-0.2, 0.2), rr(0.4, 0.9), rnd() * TAU, rr(0.04, 0.4), rr(0.03, 0.055), 0, 2, rnd(), rnd(), rr(0.3, 0.7)); }
+    for (let m = 0; m < 2; m++) { const a = rnd() * TAU, px = x + cos(a) * 2.5, pz = z + sin(a) * 2.5, f = floorsAt(px, pz); if (f.length) column(px, f[f.length - 2] - 0.3, pz, rr(4, 9), 0, 0.5); }
+  }
   // --- rocks: boulders lying about, then rubble, then pebbles and shells on the sand
   rseed(8);
   for (let i = 0; i < 4000; i++) {
@@ -280,7 +317,7 @@ function makeWorld(D, T, POSES) {
   rseed(11);
   for (let i = 0; i < 260000; i++) { // pebbles, shells and rubble
     const k = pickV(), x = T.wp[k] + rr(-0.4, 0.4), z = T.wp[k + 2] + rr(-0.4, 0.4), y = T.wp[k + 1];
-    if (T.wn[k + 1] < 0.8 || nearPose(x, z, 1.3) || (T.vs[k / 3] > 0.6 && rnd() < 0.6)) continue;
+    if (T.wn[k + 1] < 0.8 || nearPose(x, z, 1.3) || (T.vs[k / 3] > 0.6 && rnd() < 0.85 - 0.8 * sstep(0.5, 0.62, pfbm(x, 14, z, 0.05, 2)))) continue;
     const sc = 0.04 + 0.22 * pow(rnd(), 2.4), q = qRand();
     nth++ % THIN || chunks[6][cellOf(x, z)].push(wrapT(x), y - sc * 0.3, wrapT(z), sc, q[0], q[1], q[2], q[3], 1, rnd(), 44, 0);
   }

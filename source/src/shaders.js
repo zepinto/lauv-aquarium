@@ -401,7 +401,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
       let ph = TAU * (380. * i.wp.x + 285. * i.wp.z) / PER + 2.6 * (big - .5) + 1.4 * (C.c - .5);
       let fade = ss(34., 8., dist);
       let rp = sin(ph) * fade;
-      sand *= 1. + .13 * rp;
+      sand *= (1. + .13 * rp) * (.82 + .36 * mix(F.h, B.h, ss(6., 1.5, dist))) ;
       alb = mix(alb, sand, sK);
       rdir = vec2f(380., 285.) / 475.;
       rdir *= cos(ph) * fade * .8;
