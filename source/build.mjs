@@ -10,7 +10,7 @@ import { transformSync } from 'esbuild';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FAUNA = readdirSync(path.join(here, 'src', 'fauna')).filter((f) => f.endsWith('.js')).sort().map((f) => 'fauna/' + f);
-const FILES = ['quality.js', 'math.js', 'lauvphys.js', 'shaders.js', 'world.js', 'lauv.js', 'registry.js', ...FAUNA, 'main.js', 'audio.js']; // concatenation order matters
+const FILES = ['quality.js', 'math.js', 'lauvphys.js', 'shaders.js', 'world.js', 'lauv.js', 'registry.js', ...FAUNA, 'touch.js', 'main.js', 'audio.js']; // concatenation order matters
 const dev = process.argv.includes('--dev'), readable = dev || process.argv.includes('--readable');
 const out = dev ? 'dev.html' : 'index.html';
 if (dev) FILES.push('dev.js');
