@@ -245,7 +245,7 @@ const WK = array<vec3f, 10>(vec3f(1., 2., 1.), vec3f(-2., 1., .9), vec3f(3., 1.,
 // ---------------------------------------------------------------- shared scene code
 const S_G = /*wgsl*/`
 struct G { vp: mat4x4f, sm: mat4x4f, cam: vec4f, right: vec4f, up: vec4f, fwd: vec4f, sun: vec4f, res: vec4f, mis: vec4f };
-const SIG = vec3f(.058, .0235, .0195);
+const SIG = vec3f(.060, .030, .0225);
 const KD = vec3f(.056, .0245, .0170);
 const WCOL = vec3f(.10, .50, .95);
 const KDZ = vec3f(.034, .023, .018);
@@ -402,6 +402,9 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
       let fade = ss(34., 8., dist);
       let rp = sin(ph) * fade;
       sand *= (1. + .13 * rp) * (.82 + .36 * mix(F.h, B.h, ss(6., 1.5, dist))) ;
+      // grit: dark and pale specks that fade out with distance, and a green-brown algae film in patches
+      let grit = hs(dot(floor(i.wp * 55.), vec3f(1., 57., 113.))); sand *= 1. + (grit - .5) * .5 * ss(7., 1.5, dist) + (hs(floor(i.wp.x * 9.) + floor(i.wp.z * 9.) * 31.) - .5) * .12;
+      sand = mix(sand, vec3f(.20, .24, .12), gm.a * .5 * ss(.2, .8, A.c));
       alb = mix(alb, sand, sK);
       rdir = vec2f(380., 285.) / 475.;
       rdir *= cos(ph) * fade * .8;
@@ -434,6 +437,8 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     flu = .1; gloss = .2; bump = 1.5;
   }
   let rip = 0.;
+  if (mat == 0) { alb *= 1. - .7 * gm.g; vao *= 1. - .5 * gm.g; }
+  if (mat == 1) { alb *= .75 + .5 * hs(sd * 31.7) * vec3f(1., .95 + .1 * hs(sd * 7.1), .9 + .2 * hs(sd * 3.3)); }
   let N = normalize(qrot(i.q, normalize(on + (A.n * .85 + B.n * .65 + C.n * .45 * ss(60., 12., dist) + F.n * .5 * fk) * bump + vec3f(rdir.x, sgro, rdir.y))));
   let L = g.sun.xyz; let V = normalize(g.cam.xyz - i.wp);
   let v1 = vol(i.wp + n0 * 1.5); let v2 = vol(i.wp + n0 * 4.5);
