@@ -36,6 +36,17 @@ const CLEARS = [
   [70, 40, 70, 40, 34, 12], [-20, -90, 20, -80, 24, 10], [-130, 0, -120, 20, 22, 10], [100, 150, 110, 160, 20, 10], [-60, 120, -30, 150, 20, 8],
 ];
 const SHIP = [70, 40]; // x, z of the wreck
+// towering pinnacles reaching up to -1.5 m, one per coarse cell
+{
+  const hp = (i, j, k) => { let h = Math.imul(i * 92837111 ^ j * 689287499 ^ k * 283923481, 2654435761); h ^= h >>> 15; return (h >>> 0) / 4294967296; };
+  for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) {
+    const x = OX + (i + 0.25 + 0.5 * hp(i, j, 1)) * PER / 5, z = OZ + (j + 0.25 + 0.5 * hp(i, j, 2)) * PER / 5;
+    let ok = hp(i, j, 3) < 0.75;
+    for (const m of MESAS) if (min(hypot(wrapD(x - m[0]), wrapD(z - m[1])), hypot(wrapD(x - m[2]), wrapD(z - m[3]))) < 25) ok = false;
+    if (hypot(wrapD(x - SHIP[0]), wrapD(z - SHIP[1])) < 40) ok = false;
+    if (ok) MESAS.push([x, z, x + 3 * hp(i, j, 4), z + 3 * hp(i, j, 5), 2.6 + 1.6 * hp(i, j, 6), -1.5 - 3 * hp(i, j, 7), 1.5, 2.5]);
+  }
+}
 // extra outcrops on a jittered grid so there is a lit rock mass in the mid-ground wherever one looks
 {
   const hsh = (i, j, k) => { let h = Math.imul(i * 73856093 ^ j * 19349663 ^ k * 83492791, 2654435761); h ^= h >>> 15; return (h >>> 0) / 4294967296; };
@@ -160,13 +171,13 @@ function makeWorld(D, T, POSES) {
     const la = rnd() * TAU, lm = rnd() < 0.5 ? rr(0, 0.12) : rr(0.15, 0.5), full = rr(0.4, 1.4) * dens, thick = rr(0.7, 1.5), mixT = rnd();
     const stem = (s, h) => { const a = ph + s * TAU / strands + h * tw, r = sr * (1 - 0.6 * h / H), ln = lm * h * h / H; return [x + cos(a) * r + cos(la) * ln, z + sin(a) * r + sin(la) * ln, a]; };
     for (let s = 0; s < strands; s++) for (let h = 0; h < H - 1; h += 1.7) { const p = stem(s, h); leaf(big, p[0], y + h, p[1], 2.1, p[2] + PI / 2, 0.1, 0.17, h, 1, rnd(), rnd(), 0.3); }
-    const n = floor(H * 26 * full);
+    const n = floor(H * 17 * full * (H > 15 ? 0.8 : 1));
     for (let i = 0; i < n; i++) {
       const t = pow(rnd(), 0.9), h = t * H, p = stem((rnd() * strands) | 0, h);
-      const L = ((0.55 + 0.75 * rnd() * rnd()) * (1 - 0.5 * t * t) * sc + 0.25) * (kind === 1 ? 1.2 : 1.15);
+      const L = ((0.7 + 0.9 * rnd() * rnd()) * (1 - 0.4 * t * t) * sc + 0.3) * (kind === 1 ? 1.3 : 1.3);
       const tilt = mix(rr(0.4, 1.0), rr(0.15, 0.45), t);
       const type = kind === 1 ? (rnd() < 0.8 ? 3 : 4) : kind === 2 ? (rnd() < 0.5 ? 4 : 0) : mixT < 0.25 ? (rnd() < 0.6 ? 3 : 0) : mixT < 0.35 ? 4 : 0;
-      leaf(big, p[0], y + h, p[1], L, rnd() * TAU, tilt, (L * (kind === 1 ? rr(0.09, 0.13) : rr(0.15, 0.21)) + 0.03) * thick, h, type, rnd(), rnd(), rr(0.38, 0.95));
+      leaf(big, p[0], y + h, p[1], L, rnd() * TAU, tilt, (L * (kind === 1 ? rr(0.07, 0.1) : rr(0.08, 0.13)) + 0.025) * thick, h, type, rnd(), rnd(), rr(0.38, 0.95));
     }
     splat(x, z, 0.9, 0.5);
     // light absorption footprint for the skylight bake
@@ -194,7 +205,7 @@ function makeWorld(D, T, POSES) {
     const i = c[(rnd() * c.length) | 0], y = f[i];
     if (grad(x, y, z)[1] < 0.55 || nearPose(x, z, 5)) return;
     occ.add(key);
-    column(x, y - 0.3, z, min(f[i + 1] - rr(0.6, 2.5), rnd() < 0.3 ? rr(5, 12) : rr(13, 28)), kind, dens * rr(0.6, 1.1));
+    column(x, y - 0.3, z, rnd() < 0.22 ? rr(3, 9) : f[i + 1] - rr(0.3, 1.8), kind, dens * rr(0.6, 1.1));
   };
   for (let i = 0; i < 70000; i++) {
     const x = rr(OX, OX + PER), z = rr(OZ, OZ + PER);
@@ -325,6 +336,13 @@ function makeWorld(D, T, POSES) {
       const [mesh, mat, sc] = PIECE(kind), px = q[0] + cos(a) * r, pz = q[2] + sin(a) * r;
       place(null, 1, 0, 0, [px, rnd() < 0.5 ? q[1] + rr(-0.4, 0.1) : gy(px, pz), pz], mesh, mat, sc, fract(sd + rr(-0.05, 0.05)));
     }
+    if (MR.length % 2 === 0) { // hero: big vivid coral heads on the heap
+      const nh = 3 + (rnd() * 3 | 0), hs_ = rnd();
+      for (let m = 0; m < nh; m++) {
+        const q = top[(rnd() * top.length) | 0], id = [7, 8, 10, 26, 7, 10][(rnd() * 6) | 0], a = rnd() * TAU;
+        place(null, 1, 0, 0, [q[0] + cos(a) * q[3] * 0.4, q[1] - 0.2, q[2] + sin(a) * q[3] * 0.4], id, 6, rr(2.2, 4.2), fract(hs_ + m * 0.21 + rr(-0.04, 0.04)));
+      }
+    }
     for (let m = 0; m < 10; m++) { const a = rnd() * TAU, r = rr(2, 5), px = x + cos(a) * r, pz = z + sin(a) * r, py = gy(px, pz); for (let j = 0; j < 14; j++) leaf(small, px + rr(-0.2, 0.2), py - 0.04, pz + rr(-0.2, 0.2), rr(0.4, 0.9), rnd() * TAU, rr(0.04, 0.4), rr(0.03, 0.055), 0, 2, rnd(), rnd(), rr(0.3, 0.7)); }
     for (let m = 0; m < 2; m++) { const a = rnd() * TAU, px = x + cos(a) * 2.5, pz = z + sin(a) * 2.5, f = floorsAt(px, pz); if (f.length) column(px, f[f.length - 2] - 0.3, pz, rr(4, 9), 0, 0.5); }
   }
@@ -345,7 +363,7 @@ function makeWorld(D, T, POSES) {
     chunks[(sc > 1.1 ? 3 : 0) + (rnd() * 3 | 0)][cellOf(x, z)].push(x - T.wn[k] * sc * 0.3, y - ny * sc * 0.3, z - T.wn[k + 2] * sc * 0.3, sc, q[0], q[1], q[2], q[3], 1, rnd(), sc > 1.1 ? 0 : 96, 0);
   }
   rseed(11);
-  for (let i = 0; i < 260000; i++) { // pebbles, shells and rubble
+  for (let i = 0; i < 90000; i++) { // pebbles, shells and rubble
     const k = pickV(), x = T.wp[k] + rr(-0.4, 0.4), z = T.wp[k + 2] + rr(-0.4, 0.4), y = T.wp[k + 1];
     if (T.wn[k + 1] < 0.8 || nearPose(x, z, 1.3) || (T.vs[k / 3] > 0.6 && rnd() < 0.85 - 0.8 * sstep(0.5, 0.62, pfbm(x, 14, z, 0.05, 2)))) continue;
     const sc = 0.04 + 0.22 * pow(rnd(), 2.4), q = qRand();
