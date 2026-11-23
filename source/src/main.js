@@ -358,7 +358,7 @@ const RES1 = /[?&]res=1\b/.test(location.search); // fixed full resolution: no d
 const SKIP = {}; // debugging: SKIP.terrain / chunks / props / big / small = true leaves that set out of the frame
 let drive = null; // scripted drive of the free camera (see __world.drive)
 let kf = 0, kb = 0, kl = 0, kr = 0, ku = 0, kd = 0, ks = 0, mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0, hN = 0, hMax = 0, hMin = 1e9, hPer = 1e9, hLate = 0, hTot = 0, tId = -1, tN = 0, tx0 = 0, ty0 = 0, tx = 0, ty = 0;
-const TANH = 0.6, NEAR = 0.1, EXPO = 0.62, RAYS = 0.54;
+const TANH = 0.6, NEAR = 0.1, EXPO = 0.5, RAYS = 0.6;
 const submitList = [null];
 const rowOrds = Array.from({ length: 9 }, () => new Uint8Array(CELLS));
 const IMGS = [4, 5, 3, 7, 1, 8, 6, 2, 0]; // the 3x3 copies of the tile: k = column + 3 * row, 4 is the base tile; nearest first
