@@ -23,7 +23,7 @@ for (const q of qs) {
     const last = r.g[0].map((_, i) => pc(i, 0.05)), med = pc(1, 0.5);
     rows.push({ p, med: +med.toFixed(1), ms: last.slice(0, last.length - 2).map(v => +v.toFixed(2)), gpu: +last[last.length - 2].toFixed(2), cpu: +last[last.length - 1].toFixed(2), fps: +(1000 / mean).toFixed(1), p95: +d.slice().sort((a, c) => a - c)[Math.floor(d.length * .95)].toFixed(1) });
   }
-  console.log(q + '\n' + rows.map(r => '  p' + r.p + ' ' + JSON.stringify(r.ms) + ' (scene median ' + r.med + ') gpu ' + r.gpu + ' fps ' + r.fps + ' p95 ' + r.p95).join('\n'));
+  console.log(q + '\n' + rows.map(r => '  p' + r.p + ' ' + JSON.stringify(r.ms) + ' (scene median ' + r.med + ') gpu ' + r.gpu + ' cpu ' + r.cpu + ' fps ' + r.fps + ' p95 ' + r.p95).join('\n'));
   await page.close();
 }
 await b.close();

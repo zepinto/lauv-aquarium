@@ -339,6 +339,9 @@ const PIXMAX = 2560 * 1440, PIXMIN = mob ? 25e4 : LV > 1 ? 5e5 : 1920 * 1080, DE
 // ?off=a,b,... skips draw groups to see what they cost: terrain solids chunks props fauna leaf small surf spr
 const OFF = new Set((UQ.get('off') || '').split(','));
 const FIXT = UQ.has('t') ? +UQ.get('t') : -1; // ?t=seconds freezes the animation clock (same frame before and after)
+// ?sync=1 starts the next frame only when the GPU has finished this one (like a display with back-pressure): the GPU timings
+// and the frame rate measured in headless Chrome, which has none, are then true
+const SYNC = UQ.get('sync') === '1';
 const FIXRES = UQ.get('res') === '1'; // fixed internal resolution (full window size) and draw distance, for measuring
 let W = 0, H = 0, DW = 0, DH = 0, pix = FIXRES ? PIXMAX : +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = FIXRES ? 1 : +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
 let passScene, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [], passTaa = [], bgTaa = [], bgPostK = [], bloomBG0 = [];
@@ -580,7 +583,7 @@ function collide() {
 }
 
 function frame(now) {
-  requestAnimationFrame(frame);
+  if (!SYNC) requestAnimationFrame(frame);
   const dtr = now - F[LAST]; F[LAST] = now;
   let dt = dtr / 1000; if (dt > 0.1) dt = 0.1;
   // Dynamic resolution for 30+ fps: every second (0.4 s behind the menu) scale the load by k. Desktop High and Medium never
@@ -629,6 +632,7 @@ function frame(now) {
     F[HUDT] += dtr / 1000;
     if (F[HUDT] > 0.5) { info.textContent = `${(hN / F[HUDT]).toFixed(0)} fps  ·  worst frame ${hMax.toFixed(1)} ms  ·  late frames ${hLate} (total ${hTot})  ·  GPU ${F[GPU].toFixed(2)} ms  ·  ${W}x${H} (${W * 100 / DW | 0}%)`; F[HUDT] = 0; hPer = hMin; hN = 0; hMax = 0; hMin = 1e9; hLate = 0; }
   }
+  if (SYNC) Q.onSubmittedWorkDone().then(() => requestAnimationFrame(frame));
 }
 
 // ---------------------------------------------------------------- input

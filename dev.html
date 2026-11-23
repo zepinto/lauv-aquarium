@@ -166,7 +166,7 @@ try { SV = (localStorage.abyssal || '').split(','); bad = localStorage.abyssalLo
 const UQ = new URLSearchParams(location.search); // ?lv=0|1|2 forces a level (not remembered), ?res=1 fixes the resolution (main.js)
 LV = UQ.has('lv') ? +UQ.get('lv') : SV[0] ? +SV[0] : mob ? (mem > 7 ? 1 : 2) : mem <= 4 ? 2 : 0;
 if (bad && LV < 2 && !UQ.has('lv')) { SV = [++LV]; keep('abyssal', LV); }
-const THIN = 1 << LV, SHADOW = LV ? 2048 : 4096, TAA = UQ.has('aa') ? UQ.get('aa') === 't' : LV < 2, AA = UQ.has('aa') ? (UQ.get('aa') === '4' ? 4 : 1) : LV > 1 || TAA ? 1 : 4, WATER = LV > 1 ? 256 : 512, FASTSH = !UQ.has('sh9'), RAYN = LV > 1 ? 12 : 34;
+const THIN = 1 << LV, SHADOW = LV ? 2048 : 4096, TAA = UQ.has('aa') ? UQ.get('aa') === 't' : LV < 2, AA = UQ.has('aa') ? (UQ.get('aa') === '4' ? 4 : 1) : LV > 1 || TAA ? 1 : 4, WATER = LV > 1 ? 256 : 512, FASTSH = UQ.has('sh4'), RAYN = LV > 1 ? 12 : 34;
 
 // ============================================================================
 // math + procedural helpers (load-time only unless noted)
@@ -621,8 +621,9 @@ fn shadow4(p: vec3f) -> f32 {
         + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(-e, e), s.z) + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(e, e), s.z)) * .25;
 }
 fn shadow9(p: vec3f, d: f32) -> f32 {
+  // 9 taps within 30 m, 4 to 90 m, one beyond: what the far taps would soften can't be seen there
   if (LOW || d > 90.) { return shadow1(p); }
-  if (FASTSH) { return shadow4(p); }
+  if (FASTSH || d > 30.) { return shadow4(p); }
   let s = shUV(p); let e = 2.1 / ${SHADOW}.; var a = 0.;
   for (var x = -1; x <= 1; x++) { for (var y = -1; y <= 1; y++) { a += textureSampleCompareLevel(tSh, sS, s.xy + vec2f(f32(x), f32(y)) * e, s.z); } }
   return a / 9.;
@@ -1155,7 +1156,15 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
     let w = (bw + .02) / (.02 + abs(r.a - zf) / zf);
     acc += r.rgb * w; ws += w;
   }
-  var c = textureLoad(tS, px, 0).rgb + acc / ws;
+  var sc = textureLoad(tS, px, 0).rgb;
+  if (${TAA}) {
+    // the temporal filter softens a little: sharpen back (unsharp mask, 4 taps)
+    let fm = vec2i(textureDimensions(tS)) - 1;
+    let av = (textureLoad(tS, clamp(px + vec2i(1, 0), vec2i(0), fm), 0).rgb + textureLoad(tS, clamp(px - vec2i(1, 0), vec2i(0), fm), 0).rgb
+            + textureLoad(tS, clamp(px + vec2i(0, 1), vec2i(0), fm), 0).rgb + textureLoad(tS, clamp(px - vec2i(0, 1), vec2i(0), fm), 0).rgb) * .25;
+    sc = max(sc + clamp(sc - av, vec3f(-.5), vec3f(.5)) * .45, vec3f(0.));
+  }
+  var c = sc + acc / ws;
   let bl = textureSampleLevel(tB, sC, uv, 0.).rgb;
   c = mix(c, bl, .06) + bl * .03;
   c *= g.mis.x;
@@ -2119,6 +2128,9 @@ const PIXMAX = 2560 * 1440, PIXMIN = mob ? 25e4 : LV > 1 ? 5e5 : 1920 * 1080, DE
 // ?off=a,b,... skips draw groups to see what they cost: terrain solids chunks props fauna leaf small surf spr
 const OFF = new Set((UQ.get('off') || '').split(','));
 const FIXT = UQ.has('t') ? +UQ.get('t') : -1; // ?t=seconds freezes the animation clock (same frame before and after)
+// ?sync=1 starts the next frame only when the GPU has finished this one (like a display with back-pressure): the GPU timings
+// and the frame rate measured in headless Chrome, which has none, are then true
+const SYNC = UQ.get('sync') === '1';
 const FIXRES = UQ.get('res') === '1'; // fixed internal resolution (full window size) and draw distance, for measuring
 let W = 0, H = 0, DW = 0, DH = 0, pix = FIXRES ? PIXMAX : +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = FIXRES ? 1 : +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
 let passScene, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [], passTaa = [], bgTaa = [], bgPostK = [], bloomBG0 = [];
@@ -2360,7 +2372,7 @@ function collide() {
 }
 
 function frame(now) {
-  requestAnimationFrame(frame);
+  if (!SYNC) requestAnimationFrame(frame);
   const dtr = now - F[LAST]; F[LAST] = now;
   let dt = dtr / 1000; if (dt > 0.1) dt = 0.1;
   // Dynamic resolution for 30+ fps: every second (0.4 s behind the menu) scale the load by k. Desktop High and Medium never
@@ -2409,6 +2421,7 @@ function frame(now) {
     F[HUDT] += dtr / 1000;
     if (F[HUDT] > 0.5) { info.textContent = `${(hN / F[HUDT]).toFixed(0)} fps  ·  worst frame ${hMax.toFixed(1)} ms  ·  late frames ${hLate} (total ${hTot})  ·  GPU ${F[GPU].toFixed(2)} ms  ·  ${W}x${H} (${W * 100 / DW | 0}%)`; F[HUDT] = 0; hPer = hMin; hN = 0; hMax = 0; hMin = 1e9; hLate = 0; }
   }
+  if (SYNC) Q.onSubmittedWorkDone().then(() => requestAnimationFrame(frame));
 }
 
 // ---------------------------------------------------------------- input

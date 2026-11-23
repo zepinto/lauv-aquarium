@@ -236,8 +236,9 @@ fn shadow4(p: vec3f) -> f32 {
         + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(-e, e), s.z) + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(e, e), s.z)) * .25;
 }
 fn shadow9(p: vec3f, d: f32) -> f32 {
+  // 9 taps within 30 m, 4 to 90 m, one beyond: what the far taps would soften can't be seen there
   if (LOW || d > 90.) { return shadow1(p); }
-  if (FASTSH) { return shadow4(p); }
+  if (FASTSH || d > 30.) { return shadow4(p); }
   let s = shUV(p); let e = 2.1 / ${SHADOW}.; var a = 0.;
   for (var x = -1; x <= 1; x++) { for (var y = -1; y <= 1; y++) { a += textureSampleCompareLevel(tSh, sS, s.xy + vec2f(f32(x), f32(y)) * e, s.z); } }
   return a / 9.;
@@ -770,7 +771,15 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
     let w = (bw + .02) / (.02 + abs(r.a - zf) / zf);
     acc += r.rgb * w; ws += w;
   }
-  var c = textureLoad(tS, px, 0).rgb + acc / ws;
+  var sc = textureLoad(tS, px, 0).rgb;
+  if (${TAA}) {
+    // the temporal filter softens a little: sharpen back (unsharp mask, 4 taps)
+    let fm = vec2i(textureDimensions(tS)) - 1;
+    let av = (textureLoad(tS, clamp(px + vec2i(1, 0), vec2i(0), fm), 0).rgb + textureLoad(tS, clamp(px - vec2i(1, 0), vec2i(0), fm), 0).rgb
+            + textureLoad(tS, clamp(px + vec2i(0, 1), vec2i(0), fm), 0).rgb + textureLoad(tS, clamp(px - vec2i(0, 1), vec2i(0), fm), 0).rgb) * .25;
+    sc = max(sc + clamp(sc - av, vec3f(-.5), vec3f(.5)) * .45, vec3f(0.));
+  }
+  var c = sc + acc / ws;
   let bl = textureSampleLevel(tB, sC, uv, 0.).rgb;
   c = mix(c, bl, .06) + bl * .03;
   c *= g.mis.x;
