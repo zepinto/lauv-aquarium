@@ -204,7 +204,7 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   let n = .6 + .4 * sin(i.uv.x * 5. + i.b.z * 30. + i.b.x * 4.) * sin(i.uv.y * 4.3 + i.b.z * 17. - i.b.x * 3.);
   let al = pow(max(1. - r2, 0.), 2.) * n * i.b.w;
   let E = sunE(i.wp.y, z) * (.3 + .7 * i.sh);
-  var c = vec3f(.62, .54, .42) * (E * .8 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * 1.5);
+  var c = vec3f(.5, .41, .30) * (E * .9 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * 1.0);
   c = c * T + fg * (1. - T);
   return vec4f(min(max(c * al, vec3f(0.)), vec3f(12.)), al * mix(.5, 1., T));
 }
@@ -306,6 +306,60 @@ function lauvKelpNear(x, y, z, r) {
   return 0;
 }
 
+// ---------------------------------------------------------------- set-piece rocks (boulders, fluke, ship, large chunks) as sphere shells
+// The terrain SDF has the terrain only; the instanced set pieces are separate meshes. Each mesh type is covered by a shell of
+// overlapping spheres (one per occupied cell of a coarse grid over its vertices), copied to every instance and put in a hash grid.
+const LS_C = 6;      // hash cell, metres
+let lsStart = null, lsSph = null, lsN = 0;
+function lauvSolids(solids, chunks, meshes) {
+  const sph = [];    // x, y, z, r
+  const shell = (m) => {   // local spheres of a mesh: [x, y, z, r] list
+    const ab = m.vb.buffer ? m.vb.buffer.slice(m.vb.byteOffset, m.vb.byteOffset + m.nv * 16) : m.vb.slice(0, m.nv * 16), f = new Float32Array(ab), n = m.nv;
+    let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+    for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { const v = f[i * 4 + k]; if (v < lo[k]) lo[k] = v; if (v > hi[k]) hi[k] = v; }
+    const ext = max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), cell = ext / 4, g = new Map();
+    for (let i = 0; i < n; i++) {
+      const x = f[i * 4], y = f[i * 4 + 1], z = f[i * 4 + 2], key = floor((x - lo[0]) / cell) + 4096 * (floor((y - lo[1]) / cell) + 4096 * floor((z - lo[2]) / cell));
+      let c = g.get(key); if (!c) g.set(key, c = [0, 0, 0, 0]); c[0] += x; c[1] += y; c[2] += z; c[3]++;
+    }
+    const out = []; for (const c of g.values()) out.push([c[0] / c[3], c[1] / c[3], c[2] / c[3], cell * 0.75]);
+    out.ext = ext; out.mid = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+    return out;
+  };
+  const cache = new Map();
+  const add = (id, data, from, count) => {
+    if (!cache.has(id)) cache.set(id, shell(meshes[id]));
+    const loc = cache.get(id);
+    for (let i = from; i < from + count; i++) {
+      const o = i * 12, px = data[o], py = data[o + 1], pz = data[o + 2], sc = data[o + 3], qx = data[o + 4], qy = data[o + 5], qz = data[o + 6], qw = data[o + 7];
+      const small = loc.ext * sc < 6, set = small ? [[loc.mid[0], loc.mid[1], loc.mid[2], loc.ext * 0.42]] : loc;
+      if (loc.ext * sc < 0.5) continue;   // pebbles
+      for (const s of set) {
+        const x = s[0] * sc, y = s[1] * sc, z = s[2] * sc;   // v + 2 q x (q x v + w v)
+        const cx = qy * z - qz * y + qw * x, cy = qz * x - qx * z + qw * y, cz = qx * y - qy * x + qw * z;
+        sph.push(px + x + 2 * (qy * cz - qz * cy), py + y + 2 * (qz * cx - qx * cz), pz + z + 2 * (qx * cy - qy * cx), s[3] * sc);
+      }
+    }
+  };
+  for (let m = 0; m < 12; m++) { const g = solids.ranges[m]; if (g[1]) add(m, solids.data, g[0], g[1]); }
+  for (let i = 3; i < 6; i++) add(14 + i, chunks[i].data, 0, chunks[i].n);
+  const n = sph.length / 4, cells = LK_N * LK_N * 4 / 9, W6 = 64, cnt = new Uint32Array(W6 * W6 + 1), key = new Uint32Array(n);
+  for (let i = 0; i < n; i++) { const cx = clamp(floor((sph[i * 4] - LK_O) / LS_C), 0, W6 - 1), cz = clamp(floor((sph[i * 4 + 2] - LK_O) / LS_C), 0, W6 - 1); key[i] = cx + W6 * cz; cnt[key[i] + 1]++; }
+  for (let i = 0; i < W6 * W6; i++) cnt[i + 1] += cnt[i];
+  const fill = cnt.slice(0, W6 * W6), sorted = new Float32Array(n * 4);
+  for (let i = 0; i < n; i++) { const o = fill[key[i]]++ * 4; sorted[o] = sph[i * 4]; sorted[o + 1] = sph[i * 4 + 1]; sorted[o + 2] = sph[i * 4 + 2]; sorted[o + 3] = sph[i * 4 + 3]; }
+  lsStart = cnt; lsSph = sorted; lsN = n; void cells;
+  lauvColliders.push((x, y, z) => {   // signed distance to the nearest shell sphere (> 0 inside), -1 far away
+    const cx = floor((x - LK_O) / LS_C), cz = floor((z - LK_O) / LS_C); let best = -1;
+    for (let gz = cz - 1; gz <= cz + 1; gz++) for (let gx = cx - 1; gx <= cx + 1; gx++) {
+      if (gx < 0 || gz < 0 || gx >= W6 || gz >= W6) continue;
+      const c = gx + W6 * gz;
+      for (let k = lsStart[c]; k < lsStart[c + 1]; k++) { const o = k * 4, d = lsSph[o + 3] - hypot(x - lsSph[o], y - lsSph[o + 1], z - lsSph[o + 2]); if (d > best) best = d; }
+    }
+    return best > 1 ? 1 : best;
+  });
+}
+
 // ---------------------------------------------------------------- particles
 function lauvEmit(x, y, z, size, kind, vx, vy, vz, life, alpha) {
   if (lauvPN >= LAUV_MAXP) return;
@@ -325,7 +379,7 @@ function lauvParticles(dt) {
     lauvP[o] += lauvPV[i * 3] * dt; lauvP[o + 1] += lauvPV[i * 3 + 1] * dt; lauvP[o + 2] += lauvPV[i * 3 + 2] * dt;
     const s0 = lauvPL[i * 2 + 1];
     if (kind < 0.5) { lauvP[o + 3] = s0 * (0.8 + 0.4 * a); lauvP[o + 7] = a > 0.8 ? (1 - a) / 0.2 : 1; if (lauvP[o + 1] > -0.05) lauvP[o + 7] = 0; }
-    else { lauvP[o + 3] = s0 * (1 + 2.2 * sqrt(a)); lauvP[o + 7] = 0.85 * (a < 0.08 ? a / 0.08 : 1) * (1 - a) * (1 - a); }
+    else { lauvP[o + 3] = s0 * (1 + 1.6 * sqrt(a)); lauvP[o + 7] = 0.8 * (a < 0.08 ? a / 0.08 : 1) * (1 - a) * (1 - a); }
   }
 }
 
@@ -522,7 +576,7 @@ function lauvEffects(dt) {
     if (H.impact > 0.05) lauvAud.thud = max(lauvAud.thud, min(H.impact * 2.2, 1));
     const up = H.ny > 0.25 ? 1 : 0.5;    // sediment rises mostly where the surface faces up
     S.puffAcc += (H.slide * 9 + H.impact * 40) * up * dt;
-    while (S.puffAcc > 1) { S.puffAcc -= 1; lauvEmit(H.x + rr(-0.12, 0.12), H.y + rr(0, 0.12), H.z + rr(-0.12, 0.12), rr(0.2, 0.45), 1, rr(-0.12, 0.12), rr(0.04, 0.2), rr(-0.12, 0.12), rr(2.5, 4.5), 1); }
+    while (S.puffAcc > 1) { S.puffAcc -= 1; lauvEmit(H.x + rr(-0.12, 0.12), H.y + rr(0, 0.12), H.z + rr(-0.12, 0.12), rr(0.15, 0.38), 1, rr(-0.12, 0.12), rr(0.04, 0.2), rr(-0.12, 0.12), rr(2.5, 4.5), 1); }
   } else { S.sinceContact += dt; if (S.sinceContact > 0.15) S.inContact = false; if (S.sinceContact > 1.5) S.slideAcc = 0; }
   lauvAud.scrape += ((hit ? min(H.slide * 0.9, 1) : 0) - lauvAud.scrape) * min(dt * 12, 1);
   S.scratchFlash = max(0, S.scratchFlash - dt * 1.6);

@@ -325,6 +325,7 @@ Q.writeTexture({ texture: tMap }, Wd.gm, { bytesPerRow: 2048 }, [512, 512]);
   Q.submit([e.finish()]);
 }
 lauvKelp(Wd.big); // kelp leaves as segments for propeller fouling, before the generator's copy goes
+lauvSolids(Wd.solids, Wd.chunks, meshes); // set-piece rocks as colliders (lauv.js)
 // the GPU has its own copies now: let go of the generator's (about 300 MB)
 for (const o of [Wd.big, Wd.bigF, Wd.small, ...Wd.chunks, ...Wd.props]) o.buf = o.data = 0;
 Wd.glints = Wd.volD = Wd.gm = T.vb = T.ib = T.wp = T.wn = 0;
@@ -649,7 +650,7 @@ window.__app = {
   state() {
     const hd = ((lv.yaw * 180 / PI) % 360 + 360) % 360;
     return { x: lv.pos[0], y: lv.pos[1], z: lv.pos[2], depth: -lv.pos[1], u: lv.v[0], roll: lv.roll, pitch: lv.pitch, yaw: lv.yaw, heading: hd, scratches: lauvS.scratches, fouled: lv.fouled > 0,
-      throttle: lv.in.throttle, gpu: F[GPU], particles: lauvPN, contact: lauvHit.n, rpm: lv.rpm, thrust: lv.thrust, fins: Array.from(lv.servo), cam: lauvS.camMode, fps: lauvS.fps, paused: lauvS.paused };
+      throttle: lv.in.throttle, gpu: F[GPU], particles: lauvPN, contact: lauvHit.n, rpm: lv.rpm, thrust: lv.thrust, fins: Array.from(lv.servo), cam: lauvS.camMode, camPos: [lauvS.cpx, lauvS.cpy, lauvS.cpz], camTarget: [lauvS.tx, lauvS.ty, lauvS.tz], camYaw: lauvS.camYaw, fps: lauvS.fps, paused: lauvS.paused };
   },
   key(cmd, down) { lauvKey(cmd, down); },
   pause(b) { lauvS.paused = !!b; },
@@ -660,6 +661,6 @@ window.__app = {
   vehicle: lv,
   // test helper: advance the simulation by sec seconds at 60 Hz regardless of the frame rate
   sim(sec) { for (let t = 0; t < sec; t += 1 / 60) { lauvAdvance(1 / 60); lauvParticles(1 / 60); } lauvS.snap = 1; },
-  kelpNear: lauvKelpNear, sdf: lauvSdf, hit: lauvHit,
+  kelpNear: lauvKelpNear, sdf: lauvSdf, solids: () => lsN, hit: lauvHit,
   kelpSample(n) { const o = [], N = lkSeg.length / 7, st = floor(N / n); for (let i = 0; i < n; i++) o.push(Array.from(lkSeg.subarray(i * st * 7, i * st * 7 + 7))); return o; },
 };
