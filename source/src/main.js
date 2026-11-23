@@ -121,6 +121,7 @@ const pSnow = scenePipe(mSpr, 'vsSnow', 'fsSnow', [ibSnow], { strip: true, blend
 const pSolidSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid]), pTerrSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid], { cull: 'front' });
 const pLeafSh = shadowPipe(mLeaf, 'vs', [ibLeaf], { strip: true, constants: { ROWS: 3 } });
 await lauvInit(); // the LAUV: model, pipelines (lauv.js)
+for (const f of FAUNA) if (f.init) await f.init();
 
 const mWater = mod(W_WATER);
 const pWater = device.createRenderPipeline({ layout: 'auto', vertex: { module: mWater, entryPoint: 'vs' }, fragment: { module: mWater, entryPoint: 'fs', targets: [{ format: HDR }] } });
@@ -488,6 +489,7 @@ function render() {
   r.setPipeline(pManta); r.setVertexBuffer(1, ibManta); r.drawIndexed(MANTA.ib.length, nManta, MANTA.i0, MANTA.v0, 0);
   r.setPipeline(pFish); r.setVertexBuffer(1, ibFish); r.drawIndexed(FISH.ib.length, nFish, FISH.i0, FISH.v0, 0);
   lauvDraw(r);
+  for (const f of FAUNA) if (f.draw) f.draw(r);   // animals (fauna/*.js); each calls useTile itself
   // kelp and plants: 9-row blades up close, 5 rows mid-range, a decimated set far away
   if (!SKIP.big) {
     r.setPipeline(pLeaf); r.setVertexBuffer(0, ibBig); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 18, 0, 24);
@@ -527,6 +529,7 @@ function sdAt(wx, wy, wz) {
   const e = p + (q - p) * v; return (e + (r + (s - r) * v - e) * (z - iz)) / 127;
 }
 
+let gPaused = false, gStep = 0;
 function frame(now) {
   requestAnimationFrame(frame);
   const dtr = now - F[LAST]; F[LAST] = now;
@@ -549,8 +552,11 @@ function frame(now) {
     if (was !== pix + det) keep('abyssal', [LV, pix < top ? pix | 0 : '', det]); // nothing kept at full resolution
     dynN = dynT = dynG = dynGN = 0; resize();
   }
+  // __app.pause/step: while paused the world only moves by what step() queued (deterministic clips, tools/clip.mjs)
+  if (gPaused) { dt = gStep; gStep = 0; }
   if (FIXT < 0) F[TIME] += dt; else F[TIME] = FIXT;
   lauvFrame(dt, !menu, drive && !drive.done ? drive : null);
+  for (const f of FAUNA) if (f.update) f.update(dt);
   if (drive && !drive.done) { drive.log.push(dtr); drive.xs.push(lv.pos[0]); drive.dist += drive.speed * dt; if (drive.dist >= drive.len) drive.done = true; }
   render();
   if (hud) {
@@ -641,7 +647,8 @@ window.__app = {
       throttle: lv.in.throttle, gpu: F[GPU], particles: lauvPN, contact: lauvHit.n, rpm: lv.rpm, thrust: lv.thrust, fins: Array.from(lv.servo), cam: lauvS.camMode, camPos: [lauvS.cpx, lauvS.cpy, lauvS.cpz], camTarget: [lauvS.tx, lauvS.ty, lauvS.tz], camYaw: lauvS.camYaw, fps: lauvS.fps, paused: lauvS.paused };
   },
   key(cmd, down) { lauvKey(cmd, down); },
-  pause(b) { lauvS.paused = !!b; },
+  pause(b) { gPaused = !!b; },
+  step(dt) { gStep += dt; },   // while paused: the next frame advances everything by dt
   hold(o) { lauvS.hold = o || null; lv.in.steer = o ? o.steer || 0 : 0; lv.in.pitch = o ? o.pitch || 0 : 0; },   // {steer, pitch} held regardless of the keyboard (tests)
   addCollider(fn) { lauvColliders.push(fn); },   // fn(x, y, z) -> signed distance in metres, > 0 inside the obstacle
   puff(x, y, z, n = 8) { for (let i = 0; i < n; i++) lauvEmit(x + rr(-.3, .3), y + rr(0, .3), z + rr(-.3, .3), rr(0.2, 0.45), 1, 0, 0.05, 0, 3.5, 1); },

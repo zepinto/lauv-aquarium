@@ -2,14 +2,15 @@
 //   npm run build            minified
 //   npm run build:readable   unminified, for debugging
 //   npm run build:dev        ../dev.html: unminified, plus the development tools in src/dev.js
-import { readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transformSync } from 'esbuild';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const FILES = ['quality.js', 'math.js', 'lauvphys.js', 'shaders.js', 'world.js', 'lauv.js', 'main.js', 'audio.js']; // concatenation order matters
+const FAUNA = readdirSync(path.join(here, 'src', 'fauna')).filter((f) => f.endsWith('.js')).sort().map((f) => 'fauna/' + f);
+const FILES = ['quality.js', 'math.js', 'lauvphys.js', 'shaders.js', 'world.js', 'lauv.js', 'registry.js', ...FAUNA, 'main.js', 'audio.js']; // concatenation order matters
 const dev = process.argv.includes('--dev'), readable = dev || process.argv.includes('--readable');
 const out = dev ? 'dev.html' : 'index.html';
 if (dev) FILES.push('dev.js');
