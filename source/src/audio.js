@@ -40,6 +40,10 @@ function mkSound(ac) {
     g.setValueAtTime(0, t); g.linearRampToValueAtTime(vol, t + att); g.setTargetAtTime(0, t + att, (dur - att) / 5);
   };
   const NOTES = [0, 2, 5, 7, 9, 12, 14, 17, 19]; // D major pentatonic, in semitones above A4
+  // the LAUV: motor whine that follows the rpm (two detuned saws + a gearbox tone through band-passes), contact scrape (noise), thud
+  const eng = G(0, out), wh1 = N(OscillatorNode, { type: 'sawtooth', frequency: 120 }, BQ('bandpass', 700, 1.4, eng)), wh2 = N(OscillatorNode, { type: 'sawtooth', frequency: 121 }, BQ('bandpass', 1100, 1.8, eng));
+  const gear = N(OscillatorNode, { type: 'sine', frequency: 400 }, G(0.5, eng)), scr = G(0, out), scrF = BQ('bandpass', 1800, 1.2, scr);
+  src(1.7, scrF, BQ('highpass', 600, 0.7, scr)); const thud = pool(2, 0.25, 'sine');
   let lt = ac.currentTime, tB = lt + 1.5, tC = lt + 5, tW = lt + 12, lx = F[CX], ly = F[CY], lz = F[CZ];
   out.gain.setTargetAtTime(VOL, lt, 1);
   return () => {
@@ -49,6 +53,14 @@ function mkSound(ac) {
     lt = now; lx = F[CX]; ly = F[CY]; lz = F[CZ];
     rush.gain.setTargetAtTime(0.5 * pow(min(v / 26, 1), 1.2), t, 0.3); rushF.frequency.setTargetAtTime(220 + v * 14, t, 0.3);
     const s = clamp(1 + ly / 30, 0, 1); wash.gain.setTargetAtTime(0.25 + 0.55 * s * s, t, 0.5);
+    {
+      const rpm = abs(lauvAud.rpm), k = min(rpm / 2100, 1);
+      wh1.frequency.setTargetAtTime(70 + rpm * 0.22, t, 0.12); wh2.frequency.setTargetAtTime(70 + rpm * 0.22 * 1.007, t, 0.12); gear.frequency.setTargetAtTime(150 + rpm * 0.6, t, 0.12);
+      eng.gain.setTargetAtTime(rpm > 30 ? 0.035 + 0.1 * k * k * (lauvAud.foul ? 0.6 : 1) : 0, t, 0.2);
+      scr.gain.setTargetAtTime(0.45 * lauvAud.scrape, t, 0.05); scrF.frequency.setTargetAtTime(1200 + 1800 * lauvAud.scrape, t, 0.08);
+      if (lauvAud.thud > 0.02) { play(thud, t, 150, 42, 0.3, 0.3 * lauvAud.thud, 0.004); lauvAud.thud = 0; }
+      if (lauvAud.bub && rpm > 300) { const f = rr(500, 1500); play(bub, t, f, f * 1.7, 0.05 + 40 / f, rr(0.02, 0.05), 0.006); lauvAud.bub = 0; }
+    }
     if (t > tB) { // a burst of 1-6 bubbles: short rising blips, smaller bubbles higher and shorter
       let tt = t;
       for (let n = 1 + rnd() * rnd() * 6 | 0; n--;) { const f = rr(380, 1300); play(bub, tt, f, f * rr(1.4, 2.2), 0.05 + 40 / f, rr(0.03, 0.08), 0.006); tt += rr(0.07, 0.2); }

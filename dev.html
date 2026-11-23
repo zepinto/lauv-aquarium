@@ -2,7 +2,7 @@
 <html lang=en>
 <head>
 <meta charset=utf-8>
-<title>Abyssal Garden</title>
+<title>LAUV Aquarium</title>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <meta name=theme-color content=#03131c>
 <style>
@@ -122,7 +122,7 @@ svg { width: 1.5em; height: 1.5em; fill: currentColor; }
 <body class=l>
 <canvas id=c></canvas>
 <div id=m>
-  <h1>Abyssal Garden</h1>
+  <h1>LAUV Aquarium</h1>
   <div id=a>
     <div id=l><div id=p><i id=b></i></div><p id=s>Diving…</p><p id=w hidden>Use Google Chrome for optimal experience</p></div>
     <div id=g>
@@ -130,9 +130,9 @@ svg { width: 1.5em; height: 1.5em; fill: currentColor; }
       <p id=q><span>Detail</span><button>Low</button><button>Medium</button><button>High</button></p>
       <div id=k>
         <p>
-          <i><b>W</b><b>A</b><b>S</b><b>D</b></i>Swim
-          <i><b>Q</b><b>E</b></i>Down / up
-          <i><b>Shift</b></i>Faster
+          <i><b>←</b><b>→</b></i>Steer
+          <i><b>↑</b><b>↓</b></i>Climb / dive
+          <i><b>W</b><b>S</b></i>Throttle
           <i><b>1</b>–<b>6</b></i>Viewpoints
         </p>
         <p>
@@ -383,6 +383,291 @@ function icosphere(sub, fn) {
 }
 
 // ============================================================================
+// LAUV rigid body + DUNE-style control (plain JS, no dependencies, fixed step)
+// ============================================================================
+// Ported (structure, coefficients, gains) from lauv-ocean-3d/src/lauv/LauvPhysics.js and DuneControl.js, reduced to the
+// underwater case. Body frame = model frame of lauv-omst.glb: +x from the tail (propeller, x = 0.02) to the nose
+// (x = 1.782), +y up (mast), +z starboard. World: y up, heading psi = 0 looks to -z, grows towards +x (like the camera).
+// DUNE conventions inside the controller: roll phi > 0 starboard down, pitch theta > 0 bow up, yaw clockwise from above.
+const LAUV_L = 1.782, LAUV_R = 0.074, LAUV_CGX = 0.85, LAUV_CGY = -0.012, LAUV_MASS = 29.8, LAUV_RHO = 1025, LAUV_G = 9.81;
+// hull radius profile (from the GLB), x from the tail
+const LAUV_PROF = [[0, 0], [0.015, 0.004], [0.045, 0.009], [0.255, 0.070], [0.346, 0.074], [1.690, 0.074], [1.718, 0.069], [1.730, 0.063], [1.740, 0.058],
+  [1.750, 0.050], [1.760, 0.041], [1.770, 0.027], [1.776, 0.016], [1.782, 0]];
+function lauvHullR(x) {
+  if (x <= 0 || x >= LAUV_L) return 0;
+  for (let i = 1; i < LAUV_PROF.length; i++) if (x <= LAUV_PROF[i][0]) { const a = LAUV_PROF[i - 1], b = LAUV_PROF[i]; return a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]); }
+  return 0;
+}
+// spheres that touch the world: x, y, z (body, metres), radius
+const LAUV_SPHERES = [[0.06, 0, 0, 0.11], [0.30, 0, 0, 0.09], [0.60, 0, 0, 0.085], [0.90, 0, 0, 0.085], [1.20, 0, 0, 0.085], [1.50, 0, 0, 0.085], [1.70, 0, 0, 0.07], [1.77, 0, 0, 0.035],
+  [0.245, 0, 0.14, 0.03], [0.245, 0, -0.14, 0.03], [0.245, -0.14, 0, 0.03], [0.245, 0.14, 0, 0.03], [0.65, 0.26, 0, 0.04]];
+const LAUV_PARAMS = {
+  netBuoy: 1.2,          // N, slightly positive buoyancy
+  cdAxial: 0.30, cdCross: 0.8, k1: 0.02, ca: 1.0, mungK: 0.1,
+  finArea: 0.083 * 0.08, finX: 0.245, finR: 0.11, finCLa: 3.0, finStall: 0.4, finCd0: 0.0144,
+  KT0: 0.17, J0: 1.25, KQ0: 0.036, JQ: 1.5, wake: 0.10, propD: 0.122, revThrust: 0.3,
+  rpmMax: 2100, rpmRev: 1200, rpmSlew: 700, tauMotor: 0.25,
+  rollLin: 0.35, rollQuad: 0.06,
+};
+const LAUV_DUNE = {
+  rollGains: [1.0, 0.5, 0.05], pitchGains: [1.5, 0, 1.1], headingGains: [1.5, 0, 0], hrateGains: [1.2, 0, 0],
+  maxFinRot: 25 * PI / 180, maxPitchAct: 25 * PI / 180, maxHeadingRate: 30 * PI / 180,
+  conv: { k: 0.25, m: 0.5, n: 0.5 }, servoLag: 0.12, servoRate: 140 * PI / 180,
+  mpsKi: 25, mpsIntLimit: 400, minRpm: 200, maxRpm: 2100, rpmAccel: 450,
+};
+
+class LauvPID {
+  constructor(g, lo, hi) { this.kp = g[0]; this.ki = g[1]; this.kd = g[2]; this.lo = lo; this.hi = hi; this.int = 0; this.prev = 0; }
+  reset() { this.int = 0; this.prev = 0; }
+  // err_derivative: the (negated) measured rate when there is one (DUNE DiscretePID)
+  step(dt, err, dErr) {
+    if (dErr === undefined) dErr = (err - this.prev) / dt;
+    let c = this.kp * err + this.kd * dErr + this.int;
+    if (this.hi > this.lo) c = c < this.lo ? this.lo : c > this.hi ? this.hi : c;
+    this.int += this.ki * err * dt; this.prev = err; return c;
+  }
+}
+const lauvWrap = (a) => atan2(sin(a), cos(a));
+
+// DUNE Control/AUV/Allocator: torques (k roll, m pitch, n yaw) -> fin servos [bottom, port, starboard, top]
+function lauvAllocate(k, m, n, p, out) {
+  const mx = p.maxFinRot;
+  let ang = n / p.conv.n * 0.5, marginV;
+  if (abs(ang) > mx) { ang = ang < 0 ? -mx : mx; marginV = 0; } else marginV = mx - abs(ang);
+  out[0] = -ang; out[3] = -ang;
+  ang = m / p.conv.m * 0.5; let marginH;
+  if (abs(ang) > mx) { ang = ang < 0 ? -mx : mx; marginH = 0; } else marginH = mx - abs(ang);
+  out[1] = -ang; out[2] = -ang;
+  ang = k / p.conv.k / 4; ang = clamp(ang, -marginH, marginH); ang = clamp(ang, -marginV, marginV);
+  out[1] += ang; out[2] -= ang; out[0] -= ang; out[3] += ang;
+  marginH -= abs(ang); marginV -= abs(ang);
+  const kA = ang * p.conv.k * 4;
+  ang = (k - kA) / p.conv.k * 0.5;
+  if (marginH > 0) { ang = clamp(ang, -marginH, marginH); out[1] += ang; out[2] -= ang; }
+  else if (marginV > 0) { ang = clamp(ang, -marginV, marginV); out[0] -= ang; out[3] += ang; }
+}
+
+class LauvVehicle {
+  constructor() {
+    this.p = LAUV_PARAMS; this.d = LAUV_DUNE; const P = this.p, d = this.d;
+    this.pos = new Float64Array(3);           // world position of the CG
+    this.R = new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);   // columns = body axes in world: R[0..2] x_b, R[3..5] y_b, R[6..8] z_b
+    this.v = new Float64Array(3);             // body-frame velocity relative to the water (u, vy, vz)
+    this.w = new Float64Array(3);             // body-frame angular velocity
+    this.mass = LAUV_MASS;
+    const ma = LAUV_RHO * PI * LAUV_R * LAUV_R * LAUV_L * P.ca;       // cross-flow added mass
+    this.mx = this.mass * (1 + P.k1 * 0 ) + ma * P.k1; this.my = this.mass + ma; this.mz = this.my;
+    const Iy = this.mass * LAUV_L * LAUV_L / 12 + ma * LAUV_L * LAUV_L / 12;
+    this.Ix = 0.5 * this.mass * LAUV_R * LAUV_R + 0.003; this.Iy = Iy; this.Iz = Iy;
+    this.weight = this.mass * LAUV_G; this.buoy = this.weight + P.netBuoy;
+    // slices for the cross-flow drag
+    this.ns = 18; this.sl = []; for (let i = 0; i < this.ns; i++) { const x = (i + 0.5) * LAUV_L / this.ns; this.sl.push([x - LAUV_CGX, lauvHullR(x)]); }
+    // DUNE controllers
+    this.pidRoll = new LauvPID(d.rollGains, -d.maxFinRot, d.maxFinRot); this.pidPitch = new LauvPID(d.pitchGains, -d.maxPitchAct, d.maxPitchAct);
+    this.pidHead = new LauvPID(d.headingGains, -d.maxHeadingRate, d.maxHeadingRate); this.pidHrate = new LauvPID(d.hrateGains, -d.maxFinRot, d.maxFinRot);
+    this.pidMps = new LauvPID([0, d.mpsKi, 0], 0, 0);
+    this.cmd = new Float64Array(4); this.servo = new Float64Array(4); this.tmp = new Float64Array(4);
+    this.in = { steer: 0, pitch: 0, throttle: 0.4 };    // steer: +1 right; pitch: +1 climb; throttle -0.4..1 (speed 2 m/s at 1)
+    this.headRef = 0; this.holdHeading = true; this.rpm = 0; this.rpmCmd = 0; this.propAngle = 0;
+    this.fouled = 0; this.thrust = 0; this.rpmPrev = 0; this.ctrlAcc = 0;
+    this.ffTable = null; this.buildFF();
+    this.t = 0; this.ydepth = 0; this.depthMin = -0.07;
+    this.contact = 0; this.sy = 0;
+  }
+  // rpm that gives speed U in calm water: table by bisection (DUNE speed model feed-forward)
+  buildFF() {
+    const P = this.p, t = new Float64Array(41);
+    for (let i = 0; i <= 40; i++) {
+      const U = i * 0.06; let lo = 0, hi = 4000;
+      for (let k = 0; k < 40; k++) { const mid = (lo + hi) / 2; if (this.propThrust(mid, U) > this.axialDrag(U)) hi = mid; else lo = mid; }
+      t[i] = (lo + hi) / 2;
+    }
+    this.ffTable = t;
+  }
+  ffRpm(U) { const f = clamp(U / 0.06, 0, 39.999), i = floor(f), a = this.ffTable; return a[i] + (a[i + 1] - a[i]) * (f - i); }
+  axialDrag(u) { return (LAUV_RHO * 0.5 * this.p.cdAxial * PI * LAUV_R * LAUV_R * 2.2 + 0.4) * abs(u) * u; }
+  propThrust(rpm, u) {
+    const P = this.p, n = rpm / 60, D = P.propD, nn = abs(n) + 1e-6;
+    const J = clamp(u * (1 - P.wake) / (nn * D), -1, 1.2), KT = P.KT0 * (1 - J / P.J0);
+    let T = LAUV_RHO * n * nn * D * D * D * D * KT; if (rpm < 0) T *= P.revThrust / 0.1 * 0.1; return T;
+  }
+  setPose(x, y, z, yaw, pitch) {
+    this.pos[0] = x; this.pos[1] = y; this.pos[2] = z;
+    const cp = cos(pitch), f = [sin(yaw) * cp, sin(pitch), -cos(yaw) * cp], s = [cos(yaw), 0, sin(yaw)];
+    const u = [s[1] * f[2] - s[2] * f[1], s[2] * f[0] - s[0] * f[2], s[0] * f[1] - s[1] * f[0]], R = this.R;
+    R[0] = f[0]; R[1] = f[1]; R[2] = f[2]; R[3] = u[0]; R[4] = u[1]; R[5] = u[2]; R[6] = s[0]; R[7] = s[1]; R[8] = s[2];
+    this.v.fill(0); this.w.fill(0); this.holdHeading = true; this.headRef = yaw; this.pidReset(); this.servo.fill(0);
+  }
+  pidReset() { this.pidRoll.reset(); this.pidPitch.reset(); this.pidHead.reset(); this.pidHrate.reset(); this.pidMps.reset(); }
+  setSpeed(u) { this.v[0] = u; this.in.throttle = clamp(u / 2, -0.4, 1); this.rpm = this.rpmCmd = u > 0.05 ? this.ffRpm(u) : 0; this.pidMps.int = 0; this.rpmPrev = this.rpm; }
+  // attitude (DUNE convention) from the rotation matrix
+  get yaw() { return atan2(this.R[0], -this.R[2]); }
+  get pitch() { return Math.asin(clamp(this.R[1], -1, 1)); }
+  get roll() { return -Math.asin(clamp(this.R[7], -1, 1)); }    // starboard down positive
+  get speed() { return this.v[0]; }
+  get depth() { return -this.pos[1]; }
+  toWorld(x, y, z, out) {
+    const R = this.R, a = x - LAUV_CGX, b = y - LAUV_CGY, c = z;
+    out[0] = this.pos[0] + R[0] * a + R[3] * b + R[6] * c; out[1] = this.pos[1] + R[1] * a + R[4] * b + R[7] * c; out[2] = this.pos[2] + R[2] * a + R[5] * b + R[8] * c; return out;
+  }
+  // ---- onboard control at ~30 Hz: DUNE attitude + allocator + speed task
+  control(dt) {
+    const d = this.d, I = this.in, u = this.v[0], back = u < 0;
+    const phi = this.roll, th = this.pitch, psi = this.yaw, p = this.w[0], q = this.w[2], r = -this.w[1];
+    // pitch
+    const pitchRef = I.pitch * 20 * PI / 180;
+    let m = this.pidPitch.step(dt, pitchRef - th, -(q * cos(phi) - r * sin(phi)));
+    if (back) m = -m;
+    // roll held at 0
+    let k = this.pidRoll.step(dt, -phi, -(p + Math.tan(th) * (sin(phi) * q + cos(phi) * r)));
+    if (back) k = -k;
+    // heading: a turn command sets the heading rate, otherwise the heading is held
+    let hrate;
+    if (abs(I.steer) > 0.02) { hrate = I.steer * d.maxHeadingRate; this.holdHeading = false; this.pidHead.reset(); }
+    else {
+      if (!this.holdHeading) { this.holdHeading = true; this.headRef = psi; }
+      hrate = this.pidHead.step(dt, lauvWrap(this.headRef - psi), -(sin(phi) * q + cos(phi) * r) / cos(th));
+      if (back) hrate = -hrate;
+    }
+    const n = this.pidHrate.step(dt, hrate - r);
+    lauvAllocate(k, m, n, d, this.cmd);
+    // speed task
+    const thr = I.throttle;
+    if (thr > 0.04) {
+      let rpm = this.pidMps.step(dt, thr * 2 - u) + this.ffRpm(thr * 2);
+      rpm = clamp(rpm, this.rpmPrev - d.rpmAccel * dt, this.rpmPrev + d.rpmAccel * dt);
+      this.rpmCmd = clamp(rpm, d.minRpm, d.maxRpm);
+    } else if (thr < -0.04) { this.rpmCmd = clamp(thr * 4000, -this.p.rpmRev, 0); this.pidMps.reset(); }
+    else { this.rpmCmd = 0; this.pidMps.reset(); }
+    this.rpmPrev = this.rpmCmd;
+  }
+  servos(dt) {
+    const d = this.d, al = 1 - exp(-dt / d.servoLag), mr = d.servoRate * dt;
+    for (let i = 0; i < 4; i++) { const e = clamp((this.cmd[i] - this.servo[i]) * al, -mr, mr); this.servo[i] = clamp(this.servo[i] + e, -d.maxFinRot * 1.04, d.maxFinRot * 1.04); }
+  }
+  // ---- one fixed physics step
+  step(dt) {
+    const P = this.p, R = this.R, v = this.v, w = this.w, rho = LAUV_RHO;
+    this.ctrlAcc += dt;
+    if (this.ctrlAcc >= 1 / 30) { this.control(this.ctrlAcc); this.ctrlAcc = 0; }
+    this.servos(dt);
+    // motor
+    const rl = this.rpmCmd, sl = P.rpmSlew * dt; let dr = (rl - this.rpm) * (1 - exp(-dt / P.tauMotor)); dr = clamp(dr, -sl, sl); this.rpm += dr;
+    this.propAngle += this.rpm / 60 * TAU * dt;
+    let Fx = 0, Fy = 0, Fz = 0, Tx = 0, Ty = 0, Tz = 0;
+    const u = v[0], vy = v[1], vz = v[2], wx = w[0], wy = w[1], wz = w[2];
+    // buoyancy (reduced when the hull breaks the surface) and weight, in the body frame
+    const depthTop = -(this.pos[1] + LAUV_R * 0.4), sub = clamp((depthTop + LAUV_R) / (2 * LAUV_R), 0, 1);
+    this.sub = sub;
+    const fw = this.buoy * sub - this.weight;                    // world vertical net force
+    Fx += R[1] * fw; Fy += R[4] * fw; Fz += R[7] * fw;
+    // buoyancy acts 12 mm above the CG: torque = r x F (F = buoyancy in the body frame)
+    const bx = R[1] * this.buoy * sub, by = R[4] * this.buoy * sub, bz = R[7] * this.buoy * sub, cy = -LAUV_CGY;
+    Tx += cy * bz * 1 - 0; Tz += -cy * bx; // (0,cy,0) x (bx,by,bz) = (cy*bz, 0, -cy*bx)
+    // axial drag (hull, appendages) with the fouling penalty
+    Fx -= this.axialDrag(u) * (1 + 0.8 * this.fouled);
+    // cross-flow drag on the hull strips
+    const cd = 0.5 * rho * P.cdCross * 2;
+    for (let i = 0; i < this.ns; i++) {
+      const s = this.sl[i], rx = s[0], rad = s[1] * LAUV_L / this.ns;   // rad = r * dx
+      const vly = vy + wz * rx, vlz = vz - wy * rx, vc = sqrt(vly * vly + vlz * vlz);
+      const fy = -cd * rad * vc * vly, fz = -cd * rad * vc * vlz;
+      Fy += fy; Fz += fz; Ty += -rx * fz; Tz += rx * fy;
+    }
+    // mast + sensor pod: extra sway / heave drag, small
+    // roll damping (bilge strips, fins, rotary skin friction)
+    Tx -= (P.rollLin + P.rollQuad * abs(wx)) * wx;
+    // fins
+    const q = P.finArea, rf = P.finX - LAUV_CGX, fr = P.finR;
+    for (let k = 0; k < 4; k++) {
+      // 0 bottom (y-), 1 port (z-), 2 starboard (z+), 3 top (y+); vertical fins have normal +z, horizontal +y
+      const vert = k === 0 || k === 3, py = k === 0 ? -fr : k === 3 ? fr : 0, pz = k === 1 ? -fr : k === 2 ? fr : 0;
+      const fvx = u + wy * pz - wz * py, fvy = vy + wz * rf - wx * pz, fvz = vz + wx * py - wy * rf;
+      const un = vert ? fvz : fvy, uf = fvx, s = uf < 0 ? -1 : 1, ua = abs(uf) + 1e-3;
+      const alpha = s * this.servo[k] - Math.atan(un / ua);
+      const as = P.finStall * Math.tanh(alpha / P.finStall), dyn = 0.5 * rho * q * (uf * uf + un * un);
+      const CL = P.finCLa * as, CD = P.finCd0 + 0.3 * CL * CL;
+      const fn = dyn * CL, fa = -s * dyn * CD;      // along the fin normal, along the chord
+      const Fyk = vert ? 0 : fn, Fzk = vert ? fn : 0;
+      Fx += fa; Fy += Fyk; Fz += Fzk;
+      // torque = r x F, r = (rf, py, pz), F = (fa, Fyk, Fzk)
+      Tx += py * Fzk - pz * Fyk; Ty += pz * fa - rf * Fzk; Tz += rf * Fyk - py * fa;
+    }
+    // propeller
+    {
+      const n = this.rpm / 60, nn = abs(n) + 1e-6, D = P.propD, J = clamp(u * (1 - P.wake) / (nn * D), -1, 1.3);
+      const vent = clamp((-(this.pos[1] + LAUV_R) - 0.0) / 0.08 + 0.3, 0.1, 1);   // prop disc near the surface
+      const f = (1 - 0.72 * this.fouled) * vent;
+      let T = rho * n * nn * D ** 4 * P.KT0 * (1 - J / P.J0), Q = rho * n * nn * D ** 5 * P.KQ0 * (1 - J / P.JQ);
+      if (n < 0) { T *= P.revThrust / 0.1 * 0.1 * 1.0; Q *= 0.1; }
+      this.thrust = T * f; Fx += T * f; Tx += Q * f;
+    }
+    // Munk moment (scaled), Coriolis
+    const mx = this.mx, my = this.my, mz = this.mz, mk = P.mungK;
+    // rigid body + added mass:  M dv/dt = F - w x (M v)
+    const Mx = mx * u, My = my * vy, Mz = mz * vz;
+    const ax = (Fx - (wy * Mz - wz * My)) / mx, ay = (Fy - (wz * Mx - wx * Mz)) / my, az = (Fz - (wx * My - wy * Mx)) / mz;
+    // torque side: I dw/dt = T - w x (I w) - mk * v x (M v)
+    const Ix = this.Ix, Iy = this.Iy, Iz = this.Iz;
+    const vMx = vy * Mz - vz * My, vMy = vz * Mx - u * Mz, vMz = u * My - vy * Mx;
+    const gx = (Iy * wy), gy = (Iz * wz), gz = (Ix * wx);   // placeholders replaced below
+    const Iwx = Ix * wx, Iwy = Iy * wy, Iwz = Iz * wz;
+    const cwx = wy * Iwz - wz * Iwy, cwy = wz * Iwx - wx * Iwz, cwz = wx * Iwy - wy * Iwx;
+    const awx = (Tx - cwx - mk * vMx) / Ix, awy = (Ty - cwy - mk * vMy) / Iy, awz = (Tz - cwz - mk * vMz) / Iz;
+    v[0] += ax * dt; v[1] += ay * dt; v[2] += az * dt; w[0] += awx * dt; w[1] += awy * dt; w[2] += awz * dt;
+    // kinematics: position, then rotation R <- R * exp(w dt)
+    const V0 = v[0], V1 = v[1], V2 = v[2];
+    this.pos[0] += (R[0] * V0 + R[3] * V1 + R[6] * V2) * dt; this.pos[1] += (R[1] * V0 + R[4] * V1 + R[7] * V2) * dt; this.pos[2] += (R[2] * V0 + R[5] * V1 + R[8] * V2) * dt;
+    this.rotate(w[0] * dt, w[1] * dt, w[2] * dt);
+    // water surface: the hull top stays at the surface
+    if (this.pos[1] > this.depthMin) { this.pos[1] = this.depthMin; const vyw = R[1] * v[0] + R[4] * v[1] + R[7] * v[2]; if (vyw > 0) { v[0] -= vyw * R[1]; v[1] -= vyw * R[4]; v[2] -= vyw * R[7]; } }
+    this.t += dt;
+  }
+  // R <- R * Rodrigues(axis angle a = (ax, ay, az) in the body frame), re-orthonormalised
+  rotate(ax, ay, az) {
+    const R = this.R, a = sqrt(ax * ax + ay * ay + az * az); if (a < 1e-12) return;
+    const kx = ax / a, ky = ay / a, kz = az / a, c = cos(a), s = sin(a), t = 1 - c;
+    const m00 = c + kx * kx * t, m01 = kx * ky * t - kz * s, m02 = kx * kz * t + ky * s;
+    const m10 = ky * kx * t + kz * s, m11 = c + ky * ky * t, m12 = ky * kz * t - kx * s;
+    const m20 = kz * kx * t - ky * s, m21 = kz * ky * t + kx * s, m22 = c + kz * kz * t;
+    // columns of R are body axes; new column j = sum_i R_col_i * m[i][j]
+    const c0 = [R[0], R[1], R[2]], c1 = [R[3], R[4], R[5]], c2 = [R[6], R[7], R[8]];
+    for (let r = 0; r < 3; r++) { R[r] = c0[r] * m00 + c1[r] * m10 + c2[r] * m20; R[3 + r] = c0[r] * m01 + c1[r] * m11 + c2[r] * m21; R[6 + r] = c0[r] * m02 + c1[r] * m12 + c2[r] * m22; }
+    // Gram-Schmidt
+    let l = hypot(R[0], R[1], R[2]); R[0] /= l; R[1] /= l; R[2] /= l;
+    let dd = R[3] * R[0] + R[4] * R[1] + R[5] * R[2]; R[3] -= dd * R[0]; R[4] -= dd * R[1]; R[5] -= dd * R[2];
+    l = hypot(R[3], R[4], R[5]); R[3] /= l; R[4] /= l; R[5] /= l;
+    R[6] = R[1] * R[5] - R[2] * R[4]; R[7] = R[2] * R[3] - R[0] * R[5]; R[8] = R[0] * R[4] - R[1] * R[3];
+  }
+  // impulse at body point r_b (relative to CG) along world normal n (unit, pointing out of the obstacle); returns the normal impulse
+  impulse(nx, ny, nz, rx, ry, rz, e, mu) {
+    const R = this.R, v = this.v, w = this.w;
+    const nb = [R[0] * nx + R[1] * ny + R[2] * nz, R[3] * nx + R[4] * ny + R[5] * nz, R[6] * nx + R[7] * ny + R[8] * nz];
+    // point velocity (body): v + w x r
+    const pv = [v[0] + w[1] * rz - w[2] * ry, v[1] + w[2] * rx - w[0] * rz, v[2] + w[0] * ry - w[1] * rx];
+    const vn = pv[0] * nb[0] + pv[1] * nb[1] + pv[2] * nb[2];
+    if (vn >= 0) return 0;
+    const rxn = [ry * nb[2] - rz * nb[1], rz * nb[0] - rx * nb[2], rx * nb[1] - ry * nb[0]];
+    const K = nb[0] * nb[0] / this.mx + nb[1] * nb[1] / this.my + nb[2] * nb[2] / this.mz + rxn[0] * rxn[0] / this.Ix + rxn[1] * rxn[1] / this.Iy + rxn[2] * rxn[2] / this.Iz;
+    const j = -(1 + e) * vn / K;
+    v[0] += j * nb[0] / this.mx; v[1] += j * nb[1] / this.my; v[2] += j * nb[2] / this.mz;
+    w[0] += j * rxn[0] / this.Ix; w[1] += j * rxn[1] / this.Iy; w[2] += j * rxn[2] / this.Iz;
+    // Coulomb friction on the tangential velocity (after the normal impulse)
+    const pv2 = [v[0] + w[1] * rz - w[2] * ry, v[1] + w[2] * rx - w[0] * rz, v[2] + w[0] * ry - w[1] * rx];
+    const vn2 = pv2[0] * nb[0] + pv2[1] * nb[1] + pv2[2] * nb[2];
+    const t = [pv2[0] - vn2 * nb[0], pv2[1] - vn2 * nb[1], pv2[2] - vn2 * nb[2]], tl = hypot(t[0], t[1], t[2]);
+    if (tl > 1e-4) {
+      const tn = [t[0] / tl, t[1] / tl, t[2] / tl], rxt = [ry * tn[2] - rz * tn[1], rz * tn[0] - rx * tn[2], rx * tn[1] - ry * tn[0]];
+      const Kt = tn[0] * tn[0] / this.mx + tn[1] * tn[1] / this.my + tn[2] * tn[2] / this.mz + rxt[0] * rxt[0] / this.Ix + rxt[1] * rxt[1] / this.Iy + rxt[2] * rxt[2] / this.Iz;
+      const jt = min(tl / Kt, mu * j);
+      v[0] -= jt * tn[0] / this.mx; v[1] -= jt * tn[1] / this.my; v[2] -= jt * tn[2] / this.mz;
+      w[0] -= jt * rxt[0] / this.Ix; w[1] -= jt * rxt[1] / this.Iy; w[2] -= jt * rxt[2] / this.Iz;
+    }
+    return j;
+  }
+}
+
+// ============================================================================
 // WGSL sources
 // ============================================================================
 
@@ -574,7 +859,7 @@ const WK = array<vec3f, 10>(vec3f(1., 2., 1.), vec3f(-2., 1., .9), vec3f(3., 1.,
 
 // ---------------------------------------------------------------- shared scene code
 const S_G = /*wgsl*/`
-struct G { vp: mat4x4f, sm: mat4x4f, cam: vec4f, right: vec4f, up: vec4f, fwd: vec4f, sun: vec4f, res: vec4f, mis: vec4f };
+struct G { vp: mat4x4f, sm: mat4x4f, cam: vec4f, right: vec4f, up: vec4f, fwd: vec4f, sun: vec4f, res: vec4f, mis: vec4f, va: vec4f, vb: vec4f };
 const SIG = vec3f(.058, .0235, .0195);
 const KD = vec3f(.056, .0245, .0170);
 const WCOL = vec3f(.16, .58, .90);
@@ -623,6 +908,17 @@ fn shadow9(p: vec3f) -> f32 {
   let s = shUV(p); let e = 2.1 / ${SHADOW}.; var a = 0.;
   for (var x = -1; x <= 1; x++) { for (var y = -1; y <= 1; y++) { a += textureSampleCompareLevel(tSh, sS, s.xy + vec2f(f32(x), f32(y)) * e, s.z); } }
   return a / 9.;
+}
+// the LAUV's shadow on the terrain: its axis (va.xyz tail, vb.xyz nose, va.w radius) as a soft capsule along the sun direction
+fn vehSh(p: vec3f) -> f32 {
+  let L = g.sun.xyz; let a = g.va.xyz - p; let b = g.vb.xyz - p;
+  let ta = dot(a, L); let tb = dot(b, L);
+  if (max(ta, tb) < 0.) { return 1.; }
+  let pa = a - L * ta; let pb = b - L * tb; let ba = pb - pa;
+  let h = clamp(-dot(pa, ba) / max(dot(ba, ba), 1e-6), 0., 1.);
+  let d = length(pa + ba * h); let t = max(mix(ta, tb, h), 0.);
+  let r = g.va.w;
+  return 1. - .8 * (1. - ss(r * .55, r * 1.1 + .012 * t, d)) * ss(14., 6., t);
 }
 fn cuv(p: vec3f) -> vec2f { return p.xz - g.sun.xz * (p.y / g.sun.y); }
 fn caus(p: vec3f, d: f32) -> vec3f {
@@ -750,7 +1046,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let v1 = vol(i.wp + n0 * 1.5); let v2 = vol(i.wp + n0 * 4.5);
   let ao = (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45) * vao * ss(.12, .6, hgt);
   let z = zone(i.wp);
-  let E = sunE(i.wp.y, z) * shadow9(i.wp + n0 * .35);
+  let E = sunE(i.wp.y, z) * shadow9(i.wp + n0 * .35) * vehSh(i.wp);
   let ndl = sat(dot(N, L));
   let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z)) * ao;
   let dl = E * ndl * (.10 + mix(vec3f(.33), ca, ss(.1, .45, dot(n0, L))) * 2.5);
@@ -1724,6 +2020,563 @@ function meshFish() {
 }
 
 // ============================================================================
+// the LAUV in the scene: glTF loader, PBR WGSL, particles, kelp fouling, contact, chase camera, HUD, hooks
+// ============================================================================
+// Physics and control live in lauvphys.js (plain JS). Everything here that touches the GPU or the world is called
+// from main.js: lauvInit (pipelines, model), lauvKelp (kelp positions for fouling), lauvFrame (step + camera),
+// lauvUpdate/lauvDraw (uniforms and draw calls in the scene pass).
+
+// ---------------------------------------------------------------- model finishes (after LauvModel.js)
+// [colour sRGB hex, roughness, metal, clear coat weight, 1 = decal lifted above the hull]
+const LAUV_PARTS = {
+  0: [0xf08712, 0.30, 0, 1], 30: [0x5a5e63, 0.36, 0, 0.9], 63: [0x70747a, 0.36, 0, 0.9], 60: [0x666a70, 0.36, 0, 0.9], 48: [0x5f6267, 0.36, 0, 0.9],
+  36: [0x2a2a2a, 0.45, 0, 0.35], 33: [0x1b1b1b, 0.42, 0, 0.35], 3: [0x2c2c2c, 0.45, 0, 0.35], 21: [0x2a2a2a, 0.58, 0, 0.15], 9: [0xb83248, 0.5, 0, 0.3],
+  24: [0x101010, 0.58, 0, 0.15], 54: [0x1f1f1f, 0.58, 0, 0.15], 57: [0x2a2a2a, 0.58, 0, 0.15], 51: [0xe0ddc8, 0.5, 0, 0.15], 15: [0x3f3f3f, 0.36, 0, 0.9],
+  27: [0x4d4d4d, 0.36, 0, 0.9], 12: [0xc4c4c0, 0.3, 1, 0.3], 18: [0xd0d0cc, 0.3, 1, 0.3], 6: [0xc8b070, 0.32, 1, 0.3], 42: [0x3c7f80, 0.36, 0, 0.9],
+  45: [0xc4a01c, 0.35, 0, 1], 72: [0x353535, 0.32, 0, 0.9, 1], 69: [0x2074bb, 0.32, 0, 0.9, 1], 66: [0x0080ff, 0.32, 0, 0.9, 1],
+};
+const LAUV_PROP_X = 0.024;
+
+function lauvParseGlb(ab) {
+  const dv = new DataView(ab), jl = dv.getUint32(12, true);
+  const js = JSON.parse(new TextDecoder().decode(new Uint8Array(ab, 20, jl))), bin = 20 + jl + 8;
+  const acc = (i, comps) => {
+    const a = js.accessors[i], bv = js.bufferViews[a.bufferView], off = bin + (bv.byteOffset || 0) + (a.byteOffset || 0), n = a.count * comps;
+    return a.componentType === 5126 ? new Float32Array(ab.slice(off, off + n * 4)) : a.componentType === 5123 ? new Uint16Array(ab.slice(off, off + n * 2)) : new Uint32Array(ab.slice(off, off + n * 4));
+  };
+  const prims = [];
+  for (const p of js.meshes[0].primitives) {
+    const mat = js.materials[p.material], idx = +(/Color_(\d+)/.exec(mat.name) || [0, -1])[1];
+    prims.push({ idx, pos: acc(p.attributes.POSITION, 3), nrm: acc(p.attributes.NORMAL, 3), ind: acc(p.indices, 1), col: mat.pbrMetallicRoughness.baseColorFactor });
+  }
+  return prims;
+}
+
+// merges the primitives into one 24-byte vertex buffer: position, normal (snorm8), colour + roughness (unorm8), part / metal / clear coat / flags (u8)
+// parts: 0 hull, 1 propeller, 2 bottom fin, 3 port fin, 4 starboard fin, 5 top fin, 6 propeller blur disc, 7 strand
+function lauvBuildMesh(prims) {
+  let nv = 0, ni = 0; for (const p of prims) { nv += p.pos.length / 3; ni += p.ind.length; }
+  nv += 2 * 48; ni += 48 * 6;                           // blur disc
+  const vb = new ArrayBuffer(nv * 24), f32 = new Float32Array(vb), i8 = new Int8Array(vb), u8 = new Uint8Array(vb), ib = new Uint32Array(ni);
+  let vo = 0, io = 0;
+  const put = (x, y, z, nx, ny, nz, col, rough, part, metal, cc, flag) => {
+    const o = vo * 24; f32[vo * 6] = x; f32[vo * 6 + 1] = y; f32[vo * 6 + 2] = z;
+    i8[o + 12] = round(nx * 127); i8[o + 13] = round(ny * 127); i8[o + 14] = round(nz * 127); i8[o + 15] = 0;
+    u8[o + 16] = col[0]; u8[o + 17] = col[1]; u8[o + 18] = col[2]; u8[o + 19] = round(rough * 255);
+    u8[o + 20] = part; u8[o + 21] = round(metal * 255); u8[o + 22] = round(cc * 255); u8[o + 23] = flag; vo++;
+  };
+  for (const pr of prims) {
+    const sp = LAUV_PARTS[pr.idx] || [0x808080, 0.45, 0, 0.8], hex = sp[0], col = [hex >> 16 & 255, hex >> 8 & 255, hex & 255];
+    const n = pr.pos.length / 3, P = pr.pos, N = pr.nrm, ind = pr.ind;
+    // face normals grouped by welded position: crease-limited smoothing (the OBJ normals are faceted)
+    const key = (i) => round(P[i * 3] * 4000) * 73856093 ^ round(P[i * 3 + 1] * 4000) * 19349663 ^ round(P[i * 3 + 2] * 4000) * 83492791;
+    const groups = new Map(), fn = new Float32Array(ind.length);
+    for (let t = 0; t < ind.length; t += 3) {
+      const a = ind[t] * 3, b = ind[t + 1] * 3, c = ind[t + 2] * 3;
+      const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+      fn[t] = uy * vz - uz * vy; fn[t + 1] = uz * vx - ux * vz; fn[t + 2] = ux * vy - uy * vx;
+      for (let k = 0; k < 3; k++) { const kk = key(ind[t + k]); let g = groups.get(kk); if (!g) groups.set(kk, g = []); g.push(t); }
+    }
+    const soft = pr.idx === 33 || pr.idx === 36 || pr.idx === 3 ? 0.5 : 0.82;      // cos of the crease angle
+    const partOf = (x, y, z) => {
+      if (pr.idx === 6) return 1;
+      if (pr.idx === 21) return abs(z) > abs(y) ? (z < 0 ? 3 : 4) : 2;
+      if (pr.idx === 9 && x < 0.32) return 5;
+      return 0;
+    };
+    const base = vo;
+    for (let i = 0; i < n; i++) {
+      let x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2], nx = N[i * 3], ny = N[i * 3 + 1], nz = N[i * 3 + 2];
+      const part = partOf(x, y, z), g = groups.get(key(i)) || [];
+      let sx = 0, sy = 0, sz = 0;
+      for (const t of g) { const l = hypot(fn[t], fn[t + 1], fn[t + 2]) || 1; if ((fn[t] * nx + fn[t + 1] * ny + fn[t + 2] * nz) / l > soft) { sx += fn[t] / l; sy += fn[t + 1] / l; sz += fn[t + 2] / l; } }
+      const sl = hypot(sx, sy, sz); if (sl > 1e-6) { nx = sx / sl; ny = sy / sl; nz = sz / sl; }
+      // the hull is a 17-sided prism in the file: its corners lie on the 74 mm cylinder, so give them the cylinder's normal
+      const r = hypot(y, z);
+      if (part === 0 && r > 0.0725 && r < 0.0745 && abs(nx) < 0.35 && pr.idx !== 45) { nx = 0; ny = y / r; nz = z / r; }
+      if (sp[4] && r > 0.07 && r < 0.0755) { const k = (r + 0.0006) / r; y *= k; z *= k; }
+      const nl = hypot(nx, ny, nz) || 1;
+      put(x, y, z, nx / nl, ny / nl, nz / nl, col, sp[1], part, sp[2], sp[3], sp[4] ? 1 : 0);
+    }
+    for (let k = 0; k < ind.length; k++) ib[io++] = base + ind[k];
+  }
+  // propeller blur disc: a flat ring at the propeller, faded in by the shader with rpm
+  { const base = vo, c = [200, 176, 112];
+    for (let k = 0; k < 48; k++) { const a = k / 48 * TAU, s = sin(a), co = cos(a);
+      put(LAUV_PROP_X, 0.012 * co, 0.012 * s, -1, 0, 0, c, 0.4, 6, 1, 0.2, 2); put(LAUV_PROP_X, 0.0615 * co, 0.0615 * s, -1, 0, 0, c, 0.4, 6, 1, 0.2, 2); }
+    for (let k = 0; k < 48; k++) { const a = base + k * 2, b = base + (k + 1) % 48 * 2; ib[io++] = a; ib[io++] = a + 1; ib[io++] = b; ib[io++] = b; ib[io++] = a + 1; ib[io++] = b + 1; } }
+  return { vb: new Uint8Array(vb), ib: ib.subarray(0, io), nv: vo };
+}
+
+const W_LAUV = S_B + /*wgsl*/`
+struct VU { r0: vec4f, r1: vec4f, r2: vec4f, fins: vec4f, misc: vec4f };
+@group(1) @binding(0) var<uniform> vu: VU;
+struct VI { @location(0) p: vec3f, @location(1) n: vec4f, @location(2) c: vec4f, @location(3) m: vec4u };
+struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) c: vec4f, @location(3) @interpolate(flat) m: vec4u };
+fn rotY(p: vec3f, a: f32, h: f32) -> vec3f { let d = p.x - h; let c = cos(a); let s = sin(a); return vec3f(h + d * c + p.z * s, p.y, -d * s + p.z * c); }
+fn rotZ(p: vec3f, a: f32, h: f32) -> vec3f { let d = p.x - h; let c = cos(a); let s = sin(a); return vec3f(h + d * c - p.y * s, d * s + p.y * c, p.z); }
+fn rotX(p: vec3f, a: f32) -> vec3f { let c = cos(a); let s = sin(a); return vec3f(p.x, p.y * c - p.z * s, p.y * s + p.z * c); }
+@vertex fn vs(i: VI) -> VO {
+  var o: VO; var p = i.p; var n = i.n.xyz; let part = i.m.x;
+  if (part == 1u || part == 6u) { let a = vu.misc.x; p = rotX(p, a); n = rotX(n, a); }
+  else if (part == 2u) { p = rotY(p, vu.fins.x, .245); n = rotY(n, vu.fins.x, 0.); }
+  else if (part == 3u) { p = rotZ(p, -vu.fins.y, .245); n = rotZ(n, -vu.fins.y, 0.); }
+  else if (part == 4u) { p = rotZ(p, -vu.fins.z, .245); n = rotZ(n, -vu.fins.z, 0.); }
+  else if (part == 5u) { p = rotY(p, vu.fins.w, .245); n = rotY(n, vu.fins.w, 0.); }
+  let w = vec3f(dot(vu.r0.xyz, p) + vu.r0.w, dot(vu.r1.xyz, p) + vu.r1.w, dot(vu.r2.xyz, p) + vu.r2.w);
+  o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = vec3f(dot(vu.r0.xyz, n), dot(vu.r1.xyz, n), dot(vu.r2.xyz, n)); o.c = i.c; o.m = i.m;
+  return o;
+}
+// the kelp strand dragged by the propeller: vertices are already in the world
+@vertex fn vsW(i: VI) -> VO {
+  var o: VO; o.cp = g.vp * vec4f(i.p, 1.); o.wp = i.p; o.n = i.n.xyz; o.c = i.c; o.m = i.m; return o;
+}
+fn ggx(nh: f32, a: f32) -> f32 { let a2 = a * a; let d = nh * nh * (a2 - 1.) + 1.; return a2 / (3.14159 * d * d); }
+@fragment fn fs(i: VO, @builtin(front_facing) ff: bool) -> @location(0) vec4f {
+  let part = i.m.x; let blur = vu.misc.y;
+  var N = normalize(i.n); if (!ff) { N = -N; }
+  let alb = pow(i.c.rgb, vec3f(2.2)); let rough = max(i.c.a, .06);
+  let metal = f32(i.m.y) / 255.; let cc = f32(i.m.z) / 255.;
+  let L = g.sun.xyz; let V = normalize(g.cam.xyz - i.wp);
+  let z = zone(i.wp); let dist = length(i.wp - g.cam.xyz);
+  let v1 = vol(i.wp + N * .25); let v2 = vol(i.wp + N * .9);
+  let ao = mix(.4, 1., sat((v1.r - .5) * 6.)) * mix(.75, 1., sat((v2.r - .5) * 3.));
+  let sh = shadow9(i.wp + N * .02);
+  let E = sunE(i.wp.y, z) * sh;
+  let ndl = sat(dot(N, L)); let ndv = max(dot(N, V), .03);
+  let ca = caus(i.wp, dist);
+  let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z)) * ao;
+  let diff = alb * (1. - metal) * (E * ndl * (.12 + mix(vec3f(.33), ca, ss(.1, .5, ndl)) * 2.3) + am * 2.3);
+  let H = normalize(V + L); let nh = sat(dot(N, H)); let vh = sat(dot(V, H));
+  let f0 = mix(vec3f(.04), alb, metal);
+  let fr = f0 + (1. - f0) * pow(1. - vh, 5.);
+  let a1 = rough * rough;
+  var sp = E * ndl * (.25 + ca * .9) * ggx(nh, a1) * fr / (4. * vh * vh + .0001);
+  // clear coat (water film): a sharper second lobe
+  sp += E * ndl * (.25 + ca * .9) * ggx(nh, .06 + rough * rough * .1) * (.04 + .96 * pow(1. - vh, 5.)) / (4. * vh * vh + .0001) * cc * .5;
+  let R = reflect(-V, N);
+  let env = (amb(i.wp, R, v1.g, z) + side(i.wp, R, sat((v2.r - .5) * 2.7), z)) * ao;
+  let fe = (f0 + (1. - f0) * pow(1. - ndv, 5.)) * (1. - rough * .55);
+  var c = diff + sp + env * (fe * (1. + cc * .6)) * 1.3;
+  // the vehicle's own lamp light and a warm fill keep the paint readable at depth, where the sun has lost its red
+  c += alb * (1. - metal) * vec3f(1., .82, .62) * (.16 + .3 * sat(dot(N, V))) * (.6 + .4 * ss(0., 25., -i.wp.y));
+  if ((part == 1u && ign(i.cp.xy) < blur * .85) || (part == 6u && ign(i.cp.xy + 7.) > blur * .4)) { discard; }
+  return fin(fog(c, i.wp, z));
+}
+`;
+
+// bubbles and sediment: billboards, one instance = 8 floats (x, y, z, size | age 0-1, kind 0 bubble 1 sediment, seed, alpha)
+const W_LPART = S_B + /*wgsl*/`
+struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @interpolate(flat) b: vec4f, @location(2) wp: vec3f, @location(3) @interpolate(flat) sh: f32 };
+@vertex fn vs(@builtin(vertex_index) vi: u32, @location(0) a: vec4f, @location(1) b: vec4f) -> PO {
+  var o: PO; let q = vec2f(f32(vi & 1u), f32(vi >> 1u)) * 2. - 1.;
+  let w = a.xyz + (g.right.xyz * q.x + g.up.xyz * q.y) * a.w;
+  o.cp = g.vp * vec4f(w, 1.); o.uv = q; o.b = b; o.wp = a.xyz; o.sh = shadow1(a.xyz);
+  return o;
+}
+@fragment fn fs(i: PO) -> @location(0) vec4f {
+  let z = zone(i.wp); let v = i.wp - g.cam.xyz; let d = length(v);
+  let T = exp(-SIG.g * d) * ss(.15, .8, d);
+  let fg = fogIn(g.cam.xyz, v / d, d, z, g.sun.xyz); let fw = fwidth(length(i.uv));
+  if (i.b.y < .5) {
+    let an = atan2(i.uv.y, i.uv.x + 1e-4);
+    let r = length(i.uv) / (.92 + .04 * sin(an * 3. + i.b.z * 40.));
+    let aa = fw * 1.5; let disc = 1. - ss(1. - aa, 1., r);
+    let rim = ss(.55, .98, r);
+    let hl = ss(.34, .0, length(i.uv - vec2f(-.36, .42))) + .5 * ss(.2, .0, length(i.uv - vec2f(.4, -.42)));
+    let E = sunE(i.wp.y, z) * (.25 + .75 * i.sh);
+    let hi = fogIn(i.wp, vec3f(0., 1., 0.), 80., z, g.sun.xyz) * 1.5; let lo = fogIn(i.wp, vec3f(0., -1., 0.), 80., z, g.sun.xyz);
+    var c = mix(lo, hi, ss(-.5, .8, i.uv.y + rim * .4)) * (.5 + 1.2 * rim) + E * hl * 1.6;
+    var al = disc * sat(.03 + rim * rim * rim * .9 + hl) * i.b.w;
+    c = c * T + fg * (1. - T); al *= mix(.35, 1., T);
+    return vec4f(min(max(c * al, vec3f(0.)), vec3f(20.)), al);
+  }
+  let r2 = dot(i.uv, i.uv);
+  let n = .6 + .4 * sin(i.uv.x * 5. + i.b.z * 30. + i.b.x * 4.) * sin(i.uv.y * 4.3 + i.b.z * 17. - i.b.x * 3.);
+  let al = pow(max(1. - r2, 0.), 2.) * n * i.b.w;
+  let E = sunE(i.wp.y, z) * (.3 + .7 * i.sh);
+  var c = vec3f(.34, .29, .22) * (E * .55 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * .9);
+  c = c * T + fg * (1. - T);
+  return vec4f(min(max(c * al, vec3f(0.)), vec3f(12.)), al * mix(.5, 1., T));
+}
+`;
+
+// ---------------------------------------------------------------- state
+const LAUV_DT = 1 / 120, LAUV_MAXP = 192, LAUV_NS = 14;
+const lv = new LauvVehicle();
+const lauvKeys = { left: 0, right: 0, up: 0, down: 0, thrustUp: 0, thrustDown: 0 };
+const lauvAud = { rpm: 0, scrape: 0, thud: 0, foul: 0, bub: 0 };
+const lauvColliders = [];            // hook for other pieces: fn(x, y, z) -> signed distance in metres (> 0 inside the obstacle)
+// the world edge (the endless-world piece replaces it)
+let lauvConstrain = (v) => { const r = hypot(v.pos[0], v.pos[2]); if (r > 148) { const k = 148 / r; v.pos[0] *= k; v.pos[2] *= k; } };
+const lauvS = { acc: 0, scratches: 0, sinceContact: 9, inContact: false, slideAcc: 0, paused: false, hint: 1, hintT: 0, scratchFlash: 0, snap: 1,
+  puffAcc: 0, bubAcc: 0, flCool: 0, revT: 0, kelpT: 0, thrUpT: 0, thrDnT: 0, fps: 60, gpUp: 0, gpDn: 0,
+  camMode: 'chase', camAz: 0, camEl: 0, camDist: 3.6, camYaw: 0, camIdle: 9, cpx: 0, cpy: 0, cpz: 0, tx: 0, ty: 0, tz: 0 };
+const lauvP = new Float32Array(LAUV_MAXP * 8), lauvPV = new Float32Array(LAUV_MAXP * 3), lauvPL = new Float32Array(LAUV_MAXP * 2);
+let lauvPN = 0;
+// strand dragged by the propeller (verlet rope)
+const lauvRope = new Float64Array(LAUV_NS * 6), lauvRopeVB = new ArrayBuffer(LAUV_NS * 2 * 24), lauvRopeF = new Float32Array(lauvRopeVB), lauvRopeU = new Uint8Array(lauvRopeVB), lauvRopeI = new Int8Array(lauvRopeVB);
+let lauvRopeLen = 1, lauvRopeOn = 0;
+const lauvTmp = new Float64Array(3);
+let LV_GPU = null;
+
+// ---------------------------------------------------------------- signed distance for contact and camera: terrain SDF plus hooks
+function lauvSdf(x, y, z) {
+  let s = sdAt(x, y, z);
+  for (let i = 0; i < lauvColliders.length; i++) { const c = lauvColliders[i](x, y, z); if (c > s) s = c; }
+  return s;
+}
+// outward normal (pointing into free water) from the gradient of lauvSdf; false where the field is flat
+const lauvN = new Float64Array(3);
+function lauvGrad(x, y, z) {
+  const e = 0.25;
+  const gx = lauvSdf(x + e, y, z) - lauvSdf(x - e, y, z), gy = lauvSdf(x, y + e, z) - lauvSdf(x, y - e, z), gz = lauvSdf(x, y, z + e) - lauvSdf(x, y, z - e), l = hypot(gx, gy, gz);
+  if (l < 0.04) return false;
+  lauvN[0] = -gx / l; lauvN[1] = -gy / l; lauvN[2] = -gz / l; return true;
+}
+
+// ---------------------------------------------------------------- contact: spheres along the hull against the world
+const lauvHit = { n: 0, impact: 0, slide: 0, x: 0, y: 0, z: 0, ny: 0 };
+function lauvCollide() {
+  const R = lv.R, P = lv.pos; let hit = 0;
+  for (let k = 0; k < LAUV_SPHERES.length; k++) {
+    const sp = LAUV_SPHERES[k], bx = sp[0] - LAUV_CGX, by = sp[1] - LAUV_CGY, bz = sp[2];
+    const cx = P[0] + R[0] * bx + R[3] * by + R[6] * bz, cy = P[1] + R[1] * bx + R[4] * by + R[7] * bz, cz = P[2] + R[2] * bx + R[5] * by + R[8] * bz;
+    const pen = lauvSdf(cx, cy, cz) + sp[3];
+    if (pen <= 0) continue;
+    if (!lauvGrad(cx, cy, cz)) continue;
+    const nx = lauvN[0], ny = lauvN[1], nz = lauvN[2], push = pen > 0.15 ? 0.15 : pen;
+    P[0] += nx * push; P[1] += ny * push; P[2] += nz * push;
+    const j = lv.impulse(nx, ny, nz, bx, by, bz, 0.2, 0.35);
+    // world velocity of the vehicle, split in normal and sliding parts
+    const vx = R[0] * lv.v[0] + R[3] * lv.v[1] + R[6] * lv.v[2], vy = R[1] * lv.v[0] + R[4] * lv.v[1] + R[7] * lv.v[2], vz = R[2] * lv.v[0] + R[5] * lv.v[1] + R[8] * lv.v[2];
+    const vn = vx * nx + vy * ny + vz * nz, sl = hypot(vx - vn * nx, vy - vn * ny, vz - vn * nz);
+    hit++; const imp = j / lv.my;
+    if (imp > lauvHit.impact) lauvHit.impact = imp;
+    if (sl > lauvHit.slide) { lauvHit.slide = sl; lauvHit.x = cx - nx * sp[3]; lauvHit.y = cy - ny * sp[3]; lauvHit.z = cz - nz * sp[3]; lauvHit.ny = ny; }
+  }
+  lauvHit.n += hit;
+}
+
+// ---------------------------------------------------------------- kelp: leaves as segments in a grid, for propeller fouling
+const LK_N = 128, LK_C = 3, LK_O = -192;
+let lkStart = null, lkSeg = null;
+function lauvKelp(big) {
+  const f = new Float32Array(big.buf), n = big.n, cell = new Uint32Array(LK_N * LK_N + 1);
+  const keep = [];
+  for (let i = 0; i < n; i++) { if (f[i * 9 + 3] >= 0.5) keep.push(i); }
+  const seg = new Float32Array(keep.length * 7), cid = new Uint32Array(keep.length);
+  keep.forEach((i, k) => {
+    const x = f[i * 9], y = f[i * 9 + 1], z = f[i * 9 + 2], len = f[i * 9 + 3] * 0.85, yaw = f[i * 9 + 4], tilt = f[i * 9 + 5];
+    const st = sin(tilt), dx = st * cos(yaw), dy = cos(tilt), dz = st * sin(yaw);
+    seg.set([x, y, z, len, dx, dy, dz], k * 7);
+    const cx = clamp(floor((x - LK_O) / LK_C), 0, LK_N - 1), cz = clamp(floor((z - LK_O) / LK_C), 0, LK_N - 1); cid[k] = cx + LK_N * cz; cell[cid[k] + 1]++;
+  });
+  for (let i = 0; i < LK_N * LK_N; i++) cell[i + 1] += cell[i];
+  const fill = cell.slice(0, LK_N * LK_N), order = new Uint32Array(keep.length);
+  for (let k = 0; k < keep.length; k++) order[fill[cid[k]]++] = k;
+  const sorted = new Float32Array(keep.length * 7);
+  for (let k = 0; k < keep.length; k++) for (let j = 0; j < 7; j++) sorted[k * 7 + j] = seg[order[k] * 7 + j];
+  lkStart = cell; lkSeg = sorted;
+}
+// length of a kelp leaf within r of the point (0: none)
+function lauvKelpNear(x, y, z, r) {
+  if (!lkSeg) return 0;
+  const cx = floor((x - LK_O) / LK_C), cz = floor((z - LK_O) / LK_C);
+  for (let gz = cz - 1; gz <= cz + 1; gz++) for (let gx = cx - 1; gx <= cx + 1; gx++) {
+    if (gx < 0 || gz < 0 || gx >= LK_N || gz >= LK_N) continue;
+    const c = gx + LK_N * gz;
+    for (let k = lkStart[c]; k < lkStart[c + 1]; k++) {
+      const o = k * 7, px = x - lkSeg[o], py = y - lkSeg[o + 1], pz = z - lkSeg[o + 2], len = lkSeg[o + 3];
+      const t = clamp(px * lkSeg[o + 4] + py * lkSeg[o + 5] + pz * lkSeg[o + 6], 0, len);
+      const dx = px - lkSeg[o + 4] * t, dy = py - lkSeg[o + 5] * t, dz = pz - lkSeg[o + 6] * t;
+      if (dx * dx + dy * dy + dz * dz < r * r) return len;
+    }
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------- particles
+function lauvEmit(x, y, z, size, kind, vx, vy, vz, life, alpha) {
+  if (lauvPN >= LAUV_MAXP) return;
+  const i = lauvPN++, o = i * 8;
+  lauvP[o] = x; lauvP[o + 1] = y; lauvP[o + 2] = z; lauvP[o + 3] = size; lauvP[o + 4] = 0; lauvP[o + 5] = kind; lauvP[o + 6] = rnd() * 100; lauvP[o + 7] = alpha;
+  lauvPV[i * 3] = vx; lauvPV[i * 3 + 1] = vy; lauvPV[i * 3 + 2] = vz; lauvPL[i * 2] = life; lauvPL[i * 2 + 1] = size;
+}
+function lauvParticles(dt) {
+  for (let i = 0; i < lauvPN; i++) {
+    const o = i * 8, life = lauvPL[i * 2]; lauvP[o + 4] += dt / life;
+    const a = lauvP[o + 4], kind = lauvP[o + 5];
+    if (a >= 1) { // remove: move the last one here
+      lauvPN--; if (i < lauvPN) { const s = lauvPN; for (let j = 0; j < 8; j++) lauvP[o + j] = lauvP[s * 8 + j]; for (let j = 0; j < 3; j++) lauvPV[i * 3 + j] = lauvPV[s * 3 + j]; lauvPL[i * 2] = lauvPL[s * 2]; lauvPL[i * 2 + 1] = lauvPL[s * 2 + 1]; } i--; continue;
+    }
+    if (kind < 0.5) { lauvPV[i * 3 + 1] += (0.25 - lauvPV[i * 3 + 1]) * min(dt * 2, 1); }
+    else { const damp = exp(-dt * 1.6); lauvPV[i * 3] *= damp; lauvPV[i * 3 + 1] = lauvPV[i * 3 + 1] * damp + 0.02 * dt; lauvPV[i * 3 + 2] *= damp; }
+    lauvP[o] += lauvPV[i * 3] * dt; lauvP[o + 1] += lauvPV[i * 3 + 1] * dt; lauvP[o + 2] += lauvPV[i * 3 + 2] * dt;
+    const s0 = lauvPL[i * 2 + 1];
+    if (kind < 0.5) { lauvP[o + 3] = s0 * (0.8 + 0.4 * a); lauvP[o + 7] = a > 0.8 ? (1 - a) / 0.2 : 1; if (lauvP[o + 1] > -0.05) lauvP[o + 7] = 0; }
+    else { lauvP[o + 3] = s0 * (1 + 2.2 * sqrt(a)); lauvP[o + 7] = 0.55 * (a < 0.1 ? a / 0.1 : 1) * (1 - a) * (1 - a); }
+  }
+}
+
+// ---------------------------------------------------------------- strand
+function lauvRopeStart(len) {
+  lauvRopeLen = clamp(len, 0.7, 2.4); lauvRopeOn = 1;
+  lv.toWorld(LAUV_PROP_X, 0, 0, lauvTmp);
+  for (let i = 0; i < LAUV_NS; i++) { const k = i / (LAUV_NS - 1) * lauvRopeLen; for (let j = 0; j < 3; j++) { lauvRope[i * 6 + j] = lauvTmp[j] - lv.R[j] * k; lauvRope[i * 6 + 3 + j] = lauvRope[i * 6 + j]; } }
+}
+function lauvRopeStep(dt) {
+  if (!lauvRopeOn) return;
+  const seg = lauvRopeLen / (LAUV_NS - 1);
+  lv.toWorld(LAUV_PROP_X - 0.01, 0, 0, lauvTmp);
+  lauvRope[0] = lauvTmp[0]; lauvRope[1] = lauvTmp[1]; lauvRope[2] = lauvTmp[2];
+  for (let i = 1; i < LAUV_NS; i++) {
+    const o = i * 6;
+    for (let j = 0; j < 3; j++) { const p = lauvRope[o + j], v = (p - lauvRope[o + 3 + j]) * 0.85; lauvRope[o + 3 + j] = p; lauvRope[o + j] = p + v; }
+    lauvRope[o + 1] += 0.05 * dt;       // a little buoyancy
+    lauvRope[o] += sin(lv.t * 3 + i) * 0.0006; lauvRope[o + 2] += cos(lv.t * 2.7 + i * 1.3) * 0.0006;
+  }
+  for (let it = 0; it < 4; it++) for (let i = 1; i < LAUV_NS; i++) {
+    const a = (i - 1) * 6, b = i * 6, dx = lauvRope[b] - lauvRope[a], dy = lauvRope[b + 1] - lauvRope[a + 1], dz = lauvRope[b + 2] - lauvRope[a + 2], l = hypot(dx, dy, dz) || 1e-6, d = (l - seg) / l;
+    const wa = i === 1 ? 0 : 0.5, wb = i === 1 ? 1 : 0.5;
+    lauvRope[a] += dx * d * wa; lauvRope[a + 1] += dy * d * wa; lauvRope[a + 2] += dz * d * wa;
+    lauvRope[b] -= dx * d * wb; lauvRope[b + 1] -= dy * d * wb; lauvRope[b + 2] -= dz * d * wb;
+  }
+}
+function lauvRopeBuild() {
+  // ribbon facing the camera
+  for (let i = 0; i < LAUV_NS; i++) {
+    const o = i * 6, pv = max(i - 1, 0) * 6, nx = min(i + 1, LAUV_NS - 1) * 6;
+    let tx = lauvRope[nx] - lauvRope[pv], ty = lauvRope[nx + 1] - lauvRope[pv + 1], tz = lauvRope[nx + 2] - lauvRope[pv + 2];
+    const tl = hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+    const vx = lauvRope[o] - F[CX], vy = lauvRope[o + 1] - F[CY], vz = lauvRope[o + 2] - F[CZ];
+    let ax = ty * vz - tz * vy, ay = tz * vx - tx * vz, az = tx * vy - ty * vx; const al = hypot(ax, ay, az) || 1; ax /= al; ay /= al; az /= al;
+    const w = 0.035 * (1 - 0.55 * i / (LAUV_NS - 1)) * (1 + 0.4 * sin(i * 1.7));
+    const vl = hypot(vx, vy, vz) || 1;
+    for (let s = 0; s < 2; s++) {
+      const q = (i * 2 + s) * 6, sg = s ? 1 : -1;
+      lauvRopeF[q] = lauvRope[o] + ax * w * sg; lauvRopeF[q + 1] = lauvRope[o + 1] + ay * w * sg; lauvRopeF[q + 2] = lauvRope[o + 2] + az * w * sg;
+      const b = (i * 2 + s) * 24;
+      lauvRopeI[b + 12] = round(-vx / vl * 127); lauvRopeI[b + 13] = round(-vy / vl * 127); lauvRopeI[b + 14] = round(-vz / vl * 127); lauvRopeI[b + 15] = 0;
+      const t = i / (LAUV_NS - 1); lauvRopeU[b + 16] = 70 + 30 * t; lauvRopeU[b + 17] = 85 + 20 * t; lauvRopeU[b + 18] = 26; lauvRopeU[b + 19] = 130; lauvRopeU[b + 20] = 7; lauvRopeU[b + 21] = 0; lauvRopeU[b + 22] = 40; lauvRopeU[b + 23] = 0;
+    }
+  }
+}
+
+// ---------------------------------------------------------------- GPU resources
+async function lauvInit() {
+  let ab; for (const u of ['lauv-omst.glb', 'source/lauv-omst.glb']) { try { const r = await fetch(u); if (r.ok) { ab = await r.arrayBuffer(); break; } } catch {} }
+  if (!ab) fail('Could not load lauv-omst.glb');
+  const mesh = lauvBuildMesh(lauvParseGlb(ab));
+  const vb = buf(mesh.vb, BU.VERTEX), ib = buf(mesh.ib, BU.INDEX), vbRope = device.createBuffer({ size: LAUV_NS * 2 * 24, usage: BU.VERTEX | BU.COPY_DST });
+  const vbP = device.createBuffer({ size: LAUV_MAXP * 32, usage: BU.VERTEX | BU.COPY_DST });
+  const bgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: SS.VERTEX | SS.FRAGMENT, buffer: {} }] });
+  const u = device.createBuffer({ size: 80, usage: BU.UNIFORM | BU.COPY_DST });
+  const bg = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: u } }] });
+  const pl = device.createPipelineLayout({ bindGroupLayouts: [bgl0, bgl] });
+  const m = mod(W_LAUV), mp = mod(W_LPART);
+  const vbl = { arrayStride: 24, attributes: [A(0, 0, 'float32x3'), A(1, 12, 'snorm8x4'), A(2, 16, 'unorm8x4'), A(3, 20, 'uint8x4')] };
+  const pipe = (vs, strip) => device.createRenderPipeline({ layout: pl, vertex: { module: m, entryPoint: vs, buffers: [vbl] }, fragment: { module: m, entryPoint: 'fs', targets: [{ format: HDR }] },
+    primitive: { topology: strip ? 'triangle-strip' : 'triangle-list', cullMode: 'none' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' }, multisample: { count: AA } });
+  const pPart = device.createRenderPipeline({ layout: pl0, vertex: { module: mp, entryPoint: 'vs', buffers: [{ arrayStride: 32, stepMode: 'instance', attributes: [A(0, 0, 'float32x4'), A(1, 16, 'float32x4')] }] },
+    fragment: { module: mp, entryPoint: 'fs', targets: [{ format: HDR, blend: { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } }] },
+    primitive: { topology: 'triangle-strip' }, depthStencil: { format: DEPTH, depthWriteEnabled: false, depthCompare: 'greater' }, multisample: { count: AA } });
+  LV_GPU = { vb, ib, nI: mesh.ib.length, vbRope, vbP, u, bg, pVeh: pipe('vs', false), pRope: pipe('vsW', true), pPart, uf: new Float32Array(20) };
+}
+function lauvUpdate() {
+  const g = LV_GPU, uf = g.uf, R = lv.R, P = lv.pos;
+  const tx = P[0] - (R[0] * LAUV_CGX + R[3] * LAUV_CGY), ty = P[1] - (R[1] * LAUV_CGX + R[4] * LAUV_CGY), tz = P[2] - (R[2] * LAUV_CGX + R[5] * LAUV_CGY);
+  uf[0] = R[0]; uf[1] = R[3]; uf[2] = R[6]; uf[3] = tx; uf[4] = R[1]; uf[5] = R[4]; uf[6] = R[7]; uf[7] = ty; uf[8] = R[2]; uf[9] = R[5]; uf[10] = R[8]; uf[11] = tz;
+  for (let i = 0; i < 4; i++) uf[12 + i] = lv.servo[i];
+  const sweep = abs(lv.rpm) / 60 * TAU / 120;           // angle swept in half a frame at 60 fps: the blades fade into a disc as it nears the blade spacing
+  let bl = clamp((sweep / (TAU / 3) - 0.08) / 0.42, 0, 1); bl = bl * bl * (3 - 2 * bl);
+  uf[16] = -lv.propAngle; uf[17] = bl;
+  Q.writeBuffer(g.u, 0, uf);
+  // shadow caster for the terrain shader: the hull's axis, tail to nose
+  lv.toWorld(0.1, 0, 0, lauvTmp); UB[60] = lauvTmp[0]; UB[61] = lauvTmp[1]; UB[62] = lauvTmp[2]; UB[63] = 0.075;
+  lv.toWorld(1.75, 0, 0, lauvTmp); UB[64] = lauvTmp[0]; UB[65] = lauvTmp[1]; UB[66] = lauvTmp[2]; UB[67] = 0;
+  if (lauvRopeOn) { lauvRopeBuild(); Q.writeBuffer(g.vbRope, 0, lauvRopeVB); }
+  if (lauvPN) Q.writeBuffer(g.vbP, 0, lauvP.buffer, 0, lauvPN * 32);
+}
+function lauvDraw(r) {
+  const g = LV_GPU;
+  r.setPipeline(g.pVeh); r.setBindGroup(1, g.bg); r.setVertexBuffer(0, g.vb); r.setIndexBuffer(g.ib, 'uint32'); r.drawIndexed(g.nI);
+  if (lauvRopeOn) { r.setPipeline(g.pRope); r.setVertexBuffer(0, g.vbRope); r.draw(LAUV_NS * 2); }
+}
+function lauvDrawParticles(r) {
+  if (!lauvPN) return; const g = LV_GPU;
+  r.setPipeline(g.pPart); r.setVertexBuffer(0, g.vbP); r.draw(4, lauvPN);
+}
+
+// ---------------------------------------------------------------- input
+const lauvStep = (d) => { lv.in.throttle = clamp(round((lv.in.throttle + d) * 10) / 10, -0.3, 1); };
+const lauvKey = (cmd, down) => {
+  down = down ? 1 : 0;
+  if (cmd === 'thrustUp' && down && !lauvKeys.thrustUp) { lauvStep(0.1); lauvS.thrUpT = -0.3; }
+  if (cmd === 'thrustDown' && down && !lauvKeys.thrustDown) { lauvStep(-0.1); lauvS.thrDnT = -0.3; }
+  if (cmd in lauvKeys) lauvKeys[cmd] = down;
+  if (down) lauvS.hint = 0;
+};
+const LAUV_KEYMAP = { ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right', ArrowUp: 'up', KeyE: 'up', ArrowDown: 'down', KeyQ: 'down', KeyW: 'thrustUp', KeyS: 'thrustDown' };
+function lauvKeyEvent(code, v) { const c = LAUV_KEYMAP[code]; if (c) { lauvKey(c, v); return true; } return false; }
+function lauvReleaseKeys() { for (const k in lauvKeys) lauvKeys[k] = 0; }
+
+// ---------------------------------------------------------------- pose helpers
+function lauvPlace(x, y, z, yaw, pitch) { lv.setPose(x, y, z, yaw, pitch || 0); lauvS.snap = 1; lauvS.camYaw = yaw; }
+function lauvFace(px, py, pz, tx, ty, tz) { lauvPlace(px, py, pz, atan2(tx - px, -(tz - pz)), 0); }
+const lauvWrapA = (a) => atan2(sin(a), cos(a));
+
+// ---------------------------------------------------------------- camera
+function lauvCamera(dt) {
+  const S = lauvS, R = lv.R, P = lv.pos, fx = R[0], fy = R[1], fz = R[2], mode = S.camMode;
+  const tx = P[0] + fx * 0.05, ty = P[1] + fy * 0.05 + 0.03, tz = P[2] + fz * 0.05;
+  const hy = lv.yaw; let yawRef = S.camYaw;
+  if (mode === 'chase' || mode === 'free') { yawRef += lauvWrapA(hy - yawRef) * (1 - exp(-dt * 2.6)); S.camYaw = yawRef; } else yawRef = S.camYaw = hy;
+  let az = S.camAz, el = S.camEl, dist = S.camDist, baseEl = 0.26 + lv.pitch * 0.35;
+  if (mode === 'chase') dist = 3.0 + 0.4 * abs(lv.v[0]);
+  else if (mode === 'side') { az = 0; el = 0; baseEl = 0.06; dist = 1.9; }
+  else if (mode === 'front') { az = 0; el = 0; baseEl = 0.1; dist = 2.1; }
+  else if (mode === 'top') { az = 0; el = 0; baseEl = 1.45; dist = 3.2; }
+  else if (mode === 'surface') { dist = 4.5; baseEl = 0.35; }
+  else if (mode === 'free') { baseEl = 0.25; dist = 3.6; }
+  if (mode === 'chase' && S.camIdle > 1.8) { const k = exp(-dt * 1.4); S.camAz *= k; S.camEl *= k; az = S.camAz; el = S.camEl; }
+  S.camIdle += dt;
+  const a = yawRef + az, e = clamp(baseEl + el, -1.3, 1.5);
+  // behind the vehicle for az = 0 (forward is (sin, ., -cos))
+  let dx = -sin(a) * cos(e), dy = sin(e), dz = cos(a) * cos(e);
+  if (mode === 'side') { const sl = hypot(R[6], R[8]) || 1; dx = R[6] / sl * cos(e); dz = R[8] / sl * cos(e); }
+  else if (mode === 'front') { const fl = hypot(fx, fz) || 1; dx = fx / fl * cos(e); dz = fz / fl * cos(e); }
+  let px = tx + dx * dist, py = ty + dy * dist, pz = tz + dz * dist;
+  if (mode === 'surface') py = 1.7;
+  if (mode !== 'surface') {   // rock avoidance: walk from the target towards the wanted position and stop in front of the rock
+    const n = max(2, Math.ceil(dist / 0.2)); let last = dist;
+    for (let i = 1; i <= n; i++) { const t = i / n; if (lauvSdf(tx + (px - tx) * t, ty + (py - ty) * t, tz + (pz - tz) * t) > -0.45) { last = max((i - 1) / n * dist, 0.5); break; } }
+    if (last < dist) { const k = last / dist; px = tx + (px - tx) * k; py = ty + (py - ty) * k; pz = tz + (pz - tz) * k; }
+  }
+  if (S.snap || mode === 'side' || mode === 'front' || mode === 'top') { S.cpx = px; S.cpy = py; S.cpz = pz; S.tx = tx; S.ty = ty; S.tz = tz; S.snap = 0; }
+  else {
+    const k = 1 - exp(-dt * 5.5), kt = 1 - exp(-dt * 9);
+    S.cpx += (px - S.cpx) * k; S.cpy += (py - S.cpy) * k; S.cpz += (pz - S.cpz) * k; S.tx += (tx - S.tx) * kt; S.ty += (ty - S.ty) * kt; S.tz += (tz - S.tz) * kt;
+  }
+  for (let k = 0; k < 3; k++) {   // the smoothed camera can lag into a wall while turning: push it out
+    const s = lauvSdf(S.cpx, S.cpy, S.cpz) + 0.3; if (s <= 0 || !lauvGrad(S.cpx, S.cpy, S.cpz)) break;
+    S.cpx += lauvN[0] * s; S.cpy += lauvN[1] * s; S.cpz += lauvN[2] * s;
+  }
+  if (mode !== 'surface' && S.cpy > -0.15) S.cpy = -0.15;
+  lookAt(S.cpx, S.cpy, S.cpz, S.tx, S.ty, S.tz);
+}
+
+// ---------------------------------------------------------------- the frame: input, physics steps, contact effects, camera
+function lauvFrame(dt, play) {
+  const S = lauvS, I = lv.in;
+  const gp = navigator.getGamepads ? navigator.getGamepads()[0] : null; let gs = 0, gpi = 0;
+  if (gp) {
+    const dz = (v) => abs(v) < 0.2 ? 0 : v; gs = dz(gp.axes[0] || 0); gpi = -dz(gp.axes[1] || 0);
+    const b = (i) => gp.buttons[i] && gp.buttons[i].pressed ? 1 : 0, up = b(5) || b(7) || b(12), dn = b(4) || b(6) || b(13);
+    if (up && !S.gpUp) lauvKey('thrustUp', 1); if (dn && !S.gpDn) lauvKey('thrustDown', 1); S.gpUp = up; S.gpDn = dn; if (gs || gpi) S.hint = 0;
+    if (up || dn) { lauvKeys.thrustUp = 0; lauvKeys.thrustDown = 0; }
+  }
+  let steer = lauvKeys.right - lauvKeys.left + gs, pitch = lauvKeys.up - lauvKeys.down + gpi;
+  if (tId >= 0) { const tr = 4 / (innerWidth < innerHeight ? innerWidth : innerHeight); steer += clamp((tx - tx0) * tr, -1, 1); pitch -= clamp((ty - ty0) * tr, -1, 1); }
+  I.steer = clamp(steer, -1, 1); I.pitch = clamp(pitch, -1, 1);
+  if (lauvKeys.thrustUp) { S.thrUpT += dt; if (S.thrUpT > 0.2) { S.thrUpT = 0; lauvStep(0.1); } }
+  if (lauvKeys.thrustDown) { S.thrDnT += dt; if (S.thrDnT > 0.2) { S.thrDnT = 0; lauvStep(-0.1); } }
+  lauvHit.n = 0; lauvHit.impact = 0; lauvHit.slide = 0;
+  if (play && !S.paused) lauvAdvance(dt);
+  if (mdx || mdy) { S.camAz -= mdx * 0.0022; S.camEl += mdy * 0.0022; S.camIdle = 0; S.hint = 0; mdx = 0; mdy = 0; }
+  lauvCamera(dt);
+  if (!S.paused) lauvParticles(dt);
+  S.fps += (min(1 / max(dt, 1e-3), 240) - S.fps) * 0.05;
+  lauvHud(dt);
+}
+
+// fixed physics steps for dt seconds of frame time, then the effects of what happened
+function lauvAdvance(dt) {
+  const S = lauvS; S.acc += dt; let n = 0;
+  while (S.acc >= LAUV_DT && n < 12) { lv.step(LAUV_DT); lauvCollide(); lauvConstrain(lv); lauvRopeStep(LAUV_DT); S.acc -= LAUV_DT; n++; }
+  if (n === 12) S.acc = 0;
+  lauvEffects(dt);
+}
+
+// contact scrapes, sediment, bubbles, fouling, scratch counter
+function lauvEffects(dt) {
+  const S = lauvS, H = lauvHit, R = lv.R, hit = H.n > 0;
+  if (hit) {
+    if (!S.inContact && S.sinceContact > 0.8 && (H.impact > 0.1 || H.slide > 0.15)) { S.scratches++; S.scratchFlash = 1; }
+    S.inContact = true; S.sinceContact = 0;
+    if (H.slide > 0.2) { S.slideAcc += H.slide * dt; if (S.slideAcc > 1.4) { S.slideAcc = 0; S.scratches++; S.scratchFlash = 1; } }
+    if (H.impact > 0.05) lauvAud.thud = max(lauvAud.thud, min(H.impact * 2.2, 1));
+    const up = H.ny > 0.25 ? 1 : 0.25;    // sediment rises mostly where the surface faces up
+    S.puffAcc += (H.slide * 9 + H.impact * 40) * up * dt;
+    while (S.puffAcc > 1) { S.puffAcc -= 1; lauvEmit(H.x + rr(-0.1, 0.1), H.y + rr(0, 0.1), H.z + rr(-0.1, 0.1), rr(0.12, 0.3), 1, rr(-0.12, 0.12), rr(0.04, 0.2), rr(-0.12, 0.12), rr(2.5, 4.5), 1); }
+  } else { S.sinceContact += dt; if (S.sinceContact > 0.15) S.inContact = false; if (S.sinceContact > 1.5) S.slideAcc = 0; }
+  lauvAud.scrape += ((hit ? min(H.slide * 0.9, 1) : 0) - lauvAud.scrape) * min(dt * 12, 1);
+  S.scratchFlash = max(0, S.scratchFlash - dt * 1.6);
+  lauvAud.rpm = lv.rpm; lauvAud.foul = lv.fouled;
+  S.bubAcc += abs(lv.rpm) / 2100 * dt * 9;   // propeller wash bubbles
+  while (S.bubAcc > 1) { S.bubAcc -= 1; lv.toWorld(-0.02, rr(-0.04, 0.04), rr(-0.04, 0.04), lauvTmp); lauvEmit(lauvTmp[0], lauvTmp[1], lauvTmp[2], rr(0.008, 0.022), 0, -R[0] * 0.2, rr(0.1, 0.3), -R[2] * 0.2, rr(1.5, 3), 1); lauvAud.bub = 1; }
+  S.kelpT += dt; S.flCool -= dt;   // fouling: the propeller disc against kelp leaves, 20 times a second
+  if (S.kelpT > 0.05) {
+    S.kelpT = 0;
+    if (lv.fouled < 0.5 && S.flCool <= 0 && abs(lv.rpm) > 150) {
+      lv.toWorld(LAUV_PROP_X, 0, 0, lauvTmp);
+      const len = lauvKelpNear(lauvTmp[0], lauvTmp[1], lauvTmp[2], 0.075);
+      if (len) { lv.fouled = 1; lauvRopeStart(len + 0.3); S.revT = 0; lauvAud.thud = max(lauvAud.thud, 0.25); }
+    }
+  }
+  if (lv.fouled > 0) {    // reverse clears: the shaft turning astern for about a second throws the strand off
+    if (lv.rpm < -250) S.revT += dt; else S.revT = max(0, S.revT - dt * 0.3);
+    if (S.revT > 1.1) { lv.fouled = 0; S.flCool = 3; S.revT = 0; lauvRopeOn = 0; const e = (LAUV_NS - 1) * 6; for (let i = 0; i < 3; i++) lauvEmit(lauvRope[e], lauvRope[e + 1], lauvRope[e + 2], 0.015, 0, 0, 0.2, 0, 2, 1); }
+  }
+}
+
+// ---------------------------------------------------------------- HUD (OMST look: navy panels, white text, blue accents, orange for state)
+let lauvH = null;
+function lauvHudInit() {
+  const st = document.createElement('style');
+  st.textContent = '#hud{position:absolute;inset:0;pointer-events:none;font:600 clamp(12px,.55vw+.8vh,26px)/1.3 system-ui,sans-serif;color:#fff;font-variant-numeric:tabular-nums}' +
+    'body:not(.g) #hud{display:none}' +
+    '#hud .pn{position:absolute;background:#12305Cf0;border:1px solid #2175BC;border-radius:.45em;box-shadow:0 .2em .8em #0007;padding:.55em .8em}' +
+    '#hud .k{font-size:.72em;letter-spacing:.12em;text-transform:uppercase;color:#9CC4EA}' +
+    '#hud .v{font-size:1.45em;font-weight:700;line-height:1.1}#hud .v small{font-size:.55em;font-weight:600;color:#9CC4EA;margin-left:.25em}' +
+    '#hl{left:1.2em;bottom:1.2em;display:grid;grid-template-columns:repeat(4,auto);gap:.4em 1.4em;align-items:end}' +
+    '#hl .th{grid-column:1/5;display:grid;grid-template-columns:auto 1fr auto;gap:.8em;align-items:center;margin-top:.15em}' +
+    '#hl .bar{height:.7em;background:#0B1F3F;border:1px solid #2175BC;border-radius:.4em;position:relative;overflow:hidden}' +
+    '#hl .bar i{position:absolute;top:0;bottom:0;background:#F07A1E}#hl .bar b{position:absolute;top:-1px;bottom:-1px;width:2px;background:#fff;left:23%}' +
+    '#hsc{transition:color .15s}#hsc.f{color:#F07A1E}' +
+    '#hw{left:50%;top:1.4em;transform:translateX(-50%);background:#12305C;border-color:#F07A1E;border-left-width:.45em;padding:.5em 1.2em;display:none;white-space:nowrap}' +
+    '#hw b{color:#F07A1E;letter-spacing:.1em;margin-right:.7em}#hw.on{display:block;animation:hwp 1s infinite}@keyframes hwp{50%{border-color:#12305C}}' +
+    '#hk{left:50%;bottom:1.4em;transform:translateX(-50%);display:flex;gap:1.6em;align-items:center;transition:opacity 1s}#hk.off{opacity:0}' +
+    '#hk span{display:flex;align-items:center;gap:.45em;white-space:nowrap}' +
+    '#hk kbd{font:700 .9em system-ui;min-width:1.5em;text-align:center;padding:.12em .45em;border-radius:.3em;background:#EAF2FB;color:#12305C;box-shadow:inset 0 -.15em #C3D0E0}';
+  document.head.appendChild(st);
+  const d = document.createElement('div'); d.id = 'hud';
+  d.innerHTML = '<div id=hl class=pn><div><div class=k>Depth</div><div class=v id=hd>0<small>m</small></div></div><div><div class=k>Speed</div><div class=v id=hs>0<small>m/s</small></div></div>' +
+    '<div><div class=k>Heading</div><div class=v id=hh>0<small>N</small></div></div><div><div class=k>Scratches</div><div class=v id=hsc>0</div></div>' +
+    '<div class=th><span class=k>Throttle</span><div class=bar><i id=ht></i><b></b></div><span class=v id=hp style="min-width:3.4em;text-align:right">0<small>rpm</small></span></div></div>' +
+    '<div id=hw class=pn><b>PROPELLER FOULED</b>reverse (S) to clear it</div>' +
+    '<div id=hk class=pn><span><kbd>&larr;</kbd><kbd>&rarr;</kbd>steer</span><span><kbd>&uarr;</kbd><kbd>&darr;</kbd>climb / dive</span><span><kbd>W</kbd><kbd>S</kbd>throttle</span><span>mouse look</span></div>';
+  document.body.appendChild(d);
+  const q = (i) => document.getElementById(i);
+  lauvH = { d: q('hd'), s: q('hs'), h: q('hh'), sc: q('hsc'), t: q('ht'), p: q('hp'), w: q('hw'), k: q('hk'), t0: 0 };
+  if (/[?&]hud=0/.test(location.search)) d.style.display = 'none';
+}
+function lauvHud(dt) {
+  const h = lauvH, S = lauvS; if (!h) return;
+  h.t0 += dt; if (h.t0 < 0.05) return; h.t0 = 0;
+  const hd = ((lv.yaw * 180 / PI) % 360 + 360) % 360, dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  const set = (el, t, u) => { const s = t + (u || ''); if (el._s !== s) { el._s = s; el.innerHTML = u ? t + '<small>' + u + '</small>' : t; } };
+  set(h.d, (-lv.pos[1]).toFixed(1), 'm'); set(h.s, abs(lv.v[0]).toFixed(1), lv.v[0] < -0.05 ? 'm/s astern' : 'm/s');
+  set(h.h, hd.toFixed(0) + '&deg;', dirs[round(hd / 45) & 7]);
+  set(h.sc, '' + S.scratches); h.sc.className = S.scratchFlash > 0 ? 'f' : '';
+  const th = lv.in.throttle; h.t.style.left = th >= 0 ? '23%' : (23 + th / 0.3 * 23) + '%'; h.t.style.width = (th >= 0 ? th * 77 : -th / 0.3 * 23) + '%';
+  set(h.p, round(lv.rpm) + '', 'rpm');
+  h.w.className = lv.fouled > 0 ? 'pn on' : 'pn';
+  h.k.className = S.hint && S.hintT < 14 ? 'pn' : 'pn off';
+  if (!menu) S.hintT += 0.05;
+}
+
+// ============================================================================
 // renderer, camera and input
 // ============================================================================
 const $ = (id) => document.getElementById(id);
@@ -1773,8 +2626,8 @@ const tDetail = tex(1024, 1024, 'rgba8unorm', TU.RENDER_ATTACHMENT | TU.TEXTURE_
 const tVol = tex(NX / 2, NY / 2, 'rg8unorm', TU.TEXTURE_BINDING | TU.COPY_DST, { d: NZ / 2 });
 const tMap = tex(512, 512, 'rgba8unorm', TU.TEXTURE_BINDING | TU.COPY_DST);
 
-const UB = new Float32Array(60), UBS = new Float32Array(60);
-const ubo = device.createBuffer({ size: 240, usage: BU.UNIFORM | BU.COPY_DST }), uboS = device.createBuffer({ size: 240, usage: BU.UNIFORM | BU.COPY_DST });
+const UB = new Float32Array(68), UBS = new Float32Array(68);
+const ubo = device.createBuffer({ size: 272, usage: BU.UNIFORM | BU.COPY_DST }), uboS = device.createBuffer({ size: 272, usage: BU.UNIFORM | BU.COPY_DST });
 const WT = new Float32Array(4), uboW = device.createBuffer({ size: 16, usage: BU.UNIFORM | BU.COPY_DST });
 
 const VF = SS.VERTEX | SS.FRAGMENT;
@@ -1836,6 +2689,7 @@ const pSnow = scenePipe(mSpr, 'vsSnow', 'fsSnow', [ibSnow], { strip: true, blend
 const pGl = scenePipe(mLeaf, 'vsGl', 'fsGl', [ibBub], { strip: true, blend: ADD, constants: { ROWS: 7 } });
 const pSolidSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid]), pTerrSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid], { cull: 'front' });
 const pLeafSh = shadowPipe(mLeaf, 'vs', [ibLeaf], { strip: true, constants: { ROWS: 3 } });
+await lauvInit(); // the LAUV: model, pipelines (lauv.js)
 
 const mWater = mod(W_WATER);
 const pWater = device.createRenderPipeline({ layout: 'auto', vertex: { module: mWater, entryPoint: 'vs' }, fragment: { module: mWater, entryPoint: 'fs', targets: [{ format: HDR }] } });
@@ -2048,6 +2902,7 @@ Q.writeTexture({ texture: tMap }, Wd.gm, { bytesPerRow: 2048 }, [512, 512]);
   r.end();
   Q.submit([e.finish()]);
 }
+lauvKelp(Wd.big); // kelp leaves as segments for propeller fouling, before the generator's copy goes
 // the GPU has its own copies now: let go of the generator's (about 300 MB)
 for (const o of [Wd.big, Wd.bigF, Wd.small, ...Wd.chunks, ...Wd.props]) o.buf = o.data = 0;
 Wd.glints = Wd.volD = Wd.gm = T.vb = T.ib = T.wp = T.wn = 0;
@@ -2056,7 +2911,8 @@ Wd.glints = Wd.volD = Wd.gm = T.vb = T.ib = T.wp = T.wn = 0;
 // The scene is drawn at `pix` pixels and scaled up to the window. frame() tunes it and the draw distance scale `det`
 // for 60 fps; both start where the last visit left them.
 const PIXMAX = 2560 * 1440, PIXMIN = mob ? 25e4 : 5e5, DETMIN = 0.4;
-let W = 0, H = 0, DW = 0, DH = 0, pix = +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
+const QS = new URLSearchParams(location.search), RES1 = QS.get('res') === '1', FIXT = QS.has('t') ? +QS.get('t') : -1; // res=1: no dynamic resolution; t=: fixed animation time
+let W = 0, H = 0, DW = 0, DH = 0, pix = RES1 ? PIXMAX : +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
 let passScene, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [];
 const NB = 6;
 function resize() {
@@ -2166,6 +3022,7 @@ function render() {
   m[51] = zt * zt * (3 - 2 * zt);
   let ek = (-cy - 8) / 26; ek = ek < 0 ? 0 : ek > 1 ? 1 : ek;
   m[56] = EXPO * (0.6 + 0.4 * ek); m[57] = RAYS; m[58] = det;
+  lauvUpdate();
   Q.writeBuffer(ubo, 0, UB);
   WT[0] = F[TIME]; Q.writeBuffer(uboW, 0, WT);
 
@@ -2197,6 +3054,7 @@ function render() {
   }
   r.setPipeline(pManta); r.setVertexBuffer(1, ibManta); r.drawIndexed(MANTA.ib.length, nManta, MANTA.i0, MANTA.v0, 0);
   r.setPipeline(pFish); r.setVertexBuffer(1, ibFish); r.drawIndexed(FISH.ib.length, nFish, FISH.i0, FISH.v0, 0);
+  lauvDraw(r);
   // kelp and plants: 9-row blades up close, 5 rows mid-range, a decimated set far away
   r.setPipeline(pLeaf); r.setVertexBuffer(0, ibBig); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 18, 0, 24);
   r.setPipeline(pLeaf5); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 10, 24, 58);
@@ -2207,6 +3065,7 @@ function render() {
   r.setPipeline(pBub); r.setVertexBuffer(0, ibBubbles); r.draw(4, nBub);
   r.setPipeline(pGl); r.setVertexBuffer(0, ibGl); r.draw(4, nGl);
   r.setPipeline(pSnow); r.setVertexBuffer(0, ibSnowB); r.draw(4, nSnow);
+  lauvDrawParticles(r);
   r.end();
   // light shafts
   r = e.beginRenderPass(passRays); r.setPipeline(pRays); r.setBindGroup(0, bgRays); r.draw(3); r.end();
@@ -2228,12 +3087,15 @@ function render() {
 // each axis for the gradient
 const CE = new Float64Array([0, 0, 0, .375, 0, 0, -.375, 0, 0, 0, .375, 0, 0, -.375, 0, 0, 0, .375, 0, 0, -.375]), CS = new Float64Array(7);
 const cv = (x, y, z) => { const b = CI[(x >> 2) + CN * ((y >> 2) + NY / 4 * (z >> 2))]; return b > 1 ? CG[b * 64 - 128 + (x & 3) + 4 * (y & 3) + 16 * (z & 3)] : b * 254 - 127; };
-function sd(j) {
-  const x = (F[CX] + CE[j * 3] - OX) / VS - CO, y = (F[CY] + CE[j * 3 + 1] - OY) / VS, z = (F[CZ] + CE[j * 3 + 2] - OZ) / VS - CO;
+// signed distance to the rock in metres (> 0 inside, ±1 m range) at a world point; open water outside the baked region
+function sdAt(wx, wy, wz) {
+  const x = (wx - OX) / VS - CO, y = (wy - OY) / VS, z = (wz - OZ) / VS - CO;
+  if (x < 0 || z < 0 || y < 4 || x >= CN * 4 - 2 || z >= CN * 4 - 2 || y >= NY - 6) return -1;
   const ix = x | 0, iy = y | 0, iz = z | 0, u = x - ix, v = y - iy, a = cv(ix, iy, iz), b = cv(ix, iy + 1, iz), c = cv(ix, iy, iz + 1), d = cv(ix, iy + 1, iz + 1);
   const p = a + (cv(ix + 1, iy, iz) - a) * u, q = b + (cv(ix + 1, iy + 1, iz) - b) * u, r = c + (cv(ix + 1, iy, iz + 1) - c) * u, s = d + (cv(ix + 1, iy + 1, iz + 1) - d) * u;
-  const e = p + (q - p) * v; CS[j] = (e + (r + (s - r) * v - e) * (z - iz)) / 127;
+  const e = p + (q - p) * v; return (e + (r + (s - r) * v - e) * (z - iz)) / 127;
 }
+function sd(j) { CS[j] = sdAt(F[CX] + CE[j * 3], F[CY] + CE[j * 3 + 1], F[CZ] + CE[j * 3 + 2]); }
 // Moves the camera by F[MX..MZ] in steps shorter than its radius CR (so it can't pass through thin rock), pushing it
 // back out after each step and dropping velocity into the rock, so it slides along.
 const CR = 0.5;
@@ -2258,7 +3120,7 @@ function frame(now) {
   const dtr = now - F[LAST]; F[LAST] = now;
   let dt = dtr / 1000; if (dt > 0.1) dt = 0.1;
   // Dynamic resolution for 60 fps: every second (0.4 s behind the menu) scale the load by k
-  if (dtr < 1e3 && (dynT += dtr) > 0 && (dynN++, dynT > (menu ? 400 : 1000))) {
+  if (!RES1 && dtr < 1e3 && (dynT += dtr) > 0 && (dynN++, dynT > (menu ? 400 : 1000))) {
     const a = dynT / dynN, g = dynGN ? dynG / dynGN : 0; let k = 1;
     // with GPU timing: keep it between 9.8 and 13.6 ms
     if (g) { if (g > 13.6 || g < 9.8) k = 11.7 / g; }
@@ -2275,27 +3137,8 @@ function frame(now) {
     if (was !== pix + det) keep('abyssal', [LV, pix < top ? pix | 0 : '', det]); // nothing kept at full resolution
     dynN = dynT = dynG = dynGN = 0; resize();
   }
-  F[TIME] += dt;
-  {
-    // touch: holding the finger away from where it went down keeps turning, like a joystick
-    if (tId >= 0) {
-      const tr = 4 / (innerWidth < innerHeight ? innerWidth : innerHeight); let jx = (tx - tx0) * tr, jy = (ty - ty0) * tr;
-      jx = jx > 1 ? 1 : jx < -1 ? -1 : jx; jy = jy > 1 ? 1 : jy < -1 ? -1 : jy;
-      lkx += jx * 1.5 * dt; lky += jy * dt;
-    }
-    // mouse look through two cascaded low-pass stages
-    const kq = 1 - exp(-dt * 30); lkx += mdx * 0.0022; lky += mdy * 0.0022; mdx = 0; mdy = 0;
-    const ax = lkx * kq, ay = lky * kq; lkx -= ax; lky -= ay; l2x += ax; l2y += ay;
-    const dyw = l2x * kq, dpt = l2y * kq; l2x -= dyw; l2y -= dpt;
-    const yaw = F[YAW] + dyw; let pitch = F[PIT] - dpt; pitch = pitch < -1.55 ? -1.55 : pitch > 1.55 ? 1.55 : pitch;
-    const sp = ks || tN > 1 ? 26 : 7, k = 1 - exp(-dt * 4.5), mf = tId >= 0 ? 0.7 : kf - kb, mr = kr - kl, mu = ku - kd, cp = cos(pitch), sy = sin(yaw), cw = cos(yaw);
-    const vx = F[VX] + ((sy * cp * mf + cw * mr) * sp - F[VX]) * k, vy = F[VY] + ((sin(pitch) * mf + mu) * sp - F[VY]) * k, vz = F[VZ] + ((-cw * cp * mf + sy * mr) * sp - F[VZ]) * k;
-    let x = F[CX] + vx * dt, y = F[CY] + vy * dt, z = F[CZ] + vz * dt;
-    const rad = sqrt(x * x + z * z); if (rad > 150) { x *= 150 / rad; z *= 150 / rad; }
-    y = y < -52 ? -52 : y > -1.2 ? -1.2 : y;
-    F[YAW] = yaw; F[PIT] = pitch; F[VX] = vx; F[VY] = vy; F[VZ] = vz; F[MX] = x - F[CX]; F[MY] = y - F[CY]; F[MZ] = z - F[CZ];
-    collide();
-  }
+  if (FIXT < 0) F[TIME] += dt; else F[TIME] = FIXT;
+  lauvFrame(dt, !menu);
   render();
   if (hud) {
     hN++; if (dtr > hMax) hMax = dtr; if (dtr < hMin) hMin = dtr; if (dtr > hPer * 1.5) { hLate++; hTot++; }
@@ -2306,6 +3149,7 @@ function frame(now) {
 
 // ---------------------------------------------------------------- input
 const key = (e, v) => {
+  if (lauvKeyEvent(e.code, v)) { if (v && e.code.startsWith('Arrow')) e.preventDefault(); return; }
   switch (e.code) {
     case 'KeyW': kf = v; break; case 'KeyS': kb = v; break; case 'KeyA': kl = v; break; case 'KeyD': kr = v; break;
     case 'KeyE': ku = v; break; case 'KeyQ': kd = v; break; case 'ShiftLeft': case 'ShiftRight': ks = v; break;
@@ -2313,14 +3157,14 @@ const key = (e, v) => {
       if (e.code === 'KeyH') { hud = !hud; hTot = 0; hPer = 1e9; info.textContent = ''; }
       else if (e.code === 'KeyM') mute();
       else if (e.code === 'Escape') ui(true);
-      else if (e.code >= 'Digit1' && e.code <= 'Digit6') lookAt(...POSES[e.code.charCodeAt(5) - 49]);
+      else if (e.code >= 'Digit1' && e.code <= 'Digit6') { const p = POSES[e.code.charCodeAt(5) - 49]; lauvFace(...p); }
     }
   }
 };
 // behind the menu only the stats and mute keys work
 addEventListener('keydown', (e) => { if (menu && e.code !== 'KeyH' && e.code !== 'KeyM') return; sound(); key(e, 1); });
 addEventListener('keyup', (e) => key(e, 0));
-const release = () => { kf = kb = kl = kr = ku = kd = ks = 0; tId = -1; tN = 0; };
+const release = () => { lauvReleaseKeys(); kf = kb = kl = kr = ku = kd = ks = 0; tId = -1; tN = 0; };
 const capture = () => { sound(); const p = canvas.requestPointerLock({ unadjustedMovement: true }); if (p && p.catch) p.catch(() => canvas.requestPointerLock()).catch(() => 0); };
 canvas.addEventListener('click', capture);
 addEventListener('mousemove', (e) => { if (document.pointerLockElement === canvas) { mdx += e.movementX; mdy += e.movementY; } });
@@ -2360,12 +3204,38 @@ $('q').querySelectorAll('button').forEach((b, i) => { if (i === 2 - LV) b.classN
 document.addEventListener('pointerlockchange', () => ui(!document.pointerLockElement));
 
 // draw the first frame and wait for the GPU to finish it (pipelines get compiled on first use) before the reveal
-lookAt(...POSES[0]);
+lauvHudInit(); lauvFace(...POSES[0]);
 await say('Letting the light in…', 1, 400);
 render(); await Q.onSubmittedWorkDone();
 setTimeout(keep, 15e3, 'abyssalLoad', ''); // the load counts as survived after 15 s of frames
 ui(true);
 requestAnimationFrame((t) => { F[LAST] = t; requestAnimationFrame(frame); });
+// test hooks (BRIEF.md): window.__app
+window.__app = {
+  ready: true,
+  start() { if (menu) ui(false); lauvS.hintT = 0; },
+  // pose in metres / radians (yaw 0 faces -z and grows towards +x, pitch up positive), u in m/s
+  set(o = {}) {
+    const p = lv.pos, y = o.yaw !== undefined ? o.yaw : lv.yaw, pt = o.pitch !== undefined ? o.pitch : lv.pitch;
+    lauvPlace(o.x !== undefined ? o.x : p[0], o.y !== undefined ? o.y : p[1], o.z !== undefined ? o.z : p[2], y, pt);
+    if (o.u !== undefined) lv.setSpeed(o.u);
+    lauvS.acc = 0;
+  },
+  cam(mode) { lauvS.camMode = mode; lauvS.snap = 1; if (mode === 'chase') { lauvS.camAz = lauvS.camEl = 0; lauvS.camIdle = 9; } },
+  state() {
+    const hd = ((lv.yaw * 180 / PI) % 360 + 360) % 360;
+    return { x: lv.pos[0], y: lv.pos[1], z: lv.pos[2], depth: -lv.pos[1], u: lv.v[0], roll: lv.roll, pitch: lv.pitch, yaw: lv.yaw, heading: hd, scratches: lauvS.scratches, fouled: lv.fouled > 0,
+      throttle: lv.in.throttle, rpm: lv.rpm, thrust: lv.thrust, fins: Array.from(lv.servo), cam: lauvS.camMode, fps: lauvS.fps, paused: lauvS.paused };
+  },
+  key(cmd, down) { lauvKey(cmd, down); },
+  pause(b) { lauvS.paused = !!b; },
+  addCollider(fn) { lauvColliders.push(fn); },   // fn(x, y, z) -> signed distance in metres, > 0 inside the obstacle
+  vehicle: lv,
+  // test helper: advance the simulation by sec seconds at 60 Hz regardless of the frame rate
+  sim(sec) { for (let t = 0; t < sec; t += 1 / 60) { lauvAdvance(1 / 60); lauvParticles(1 / 60); } lauvS.snap = 1; },
+  kelpNear: lauvKelpNear, sdf: lauvSdf,
+  kelpSample(n) { const o = [], N = lkSeg.length / 7, st = floor(N / n); for (let i = 0; i < n; i++) o.push(Array.from(lkSeg.subarray(i * st * 7, i * st * 7 + 7))); return o; },
+};
 
 // ============================================================================
 // audio: procedural underwater ambience (no sample files)
@@ -2409,6 +3279,10 @@ function mkSound(ac) {
     g.setValueAtTime(0, t); g.linearRampToValueAtTime(vol, t + att); g.setTargetAtTime(0, t + att, (dur - att) / 5);
   };
   const NOTES = [0, 2, 5, 7, 9, 12, 14, 17, 19]; // D major pentatonic, in semitones above A4
+  // the LAUV: motor whine that follows the rpm (two detuned saws + a gearbox tone through band-passes), contact scrape (noise), thud
+  const eng = G(0, out), wh1 = N(OscillatorNode, { type: 'sawtooth', frequency: 120 }, BQ('bandpass', 700, 1.4, eng)), wh2 = N(OscillatorNode, { type: 'sawtooth', frequency: 121 }, BQ('bandpass', 1100, 1.8, eng));
+  const gear = N(OscillatorNode, { type: 'sine', frequency: 400 }, G(0.5, eng)), scr = G(0, out), scrF = BQ('bandpass', 1800, 1.2, scr);
+  src(1.7, scrF, BQ('highpass', 600, 0.7, scr)); const thud = pool(2, 0.25, 'sine');
   let lt = ac.currentTime, tB = lt + 1.5, tC = lt + 5, tW = lt + 12, lx = F[CX], ly = F[CY], lz = F[CZ];
   out.gain.setTargetAtTime(VOL, lt, 1);
   return () => {
@@ -2418,6 +3292,14 @@ function mkSound(ac) {
     lt = now; lx = F[CX]; ly = F[CY]; lz = F[CZ];
     rush.gain.setTargetAtTime(0.5 * pow(min(v / 26, 1), 1.2), t, 0.3); rushF.frequency.setTargetAtTime(220 + v * 14, t, 0.3);
     const s = clamp(1 + ly / 30, 0, 1); wash.gain.setTargetAtTime(0.25 + 0.55 * s * s, t, 0.5);
+    {
+      const rpm = abs(lauvAud.rpm), k = min(rpm / 2100, 1);
+      wh1.frequency.setTargetAtTime(70 + rpm * 0.22, t, 0.12); wh2.frequency.setTargetAtTime(70 + rpm * 0.22 * 1.007, t, 0.12); gear.frequency.setTargetAtTime(150 + rpm * 0.6, t, 0.12);
+      eng.gain.setTargetAtTime(rpm > 30 ? 0.035 + 0.1 * k * k * (lauvAud.foul ? 0.6 : 1) : 0, t, 0.2);
+      scr.gain.setTargetAtTime(0.45 * lauvAud.scrape, t, 0.05); scrF.frequency.setTargetAtTime(1200 + 1800 * lauvAud.scrape, t, 0.08);
+      if (lauvAud.thud > 0.02) { play(thud, t, 150, 42, 0.3, 0.3 * lauvAud.thud, 0.004); lauvAud.thud = 0; }
+      if (lauvAud.bub && rpm > 300) { const f = rr(500, 1500); play(bub, t, f, f * 1.7, 0.05 + 40 / f, rr(0.02, 0.05), 0.006); lauvAud.bub = 0; }
+    }
     if (t > tB) { // a burst of 1-6 bubbles: short rising blips, smaller bubbles higher and shorter
       let tt = t;
       for (let n = 1 + rnd() * rnd() * 6 | 0; n--;) { const f = rr(380, 1300); play(bub, tt, f, f * rr(1.4, 2.2), 0.05 + 40 / f, rr(0.03, 0.08), 0.006); tt += rr(0.07, 0.2); }
