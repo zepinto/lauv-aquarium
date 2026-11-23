@@ -150,7 +150,7 @@ fn ggx(nh: f32, a: f32) -> f32 { let a2 = a * a; let d = nh * nh * (a2 - 1.) + 1
   let z = zone(i.wp); let dist = length(i.wp - g.cam.xyz);
   let v1 = vol(i.wp + N * .25); let v2 = vol(i.wp + N * .9);
   let ao = mix(.4, 1., sat((v1.r - .5) * 6.)) * mix(.75, 1., sat((v2.r - .5) * 3.));
-  let sh = shadow9(i.wp + N * .02);
+  let sh = shadow9(i.wp + N * .02, 0.);
   let E = sunE(i.wp.y, z) * sh;
   let ndl = sat(dot(N, L)); let ndv = max(dot(N, V), .03);
   let ca = caus(i.wp, dist);
@@ -213,6 +213,7 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
 // ---------------------------------------------------------------- state
 const LAUV_DT = 1 / 120, LAUV_MAXP = 192, LAUV_NS = 14;
 const lv = new LauvVehicle();
+const lauvTouch = { steer: 0, pitch: 0 };   // touch stick output (touch.js), -1..1
 const lauvKeys = { left: 0, right: 0, up: 0, down: 0, thrustUp: 0, thrustDown: 0 };
 const lauvAud = { rpm: 0, scrape: 0, thud: 0, foul: 0, bub: 0 };
 const lauvColliders = [];            // hook for other pieces: fn(x, y, z) -> signed distance in metres (> 0 inside the obstacle)
@@ -574,7 +575,7 @@ function lauvFrame(dt, play, drv) {
     if (up || dn) { lauvKeys.thrustUp = 0; lauvKeys.thrustDown = 0; }
   }
   let steer = lauvKeys.right - lauvKeys.left + gs, pitch = lauvKeys.up - lauvKeys.down + gpi;
-  if (tId >= 0) { const tr = 4 / (innerWidth < innerHeight ? innerWidth : innerHeight); steer += clamp((tx - tx0) * tr, -1, 1); pitch -= clamp((ty - ty0) * tr, -1, 1); }
+  steer += lauvTouch.steer; pitch += lauvTouch.pitch;
   if (S.hold) { steer = S.hold.steer || 0; pitch = S.hold.pitch || 0; }   // test hook: __app.hold()
   I.steer = clamp(steer, -1, 1); I.pitch = clamp(pitch, -1, 1);
   if (lauvKeys.thrustUp) { S.thrUpT += dt; if (S.thrUpT > 0.2) { S.thrUpT = 0; lauvStep(0.1); } }
@@ -652,7 +653,7 @@ function lauvHudInit() {
   d.innerHTML = '<div id=hl class=pn><div><div class=k>Depth</div><div class=v id=hd>0<small>m</small></div></div><div><div class=k>Speed</div><div class=v id=hs>0<small>m/s</small></div></div>' +
     '<div><div class=k>Heading</div><div class=v id=hh>0<small>N</small></div></div><div><div class=k>Scratches</div><div class=v id=hsc>0</div></div>' +
     '<div class=th><span class=k>Throttle</span><div class=bar><i id=ht></i><b></b></div><span class=v id=hp style="min-width:4.6em;text-align:right;font-size:1.1em">0<small>rpm</small></span></div></div>' +
-    '<div id=hw class=pn><b>PROPELLER FOULED</b>reverse (S) to clear it</div>' +
+    '<div id=hw class=pn><b>PROPELLER FOULED</b>reverse the propeller to clear it</div>' +
     '<div id=hk class=pn><span><kbd>&larr;</kbd><kbd>&rarr;</kbd>steer</span><span><kbd>&uarr;</kbd><kbd>&darr;</kbd>climb / dive</span><span><kbd>W</kbd><kbd>S</kbd>throttle</span><span>mouse look</span></div>';
   document.body.appendChild(d);
   const q = (i) => document.getElementById(i);
