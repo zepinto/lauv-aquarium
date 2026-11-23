@@ -301,9 +301,9 @@ fn shadow4(p: vec3f) -> f32 {
         + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(-e, e), s.z) + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(e, e), s.z)) * .25;
 }
 fn shadow9(p: vec3f, d: f32) -> f32 {
-  // 9 taps within 30 m, 4 to 90 m, one beyond: what the far taps would soften can't be seen there
-  if (LOW || d > 90.) { return shadow1(p); }
-  if (FASTSH || d > 30.) { return shadow4(p); }
+  // 9 taps within 16 m, 4 to 70 m, one beyond: what the far taps would soften can't be seen there
+  if (LOW || d > 70.) { return shadow1(p); }
+  if (FASTSH || d > 16.) { return shadow4(p); }
   let s = shUV(p); let e = 2.1 / ${SHADOW}.; var a = 0.;
   for (var x = -1; x <= 1; x++) { for (var y = -1; y <= 1; y++) { a += textureSampleCompareLevel(tSh, sS, s.xy + vec2f(f32(x), f32(y)) * e, s.z); } }
   return a / 9.;
@@ -355,7 +355,7 @@ fn qrot(q: vec4f, v: vec3f) -> vec3f { return v + 2. * cross(q.xyz, cross(q.xyz,
 // ---------------------------------------------------------------- solid meshes (terrain, rocks, set pieces, sponges, coral)
 const W_SOLID = S_B + /*wgsl*/`
 struct VI { @location(0) p: vec3f, @location(1) n: vec4f, @location(2) a: vec4f, @location(3) b: vec4f, @location(4) c: vec4f };
-struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) op: vec3f, @location(3) on: vec3f,
+struct VO { @invariant @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) op: vec3f, @location(3) on: vec3f,
   @location(4) @interpolate(flat) m: vec4f, @location(5) @interpolate(flat) q: vec4f, @location(6) ao: f32 };
 @vertex fn vs(i: VI) -> VO {
   var o: VO;

@@ -98,7 +98,7 @@ const scenePipe = (m, vsE, fsE, buffers, o = {}) => device.createRenderPipeline(
   vertex: { module: m, entryPoint: vsE, buffers, constants: o.constants },
   fragment: { module: m, entryPoint: fsE, targets: [{ format: HDR, blend: o.blend }] },
   primitive: { topology: o.strip ? 'triangle-strip' : 'triangle-list', cullMode: o.cull || 'none' },
-  depthStencil: { format: DEPTH, depthWriteEnabled: !o.blend, depthCompare: 'greater' }, multisample: { count: AA } });
+  depthStencil: { format: DEPTH, depthWriteEnabled: !o.blend, depthCompare: o.eq ? 'greater-equal' : 'greater' }, multisample: { count: AA } });
 const shadowPipe = (m, vsE, buffers, o = {}) => device.createRenderPipeline({ layout: pl0,
   vertex: { module: m, entryPoint: vsE, buffers, constants: o.constants },
   primitive: { topology: o.strip ? 'triangle-strip' : 'triangle-list', cullMode: o.cull || 'none' },
@@ -106,8 +106,8 @@ const shadowPipe = (m, vsE, buffers, o = {}) => device.createRenderPipeline({ la
 
 await say('Compiling shaders…', 0.05, 300);
 const mSolid = mod(W_SOLID), mLeaf = mod(W_LEAF), mAnim = mod(W_ANIM), mSurf = mod(W_SURF), mSpr = mod(W_SPR);
-const pTerrain = scenePipe(mSolid, 'vs', 'fs', [vbSolid, ibSolid], { cull: 'back' });
-const pSolid = scenePipe(mSolid, 'vs', 'fs', [vbSolid, ibSolid]);
+const pTerrain = scenePipe(mSolid, 'vs', 'fs', [vbSolid, ibSolid], { cull: 'back', eq: true });
+const pSolid = scenePipe(mSolid, 'vs', 'fs', [vbSolid, ibSolid], { eq: true });
 const pLeaf = scenePipe(mLeaf, 'vs', 'fs', [ibLeaf], { strip: true, constants: { ROWS: 9 } });
 const pLeaf5 = scenePipe(mLeaf, 'vs', 'fs', [ibLeaf], { strip: true, constants: { ROWS: 5 } });
 const pLeafS = scenePipe(mLeaf, 'vs', 'fs', [ibLeaf], { strip: true, constants: { ROWS: 3, FAR: 70 } });
@@ -118,6 +118,10 @@ const pSurf = scenePipe(mSurf, 'vs', 'fs', [], { strip: true }), pBack = scenePi
 const pBub = scenePipe(mSpr, 'vsBub', 'fsBub', [ibBub], { strip: true, blend: { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } });
 const ADD = { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } };
 const pSnow = scenePipe(mSpr, 'vsSnow', 'fsSnow', [ibSnow], { strip: true, blend: ADD });
+const pDTerrain = device.createRenderPipeline({ layout: pl0, vertex: { module: mSolid, entryPoint: 'vs', buffers: [vbSolid, ibSolid] },
+  primitive: { topology: 'triangle-list', cullMode: 'back' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' }, multisample: { count: AA } });
+const pDSolid = device.createRenderPipeline({ layout: pl0, vertex: { module: mSolid, entryPoint: 'vs', buffers: [vbSolid, ibSolid] },
+  primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' }, multisample: { count: AA } });
 const pSolidSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid]), pTerrSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid], { cull: 'front' });
 const pLeafSh = shadowPipe(mLeaf, 'vs', [ibLeaf], { strip: true, constants: { ROWS: 3 } });
 await lauvInit(); // the LAUV: model, pipelines (lauv.js)
@@ -310,7 +314,7 @@ const QS = new URLSearchParams(location.search), RES1 = QS.get('res') === '1', F
 // and the frame rate measured in headless Chrome, which has none, are then true
 const SYNC = QS.get('sync') === '1';
 let W = 0, H = 0, DW = 0, DH = 0, pix = RES1 ? PIXMAX : +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = RES1 ? 1 : +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
-let passScene, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [], passTaa = [], bgTaa = [], bgPostK = [], bloomBG0 = [];
+let passScene, passDepth, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [], passTaa = [], bgTaa = [], bgPostK = [], bloomBG0 = [];
 const NB = 6;
 function resize() {
   DW = max(2, round(canvas.clientWidth * devicePixelRatio)); DH = max(2, round(canvas.clientHeight * devicePixelRatio));
@@ -333,7 +337,8 @@ function resize() {
   const vDp = tDp.createView(), vRes = tRes.createView(), vRay = tRay.createView(), vRay2 = tRay2.createView(), vBl = bl.map((t) => t.createView());
   // without anti-aliasing (Low) the scene goes straight into the resolve target, and tMS is one unused column
   passScene = { colorAttachments: [{ view: AA > 1 ? tMS.createView() : vRes, resolveTarget: AA > 1 ? vRes : undefined, loadOp: 'clear', storeOp: AA > 1 ? 'discard' : 'store', clearValue: [0, 0, 0, 1] }],
-    depthStencilAttachment: { view: vDp, depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'store' } };
+    depthStencilAttachment: { view: vDp, depthClearValue: 0, depthLoadOp: 'load', depthStoreOp: 'store' } };
+  passDepth = { colorAttachments: [], depthStencilAttachment: { view: vDp, depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'store' } };
   passRays = { colorAttachments: [colorAtt(vRay, true)] };
   passBlur = { colorAttachments: [colorAtt(vRay2, true)] };
   bgBlur = device.createBindGroup({ layout: pRB.getBindGroupLayout(0), entries: [{ binding: 0, resource: vRay }] });
@@ -364,7 +369,7 @@ const PASSES = ['water', 'scene', 'taa', 'rays', 'blur', 'bloom', 'post'], NPASS
 const PERF = window.__perf = { cpu: 0, names: PASSES, ms: PASSMS, raw: PASSRAW, n: 0, get gpu() { return F[GPU]; } };
 let qs, qResolve, qRead = [];
 const tsw = (p, begin, end) => ({ querySet: qs, beginningOfPassWriteIndex: begin ? 2 * p : undefined, endOfPassWriteIndex: end ? 2 * p + 1 : undefined });
-let tsWater0, tsWater4, tsScene, tsTaa, tsRays, tsBlur, tsBloom0, tsBloomN, tsPost;
+let tsWater0, tsWater4, tsScene0, tsScene1, tsTaa, tsRays, tsBlur, tsBloom0, tsBloomN, tsPost;
 if (hasTS) {
   qs = device.createQuerySet({ type: 'timestamp', count: 2 * NPASS });
   qResolve = device.createBuffer({ size: 16 * NPASS, usage: BU.QUERY_RESOLVE | BU.COPY_SRC });
@@ -381,7 +386,7 @@ if (hasTS) {
     };
     qRead.push(o);
   }
-  tsWater0 = tsw(0, 1, 0); tsWater4 = tsw(0, 0, 1); tsScene = tsw(1, 1, 1); tsTaa = tsw(2, 1, 1); tsRays = tsw(3, 1, 1); tsBlur = tsw(4, 1, 1);
+  tsWater0 = tsw(0, 1, 0); tsWater4 = tsw(0, 0, 1); tsScene0 = tsw(1, 1, 0); tsScene1 = tsw(1, 0, 1); tsTaa = tsw(2, 1, 1); tsRays = tsw(3, 1, 1); tsBlur = tsw(4, 1, 1);
   tsBloom0 = tsw(5, 1, 0); tsBloomN = tsw(5, 0, 1); tsPost = tsw(6, 1, 1);
 }
 
@@ -390,6 +395,8 @@ let hud = false;
 const SKIP = {}; for (const k of (QS.get('off') || '').split(',')) SKIP[k] = true; // ?off=terrain,chunks,props,big,small // debugging: SKIP.terrain / chunks / props / big / small = true leaves that set out of the frame
 let drive = null; // scripted drive of the LAUV (see __world.drive)
 let mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0, hN = 0, hMax = 0, hMin = 1e9, hPer = 1e9, hLate = 0, hTot = 0;
+// draw distance of rocks and props: past ~100 m the haze has taken nearly all of their colour (kelp keeps its own distances)
+const DLOD = QS.has('dlod') ? +QS.get('dlod') : 0.75;
 const JITS = 0.5; // jitter spread (pixels): less than 1 trades some edge smoothing for sharper detail
 const JIT = [...Array(8)].map((_, i) => { const h = (n, b) => { let f = 1, r = 0; for (n++; n > 0; n = floor(n / b)) { f /= b; r += f * (n % b); } return r - 0.5; }; return [h(i, 2), h(i, 3)]; });
 const TANH = 0.6, NEAR = 0.1, EXPO = 0.46, RAYS = 0.45;
@@ -461,6 +468,29 @@ function shadowEdge(r, start, indexed, verts) {
   }
   useTile(r, 4);
 }
+// the opaque rock: terrain, the wreck, rock chunks and props. dp: depth only (pre-pass, see render()), so the expensive rock shader
+// then runs only for the pixels that stay visible
+function drawSolids(r, dp) {
+  r.setBindGroup(0, bg0); curTile = -1; useTile(r, 4);
+  r.setPipeline(dp ? pDTerrain : pTerrain); r.setVertexBuffer(0, vbTerrain); r.setVertexBuffer(1, ibSolids); r.setIndexBuffer(ibTerrain, 'uint32');
+  if (!SKIP.terrain) drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
+  r.setPipeline(dp ? pDSolid : pSolid); r.setVertexBuffer(0, vbMesh); r.setIndexBuffer(ibMesh, 'uint32');
+  { // the wreck: the copies of it that are near
+    const g = Wd.solids.ranges[11];
+    if (g[1]) for (let k = 0; k < 9; k++) if (hypot(F[CX] - (k % 3 - 1) * PER - Wd.shipPos[0], F[CZ] - (floor(k / 3) - 1) * PER - Wd.shipPos[2]) < 260) { useTile(r, k); r.drawIndexed(meshes[11].ib.length, g[1], meshes[11].i0, meshes[11].v0, g[0]); }
+  }
+  if (!SKIP.chunks) for (let i = 0; i < NCHUNK; i++) {
+    const c = Wd.chunks[i], big = i > 2 && i < 6; r.setVertexBuffer(1, ibChunk[i]);
+    drawCells(r, c.start, c.lo, c.hi, 3, meshes[14 + i], 0, 0, i > 5 ? 30 : big ? 40 : 96 * DLOD);
+    if (big) drawCells(r, c.start, c.lo, c.hi, 3, meshes[20 + i], 0, 40, 150 * DLOD);
+  }
+  if (!SKIP.props) for (let i = 0; i < PROP_IDS.length; i++) {
+    const id = PROP_IDS[i], lod = id === 7 || id === 8; r.setVertexBuffer(1, ibProp[i]);
+    drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[id], 0, 0, lod ? 6 : (id < 4 ? 150 : 110) * DLOD);
+    if (lod) drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[14 + id], 0, 6, 110 * DLOD);
+  }
+  useTile(r, 4);
+}
 function render() {
   // camera basis (right vector is horizontal)
   const cx = F[CX], cy = F[CY], cz = F[CZ], pitch = F[PIT], yaw = F[YAW];
@@ -500,33 +530,19 @@ function render() {
   let slot = null;
   if (hasTS) { for (let i = 0; i < qRead.length; i++) if (!qRead[i].busy) { slot = qRead[i]; break; } }
   waterPass[0].timestampWrites = slot ? tsWater0 : undefined; waterPass[4].timestampWrites = slot ? tsWater4 : undefined;
-  passScene.timestampWrites = slot ? tsScene : undefined; passRays.timestampWrites = slot ? tsRays : undefined; passBlur.timestampWrites = slot ? tsBlur : undefined;
+  passRays.timestampWrites = slot ? tsRays : undefined; passBlur.timestampWrites = slot ? tsBlur : undefined;
   bloomPass[0].timestampWrites = slot ? tsBloom0 : undefined; bloomPass[bloomPass.length - 1].timestampWrites = slot ? tsBloomN : undefined;
   passPost.timestampWrites = slot ? tsPost : undefined;
   // animated water texture + mips
   let r = e.beginRenderPass(waterPass[0]); r.setPipeline(pWater); r.setBindGroup(0, bgWater); r.draw(3); r.end();
   for (let i = 1; i < 5; i++) { r = e.beginRenderPass(waterPass[i]); r.setPipeline(pMip16); r.setBindGroup(0, waterBG[i - 1]); r.draw(3); r.end(); }
-  // scene
+  // scene: a depth-only pass over the rock first, so the rock shader runs once per pixel however much rock overlaps
+  passDepth.timestampWrites = slot ? tsScene0 : undefined; passScene.timestampWrites = slot ? tsScene1 : undefined;
+  r = e.beginRenderPass(passDepth);
+  drawSolids(r, true);
+  r.end();
   r = e.beginRenderPass(passScene);
-  r.setBindGroup(0, bg0); curTile = -1; useTile(r, 4);
-  r.setPipeline(pTerrain); r.setVertexBuffer(0, vbTerrain); r.setVertexBuffer(1, ibSolids); r.setIndexBuffer(ibTerrain, 'uint32');
-  if (!SKIP.terrain) drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
-  r.setPipeline(pSolid); r.setVertexBuffer(0, vbMesh); r.setIndexBuffer(ibMesh, 'uint32');
-  { // the wreck: the copies of it that are near
-    const g = Wd.solids.ranges[11];
-    if (g[1]) for (let k = 0; k < 9; k++) if (hypot(F[CX] - (k % 3 - 1) * PER - Wd.shipPos[0], F[CZ] - (floor(k / 3) - 1) * PER - Wd.shipPos[2]) < 260) { useTile(r, k); r.drawIndexed(meshes[11].ib.length, g[1], meshes[11].i0, meshes[11].v0, g[0]); }
-  }
-  if (!SKIP.chunks) for (let i = 0; i < NCHUNK; i++) {
-    const c = Wd.chunks[i], big = i > 2 && i < 6; r.setVertexBuffer(1, ibChunk[i]);
-    drawCells(r, c.start, c.lo, c.hi, 3, meshes[14 + i], 0, 0, i > 5 ? 30 : big ? 40 : 96);
-    if (big) drawCells(r, c.start, c.lo, c.hi, 3, meshes[20 + i], 0, 40, 150);
-  }
-  if (!SKIP.props) for (let i = 0; i < PROP_IDS.length; i++) {
-    const id = PROP_IDS[i], lod = id === 7 || id === 8; r.setVertexBuffer(1, ibProp[i]);
-    drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[id], 0, 0, lod ? 6 : id < 4 ? 150 : 110);
-    if (lod) drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[14 + id], 0, 6, 110);
-  }
-  useTile(r, 4);
+  drawSolids(r, false);
   r.setPipeline(pManta); r.setVertexBuffer(1, ibManta); r.drawIndexed(MANTA.ib.length, nManta, MANTA.i0, MANTA.v0, 0);
   r.setPipeline(pFish); r.setVertexBuffer(1, ibFish); r.drawIndexed(FISH.ib.length, nFish, FISH.i0, FISH.v0, 0);
   lauvDraw(r);
