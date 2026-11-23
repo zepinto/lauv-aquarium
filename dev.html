@@ -163,9 +163,10 @@ const mob = matchMedia('(pointer:coarse)').matches, mem = navigator.deviceMemory
 const keep = (k, v) => { try { localStorage[k] = v; } catch {} };
 let SV = [], LV, bad;
 try { SV = (localStorage.abyssal || '').split(','); bad = localStorage.abyssalLoad; } catch {}
-LV = SV[0] ? +SV[0] : mob ? (mem > 7 ? 1 : 2) : mem <= 4 ? 2 : 0;
-if (bad && LV < 2) { SV = [++LV]; keep('abyssal', LV); }
-const THIN = 1 << LV, SHADOW = LV ? 2048 : 4096, AA = LV > 1 ? 1 : 4, WATER = LV > 1 ? 256 : 512, RAYN = LV > 1 ? 12 : 34;
+const UQ = new URLSearchParams(location.search); // ?lv=0|1|2 forces a level (not remembered), ?res=1 fixes the resolution (main.js)
+LV = UQ.has('lv') ? +UQ.get('lv') : SV[0] ? +SV[0] : mob ? (mem > 7 ? 1 : 2) : mem <= 4 ? 2 : 0;
+if (bad && LV < 2 && !UQ.has('lv')) { SV = [++LV]; keep('abyssal', LV); }
+const THIN = 1 << LV, SHADOW = LV ? 2048 : 4096, TAA = UQ.has('aa') ? UQ.get('aa') === 't' : LV < 2, AA = UQ.has('aa') ? (UQ.get('aa') === '4' ? 4 : 1) : LV > 1 || TAA ? 1 : 4, WATER = LV > 1 ? 256 : 512, FASTSH = !UQ.has('sh9'), RAYN = LV > 1 ? 12 : 34;
 
 // ============================================================================
 // math + procedural helpers (load-time only unless noted)
@@ -583,6 +584,7 @@ const PCOL = vec3f(.58, .66, .98);
 const SUNC = vec3f(1.7, 1.6, 1.45);
 const TAU = 6.2831853;
 const LOW = ${LV > 1};
+const FASTSH = ${FASTSH};
 fn sat(x: f32) -> f32 { return clamp(x, 0., 1.); }
 fn ss(a: f32, b: f32, x: f32) -> f32 { let t = clamp((x - a) / (b - a), 0., 1.); return t * t * (3. - 2. * t); }
 fn ign(p: vec2f) -> f32 { return fract(52.9829189 * fract(dot(p, vec2f(.06711056, .00583715)))); }
@@ -601,7 +603,7 @@ fn fogIn(ro: vec3f, rd: vec3f, d: f32, z: f32, sun: vec3f) -> vec3f {
 }
 `;
 
-const S_B = S_G + /*wgsl*/`
+const S_B = /*wgsl*/`diagnostic(off, derivative_uniformity);` + S_G + /*wgsl*/`
 @group(0) @binding(0) var<uniform> g: G;
 @group(0) @binding(1) var sR: sampler;
 @group(0) @binding(2) var sC: sampler;
@@ -618,14 +620,16 @@ fn shadow4(p: vec3f) -> f32 {
   return (textureSampleCompareLevel(tSh, sS, s.xy + vec2f(-e, -e), s.z) + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(e, -e), s.z)
         + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(-e, e), s.z) + textureSampleCompareLevel(tSh, sS, s.xy + vec2f(e, e), s.z)) * .25;
 }
-fn shadow9(p: vec3f) -> f32 {
-  if (LOW) { return shadow1(p); }
+fn shadow9(p: vec3f, d: f32) -> f32 {
+  if (LOW || d > 90.) { return shadow1(p); }
+  if (FASTSH) { return shadow4(p); }
   let s = shUV(p); let e = 2.1 / ${SHADOW}.; var a = 0.;
   for (var x = -1; x <= 1; x++) { for (var y = -1; y <= 1; y++) { a += textureSampleCompareLevel(tSh, sS, s.xy + vec2f(f32(x), f32(y)) * e, s.z); } }
   return a / 9.;
 }
 fn cuv(p: vec3f) -> vec2f { return p.xz - g.sun.xz * (p.y / g.sun.y); }
 fn caus(p: vec3f, d: f32) -> vec3f {
+  if (d > 100.) { return vec3f(.33); } // the mix below is 100% flat from here: skip the 4 texture reads
   let q = cuv(p);
   let o = vec2f(.004, .0025);
   let a = vec3f(textureSample(tW, sR, q / 3.3 + o).r, textureSample(tW, sR, q / 3.3).r, textureSample(tW, sR, q / 3.3 - o).r);
@@ -634,6 +638,7 @@ fn caus(p: vec3f, d: f32) -> vec3f {
   return mix(c, vec3f(.33), ss(35., 100., d));
 }
 fn caus2(p: vec3f, d: f32) -> f32 {
+  if (d > 100.) { return .33; }
   let q = cuv(p);
   let c = min(pow(textureSample(tW, sR, q / 4.1).r, 1.4) * 2.6 * (.45 + textureSample(tW, sR, q.yx / 6.9 + .37).r * 1.3), 2.6);
   return mix(c, .33, ss(35., 100., d));
@@ -685,13 +690,16 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let on = normalize(i.on) * fl_; let n0 = normalize(i.n) * fl_;
   let dist = length(i.wp - g.cam.xyz);
   let ts = select(1., i.m.z, mat >= 2);
-  let A = tri(i.op, on, .1 * ts); let B = tri(i.op, on, .43 * ts); let C = tri(i.op, on, 1.9 * ts); let F = tri(i.op, on, 6.7 * ts); let fk = ss(10., 1.5, dist) * f32(mat <= 1);
-  let Wd = textureSample(tD, sR, vec2f(i.op.x * .06, (i.op.y + i.op.z) * .7));
+  let A = tri(i.op, on, .1 * ts); let B = tri(i.op, on, .43 * ts);
+  // the fine layers only where they show: C (1.9/m) fades out by 60 m and is neutral past 130 m, F (6.7/m) is for the last 10 m
+  var C = TP(.5, .5, vec3f(0.)); if (dist < 130.) { C = tri(i.op, on, 1.9 * ts); }
+  var F = TP(.5, .5, vec3f(0.)); let fk = ss(10., 1.5, dist) * f32(mat <= 1); if (fk > 0.) { F = tri(i.op, on, 6.7 * ts); }
+  var Wd = vec4f(0.); if (mat == 3) { Wd = textureSample(tD, sR, vec2f(i.op.x * .06, (i.op.y + i.op.z) * .7)); }
   let big = textureSample(tD, sR, i.op.xz * .013 + i.op.y * .021).a;
   let big2 = textureSample(tD, sR, i.op.zx * .031 + i.op.y * .043 + .37).a;
   var sgro = 0.;
-  let sk = textureSample(tD, sR, vec2f((i.op.x + i.op.z) * .33, i.op.y * .035));
-  let sk2 = textureSample(tD, sR, vec2f((i.op.x - i.op.z) * 1.1, i.op.y * .11));
+  var sk = vec4f(0.); var sk2 = vec4f(0.);
+  if (mat == 2) { sk = textureSample(tD, sR, vec2f((i.op.x + i.op.z) * .33, i.op.y * .035)); sk2 = textureSample(tD, sR, vec2f((i.op.x - i.op.z) * 1.1, i.op.y * .11)); }
   let gm = textureSample(tM, sC, i.wp.xz / 384. + .5);
   let ca = caus(i.wp, dist);
   let hgt = A.h * .5 + B.h * .35 + C.h * .15;
@@ -750,7 +758,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let v1 = vol(i.wp + n0 * 1.5); let v2 = vol(i.wp + n0 * 4.5);
   let ao = (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45) * vao * ss(.12, .6, hgt);
   let z = zone(i.wp);
-  let E = sunE(i.wp.y, z) * shadow9(i.wp + n0 * .35);
+  let E = sunE(i.wp.y, z) * shadow9(i.wp + n0 * .35, dist);
   let ndl = sat(dot(N, L));
   let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z)) * ao;
   let dl = E * ndl * (.10 + mix(vec3f(.33), ca, ss(.1, .45, dot(n0, L))) * 2.5);
@@ -1162,6 +1170,53 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
   c = pow(max(c, vec3f(0.)), vec3f(1. / 2.2));
   let n = ign(fc.xy) + ign(fc.xy + 37.) - 1.;
   return vec4f(c + n / 255., 1.);
+}
+`;
+
+// ---------------------------------------------------------------- temporal anti-aliasing (replaces MSAA)
+// The scene is drawn once per pixel with the projection shifted by a sub-pixel jitter (8-sample Halton). Here every
+// pixel finds where it was in the last frame (from its depth and the last view-projection), samples that history
+// with a Catmull-Rom filter, clamps it to the colours of the pixel's 3x3 neighbourhood (so what moved or changed
+// drops its old colour at once) and blends 12% of the new frame in. Colours are compressed by 1/(1+luma) first so the
+// bright sparkles and glints of the HDR scene don't smear.
+const W_TAA = W_FS + /*wgsl*/`
+struct T { pvp: mat4x4f, cam: vec4f, right: vec4f, up: vec4f, fwd: vec4f, res: vec4f, k: vec4f };
+@group(0) @binding(0) var<uniform> t: T;
+@group(0) @binding(1) var sC: sampler;
+@group(0) @binding(2) var tCur: texture_2d<f32>;
+@group(0) @binding(3) var tHis: texture_2d<f32>;
+@group(0) @binding(4) var tDp: texture_depth_2d;
+fn cmp(c: vec3f) -> vec3f { return c / (1. + dot(c, vec3f(.25, .5, .25))); }
+fn unc(c: vec3f) -> vec3f { return c / (1. - dot(c, vec3f(.25, .5, .25))); }
+fn his(uv: vec2f) -> vec3f {
+  // Catmull-Rom through 5 bilinear taps
+  let sz = t.res.xy; let p = uv * sz; let c = floor(p - .5) + .5; let f = p - c;
+  let w0 = f * (-.5 + f * (1. - .5 * f)); let w1 = 1. + f * f * (-2.5 + 1.5 * f); let w2 = f * (.5 + f * (2. - 1.5 * f)); let w3 = f * f * (-.5 + .5 * f);
+  let s = w1 + w2; let o = w2 / s;
+  let t0 = (c - 1.) * t.res.zw; let t12 = (c + o) * t.res.zw; let t3 = (c + 2.) * t.res.zw;
+  var r = textureSampleLevel(tHis, sC, vec2f(t12.x, t0.y), 0.).rgb * (s.x * w0.y) + textureSampleLevel(tHis, sC, vec2f(t0.x, t12.y), 0.).rgb * (w0.x * s.y)
+    + textureSampleLevel(tHis, sC, t12, 0.).rgb * (s.x * s.y) + textureSampleLevel(tHis, sC, vec2f(t3.x, t12.y), 0.).rgb * (w3.x * s.y)
+    + textureSampleLevel(tHis, sC, vec2f(t12.x, t3.y), 0.).rgb * (s.x * w3.y);
+  return max(r, vec3f(0.));
+}
+@fragment fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
+  let px = vec2i(fc.xy); let mx = vec2i(t.res.xy) - 1;
+  var m1 = vec3f(0.); var m2 = vec3f(0.); var cur = vec3f(0.);
+  for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
+    let c = cmp(min(textureLoad(tCur, clamp(px + vec2i(x, y), vec2i(0), mx), 0).rgb, vec3f(60.)));
+    if (x == 0 && y == 0) { cur = c; }
+    m1 += c; m2 += c * c;
+  } }
+  m1 /= 9.; let sd = sqrt(max(m2 / 9. - m1 * m1, vec3f(0.))) * 1.25;
+  let zl = t.fwd.w / max(textureLoad(tDp, px, 0), 1e-6);
+  let nd = fc.xy * t.res.zw * 2. - 1.;
+  let rv = t.fwd.xyz + t.right.xyz * (nd.x * t.right.w) - t.up.xyz * (nd.y * t.up.w);
+  let pc = t.pvp * vec4f(t.cam.xyz + rv * zl, 1.);
+  let uv = vec2f(pc.x / pc.w * .5 + .5, .5 - pc.y / pc.w * .5);
+  var a = t.k.x;
+  if (t.k.y > 0. || pc.w <= 0. || any(uv < vec2f(0.)) || any(uv > vec2f(1.))) { return vec4f(unc(cur), 1.); }
+  let h = clamp(cmp(his(uv)), m1 - sd, m1 + sd);
+  return vec4f(unc(mix(h, cur, a)), 1.);
 }
 `;
 
@@ -1844,6 +1899,11 @@ const waterViews = [0, 1, 2, 3, 4].map((m) => tWater.createView({ baseMipLevel: 
 const waterBG = waterViews.map((v) => blitBG(v));
 const waterPass = waterViews.map((v) => ({ colorAttachments: [colorAtt(v, true)] }));
 
+const mTaa = mod(W_TAA);
+const pTaa = device.createRenderPipeline({ layout: 'auto', vertex: { module: mTaa, entryPoint: 'vs' }, fragment: { module: mTaa, entryPoint: 'fs', targets: [{ format: HDR }] } });
+const uboT = device.createBuffer({ size: 160, usage: BU.UNIFORM | BU.COPY_DST });
+const TUB = new Float32Array(40), CURVP = new Float32Array(16), PREVVP = new Float32Array(16);
+let taaK = 0, taaReset = 1;
 const mRays = mod(W_RAYS), mPost = mod(W_POST), mRB = mod(W_RBLUR);
 const pRB = device.createRenderPipeline({ layout: 'auto', vertex: { module: mRB, entryPoint: 'vs' }, fragment: { module: mRB, entryPoint: 'fs', targets: [{ format: HDR }] } });
 const pRays = device.createRenderPipeline({ layout: 'auto', vertex: { module: mRays, entryPoint: 'vs' }, fragment: { module: mRays, entryPoint: 'fs', targets: [{ format: HDR }] } });
@@ -1959,7 +2019,7 @@ const FLYN = FLY.length / 6, FLYT = 60, LUTN = 1024, flyLUT = new Float32Array(L
 const flyPts = [];
 // per-frame float state lives in one preallocated array, so the frame loop allocates no heap numbers
 const F = new Float64Array(32), P6 = new Float64Array(6);
-const CX = 0, CY = 1, CZ = 2, YAW = 3, PIT = 4, FX = 5, FY = 6, FZ = 7, RX = 8, RZ = 9, UX = 10, UY = 11, UZ = 12, VX = 13, VY = 14, VZ = 15, TIME = 16, FLT = 17, LAST = 18, GPU = 19, HUDT = 20, SPL = 21, MX = 22, MY = 23, MZ = 24;
+const CX = 0, CY = 1, CZ = 2, YAW = 3, PIT = 4, FX = 5, FY = 6, FZ = 7, RX = 8, RZ = 9, UX = 10, UY = 11, UZ = 12, VX = 13, VY = 14, VZ = 15, TIME = 16, FLT = 17, LAST = 18, GPU = 19, HUDT = 20, SPL = 21, MX = 22, MY = 23, MZ = 24, FRAME = 25;
 // aim the camera from P6 = position + look-at point
 function aim() {
   const dx = P6[3] - P6[0], dy = P6[4] - P6[1], dz = P6[5] - P6[2];
@@ -2055,9 +2115,13 @@ Wd.glints = Wd.volD = Wd.gm = T.vb = T.ib = T.wp = T.wn = 0;
 // ---------------------------------------------------------------- render targets (rebuilt on resize)
 // The scene is drawn at `pix` pixels and scaled up to the window. frame() tunes it and the draw distance scale `det`
 // for 60 fps; both start where the last visit left them.
-const PIXMAX = 2560 * 1440, PIXMIN = mob ? 25e4 : 5e5, DETMIN = 0.4;
-let W = 0, H = 0, DW = 0, DH = 0, pix = +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
-let passScene, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [];
+const PIXMAX = 2560 * 1440, PIXMIN = mob ? 25e4 : LV > 1 ? 5e5 : 1920 * 1080, DETMIN = 0.4;
+// ?off=a,b,... skips draw groups to see what they cost: terrain solids chunks props fauna leaf small surf spr
+const OFF = new Set((UQ.get('off') || '').split(','));
+const FIXT = UQ.has('t') ? +UQ.get('t') : -1; // ?t=seconds freezes the animation clock (same frame before and after)
+const FIXRES = UQ.get('res') === '1'; // fixed internal resolution (full window size) and draw distance, for measuring
+let W = 0, H = 0, DW = 0, DH = 0, pix = FIXRES ? PIXMAX : +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = FIXRES ? 1 : +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
+let passScene, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [], passTaa = [], bgTaa = [], bgPostK = [], bloomBG0 = [];
 const NB = 6;
 function resize() {
   DW = max(2, round(canvas.clientWidth * devicePixelRatio)); DH = max(2, round(canvas.clientHeight * devicePixelRatio));
@@ -2071,6 +2135,10 @@ function resize() {
   const tMS = tex(AA > 1 ? W : 1, H, HDR, TU.RENDER_ATTACHMENT, { samples: AA }), tDp = tex(W, H, DEPTH, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING, { samples: AA });
   const tRes = tex(W, H, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay2 = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING);
   targets = [tMS, tDp, tRes, tRay, tRay2];
+  // TAA: two history textures (ping-pong); everything after the scene reads the one just written instead of tRes
+  const tHis = [0, 1].map(() => tex(TAA ? W : 1, TAA ? H : 1, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING)); targets.push(...tHis);
+  const vHis = tHis.map((t) => t.createView());
+  taaReset = 1;
   const bl = [];
   for (let i = 0; i < NB; i++) { const t = tex(max(1, W >> (i + 1)), max(1, H >> (i + 1)), HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING); bl.push(t); targets.push(t); }
   const vDp = tDp.createView(), vRes = tRes.createView(), vRay = tRay.createView(), vRay2 = tRay2.createView(), vBl = bl.map((t) => t.createView());
@@ -2085,6 +2153,12 @@ function resize() {
     { binding: 3, resource: tShadow.createView() }, { binding: 4, resource: tWater.createView() }, { binding: 5, resource: vDp }, { binding: 6, resource: tVol.createView() }, { binding: 7, resource: sClamp }] });
   bgPost = device.createBindGroup({ layout: pPost.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sClamp }, { binding: 2, resource: vRes },
     { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }] });
+  bgPostK = [0, 1].map((k) => device.createBindGroup({ layout: pPost.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sClamp }, { binding: 2, resource: TAA ? vHis[k] : vRes },
+    { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }] }));
+  bloomBG0 = [0, 1].map((k) => blitBG(TAA ? vHis[k] : vRes));
+  passTaa = [0, 1].map((k) => ({ colorAttachments: [colorAtt(vHis[k], false)] }));
+  bgTaa = TAA ? [0, 1].map((k) => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: uboT } }, { binding: 1, resource: sClamp },
+    { binding: 2, resource: vRes }, { binding: 3, resource: vHis[1 - k] }, { binding: 4, resource: vDp }] })) : [];
   bloomPass = []; bloomBG = [];
   // down: res -> b0 -> ... -> b5 ; up: b5 -> b4 (additive) ... -> b0
   for (let i = 0; i < NB; i++) { bloomPass.push({ colorAttachments: [colorAtt(vBl[i], true)] }); bloomBG.push(blitBG(i ? vBl[i - 1] : vRes)); }
@@ -2095,26 +2169,37 @@ resize();
 addEventListener('resize', resize);
 
 // ---------------------------------------------------------------- timing (GPU timestamp queries)
-let qs, qResolve, qRead = [], tsBegin, tsEnd;
+// per-pass GPU time (ms, smoothed over ~10 frames): water texture, scene, light shafts, shaft blur, bloom, composite.
+// window.__perf.ms gives it to the test tools, dev.js shows it
+const PASSES = ['water', 'scene', 'taa', 'rays', 'blur', 'bloom', 'post'], NPASS = PASSES.length, PASSMS = new Float64Array(NPASS), PASSRAW = new Float64Array(NPASS + 1);
+const PERF = window.__perf = { cpu: 0, names: PASSES, ms: PASSMS, raw: PASSRAW, n: 0, get gpu() { return F[GPU]; } };
+let qs, qResolve, qRead = [];
+const tsw = (p, begin, end) => ({ querySet: qs, beginningOfPassWriteIndex: begin ? 2 * p : undefined, endOfPassWriteIndex: end ? 2 * p + 1 : undefined });
+let tsWater0, tsWater4, tsScene, tsTaa, tsRays, tsBlur, tsBloom0, tsBloomN, tsPost;
 if (hasTS) {
-  qs = device.createQuerySet({ type: 'timestamp', count: 2 });
-  qResolve = device.createBuffer({ size: 16, usage: BU.QUERY_RESOLVE | BU.COPY_SRC });
+  qs = device.createQuerySet({ type: 'timestamp', count: 2 * NPASS });
+  qResolve = device.createBuffer({ size: 16 * NPASS, usage: BU.QUERY_RESOLVE | BU.COPY_SRC });
   for (let i = 0; i < 6; i++) {
-    const b = device.createBuffer({ size: 16, usage: BU.MAP_READ | BU.COPY_DST });
+    const b = device.createBuffer({ size: 16 * NPASS, usage: BU.MAP_READ | BU.COPY_DST });
     const o = { b, busy: false, done: null };
     o.done = () => {
       const a = new BigInt64Array(b.getMappedRange());
-      const ms = Number(a[1] - a[0]) / 1e6; F[GPU] = ms; b.unmap(); o.busy = false;
+      const ms = Number(a[2 * NPASS - 1] - a[0]) / 1e6; F[GPU] = ms;
+      for (let p = 0; p < NPASS; p++) { const v = Number(a[2 * p + 1] - a[2 * p]) / 1e6; if (v >= 0 && v < 1e3) { PASSRAW[p] = v; PASSMS[p] += (v - PASSMS[p]) * 0.1; } }
+      PASSRAW[NPASS] = ms; PERF.n++;
+      b.unmap(); o.busy = false;
       if (dynT > 0 && ms > 0 && ms < 1e3) { dynG += ms; dynGN++; }
     };
     qRead.push(o);
   }
-  tsBegin = { querySet: qs, beginningOfPassWriteIndex: 0 }; tsEnd = { querySet: qs, endOfPassWriteIndex: 1 };
+  tsWater0 = tsw(0, 1, 0); tsWater4 = tsw(0, 0, 1); tsScene = tsw(1, 1, 1); tsTaa = tsw(2, 1, 1); tsRays = tsw(3, 1, 1); tsBlur = tsw(4, 1, 1);
+  tsBloom0 = tsw(5, 1, 0); tsBloomN = tsw(5, 0, 1); tsPost = tsw(6, 1, 1);
 }
 
 // ---------------------------------------------------------------- frame
 let hud = false;
 let kf = 0, kb = 0, kl = 0, kr = 0, ku = 0, kd = 0, ks = 0, mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0, hN = 0, hMax = 0, hMin = 1e9, hPer = 1e9, hLate = 0, hTot = 0, tId = -1, tN = 0, tx0 = 0, ty0 = 0, tx = 0, ty = 0;
+const JIT = [...Array(8)].map((_, i) => { const h = (n, b) => { let f = 1, r = 0; for (n++; n > 0; n = floor(n / b)) { f /= b; r += f * (n % b); } return r - 0.5; }; return [h(i, 2), h(i, 3)]; });
 const TANH = 0.6, NEAR = 0.1, EXPO = 0.62, RAYS = 0.54;
 const submitList = [null];
 const rowOrd = new Uint8Array(CELLS);
@@ -2166,6 +2251,15 @@ function render() {
   m[51] = zt * zt * (3 - 2 * zt);
   let ek = (-cy - 8) / 26; ek = ek < 0 ? 0 : ek > 1 ? 1 : ek;
   m[56] = EXPO * (0.6 + 0.4 * ek); m[57] = RAYS; m[58] = det;
+  if (TAA) {
+    // sub-pixel jitter (Halton 2,3) added to the clip position; the unjittered matrix is kept for the next frame's reprojection
+    CURVP.set(UB.subarray(0, 16));
+    const hj = JIT[F[FRAME] & 7], jx = hj[0] * 2 / W, jy = hj[1] * 2 / H;
+    for (let c = 0; c < 4; c++) { UB[c * 4] += jx * UB[c * 4 + 3]; UB[c * 4 + 1] += jy * UB[c * 4 + 3]; }
+    F[FRAME]++;
+    TUB.set(PREVVP, 0); TUB.set(UB.subarray(32, 48), 16); TUB[32] = W; TUB[33] = H; TUB[34] = 1 / W; TUB[35] = 1 / H; TUB[36] = 0.12; TUB[37] = taaReset;
+    Q.writeBuffer(uboT, 0, TUB);
+  }
   Q.writeBuffer(ubo, 0, UB);
   WT[0] = F[TIME]; Q.writeBuffer(uboW, 0, WT);
 
@@ -2173,8 +2267,10 @@ function render() {
   const e = device.createCommandEncoder();
   let slot = null;
   if (hasTS) { for (let i = 0; i < qRead.length; i++) if (!qRead[i].busy) { slot = qRead[i]; break; } }
-  waterPass[0].timestampWrites = slot ? tsBegin : undefined;
-  passPost.timestampWrites = slot ? tsEnd : undefined;
+  waterPass[0].timestampWrites = slot ? tsWater0 : undefined; waterPass[4].timestampWrites = slot ? tsWater4 : undefined;
+  passScene.timestampWrites = slot ? tsScene : undefined; passRays.timestampWrites = slot ? tsRays : undefined; passBlur.timestampWrites = slot ? tsBlur : undefined;
+  bloomPass[0].timestampWrites = slot ? tsBloom0 : undefined; bloomPass[bloomPass.length - 1].timestampWrites = slot ? tsBloomN : undefined;
+  passPost.timestampWrites = slot ? tsPost : undefined;
   // animated water texture + mips
   let r = e.beginRenderPass(waterPass[0]); r.setPipeline(pWater); r.setBindGroup(0, bgWater); r.draw(3); r.end();
   for (let i = 1; i < 5; i++) { r = e.beginRenderPass(waterPass[i]); r.setPipeline(pMip16); r.setBindGroup(0, waterBG[i - 1]); r.draw(3); r.end(); }
@@ -2182,43 +2278,53 @@ function render() {
   r = e.beginRenderPass(passScene);
   r.setBindGroup(0, bg0);
   r.setPipeline(pTerrain); r.setVertexBuffer(0, vbTerrain); r.setVertexBuffer(1, ibSolids); r.setIndexBuffer(ibTerrain, 'uint32');
-  drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
+  if (!OFF.has('terrain')) drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
   r.setPipeline(pSolid); r.setVertexBuffer(0, vbMesh); r.setIndexBuffer(ibMesh, 'uint32');
-  for (let i = 0; i < 12; i++) { const g = Wd.solids.ranges[i]; if (g[1]) r.drawIndexed(meshes[i].ib.length, g[1], meshes[i].i0, meshes[i].v0, g[0]); }
-  for (let i = 0; i < NCHUNK; i++) {
+  if (!OFF.has('solids')) for (let i = 0; i < 12; i++) { const g = Wd.solids.ranges[i]; if (g[1]) r.drawIndexed(meshes[i].ib.length, g[1], meshes[i].i0, meshes[i].v0, g[0]); }
+  if (!OFF.has('chunks')) for (let i = 0; i < NCHUNK; i++) {
     const c = Wd.chunks[i], big = i > 2 && i < 6; r.setVertexBuffer(1, ibChunk[i]);
     drawCells(r, c.start, c.lo, c.hi, 3, meshes[14 + i], 0, 0, i > 5 ? 30 : big ? 40 : 96);
     if (big) drawCells(r, c.start, c.lo, c.hi, 3, meshes[20 + i], 0, 40, 150);
   }
-  for (let i = 0; i < 6; i++) {
+  if (!OFF.has('props')) for (let i = 0; i < 6; i++) {
     const lod = i === 3 || i === 4; r.setVertexBuffer(1, ibProp[i]);
     drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[4 + i], 0, 0, lod ? 6 : 110);
     if (lod) drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[18 + i], 0, 6, 110);
   }
-  r.setPipeline(pManta); r.setVertexBuffer(1, ibManta); r.drawIndexed(MANTA.ib.length, nManta, MANTA.i0, MANTA.v0, 0);
-  r.setPipeline(pFish); r.setVertexBuffer(1, ibFish); r.drawIndexed(FISH.ib.length, nFish, FISH.i0, FISH.v0, 0);
+  if (!OFF.has('fauna')) {
+    r.setPipeline(pManta); r.setVertexBuffer(1, ibManta); r.drawIndexed(MANTA.ib.length, nManta, MANTA.i0, MANTA.v0, 0);
+    r.setPipeline(pFish); r.setVertexBuffer(1, ibFish); r.drawIndexed(FISH.ib.length, nFish, FISH.i0, FISH.v0, 0);
+  }
   // kelp and plants: 9-row blades up close, 5 rows mid-range, a decimated set far away
-  r.setPipeline(pLeaf); r.setVertexBuffer(0, ibBig); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 18, 0, 24);
-  r.setPipeline(pLeaf5); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 10, 24, 58);
-  r.setPipeline(pLeafF); r.setVertexBuffer(0, ibBigF); drawCells(r, Wd.bigF.start, Wd.bigF.lo, Wd.bigF.hi, 5, false, 6, 58, 150);
-  r.setPipeline(pLeafS); r.setVertexBuffer(0, ibSmall); drawCells(r, Wd.small.start, Wd.small.lo, Wd.small.hi, 1.5, false, 6, 0, 70);
-  r.setPipeline(pSurf); r.draw(4);
-  r.setPipeline(pBack); r.draw(4);
-  r.setPipeline(pBub); r.setVertexBuffer(0, ibBubbles); r.draw(4, nBub);
-  r.setPipeline(pGl); r.setVertexBuffer(0, ibGl); r.draw(4, nGl);
-  r.setPipeline(pSnow); r.setVertexBuffer(0, ibSnowB); r.draw(4, nSnow);
+  if (!OFF.has('leaf')) {
+    r.setPipeline(pLeaf); r.setVertexBuffer(0, ibBig); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 18, 0, 24);
+    r.setPipeline(pLeaf5); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 10, 24, 58);
+    r.setPipeline(pLeafF); r.setVertexBuffer(0, ibBigF); drawCells(r, Wd.bigF.start, Wd.bigF.lo, Wd.bigF.hi, 5, false, 6, 58, 150);
+  }
+  if (!OFF.has('small')) { r.setPipeline(pLeafS); r.setVertexBuffer(0, ibSmall); drawCells(r, Wd.small.start, Wd.small.lo, Wd.small.hi, 1.5, false, 6, 0, 70); }
+  if (!OFF.has('surf')) { r.setPipeline(pSurf); r.draw(4); r.setPipeline(pBack); r.draw(4); }
+  if (!OFF.has('spr')) {
+    r.setPipeline(pBub); r.setVertexBuffer(0, ibBubbles); r.draw(4, nBub);
+    r.setPipeline(pGl); r.setVertexBuffer(0, ibGl); r.draw(4, nGl);
+    r.setPipeline(pSnow); r.setVertexBuffer(0, ibSnowB); r.draw(4, nSnow);
+  }
   r.end();
+  if (TAA) {
+    taaK ^= 1; passTaa[taaK].timestampWrites = slot ? tsTaa : undefined;
+    r = e.beginRenderPass(passTaa[taaK]); r.setPipeline(pTaa); r.setBindGroup(0, bgTaa[taaK]); r.draw(3); r.end();
+    PREVVP.set(CURVP); taaReset = 0;
+  }
   // light shafts
   r = e.beginRenderPass(passRays); r.setPipeline(pRays); r.setBindGroup(0, bgRays); r.draw(3); r.end();
   r = e.beginRenderPass(passBlur); r.setPipeline(pRB); r.setBindGroup(0, bgBlur); r.draw(3); r.end();
   // bloom
   for (let i = 0; i < bloomPass.length; i++) {
-    r = e.beginRenderPass(bloomPass[i]); r.setPipeline(i === 0 ? pDown0 : i < NB ? pDown : pUp); r.setBindGroup(0, bloomBG[i]); r.draw(3); r.end();
+    r = e.beginRenderPass(bloomPass[i]); r.setPipeline(i === 0 ? pDown0 : i < NB ? pDown : pUp); r.setBindGroup(0, i === 0 ? bloomBG0[taaK] : bloomBG[i]); r.draw(3); r.end();
   }
   // composite
   passPost.colorAttachments[0].view = ctx.getCurrentTexture().createView();
-  r = e.beginRenderPass(passPost); r.setPipeline(pPost); r.setBindGroup(0, bgPost); r.draw(3); r.end();
-  if (slot) { e.resolveQuerySet(qs, 0, 2, qResolve, 0); e.copyBufferToBuffer(qResolve, 0, slot.b, 0, 16); }
+  r = e.beginRenderPass(passPost); r.setPipeline(pPost); r.setBindGroup(0, bgPostK[taaK]); r.draw(3); r.end();
+  if (slot) { e.resolveQuerySet(qs, 0, 2 * NPASS, qResolve, 0); e.copyBufferToBuffer(qResolve, 0, slot.b, 0, 16 * NPASS); }
   submitList[0] = e.finish();
   Q.submit(submitList);
   if (slot) { slot.busy = true; slot.b.mapAsync(GPUMapMode.READ).then(slot.done); }
@@ -2257,25 +2363,26 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dtr = now - F[LAST]; F[LAST] = now;
   let dt = dtr / 1000; if (dt > 0.1) dt = 0.1;
-  // Dynamic resolution for 60 fps: every second (0.4 s behind the menu) scale the load by k
-  if (dtr < 1e3 && (dynT += dtr) > 0 && (dynN++, dynT > (menu ? 400 : 1000))) {
+  // Dynamic resolution for 30+ fps: every second (0.4 s behind the menu) scale the load by k. Desktop High and Medium never
+  // go below 1920x1080 pixels (PIXMIN): past that only the draw distance shrinks
+  if (!FIXRES && dtr < 1e3 && (dynT += dtr) > 0 && (dynN++, dynT > (menu ? 400 : 1000))) {
     const a = dynT / dynN, g = dynGN ? dynG / dynGN : 0; let k = 1;
-    // with GPU timing: keep it between 9.8 and 13.6 ms
-    if (g) { if (g > 13.6 || g < 9.8) k = 11.7 / g; }
-    // without: slow for two periods in a row means fewer pixels, and twice as long before trying to go back up
-    else if (a > 17.6) { dynOk = 0; if (++dynBad > 1) { k = 15 / a; dynBad = 0; dynWait = min(dynWait * 2, 60); } }
-    // at the display's rate there is no telling if there is room, so try a little more now and then
-    else { dynBad = 0; if (a < 12.5) k = 15 / a; else if (++dynOk > dynWait) { k = 1.17; dynOk = 0; } }
-    k = k < 0.5 ? 0.5 : k > 1.7 ? 1.7 : k; const top = min(PIXMAX, DW * DH), mid = max(top / 2, PIXMIN), was = pix + det;
+    // with GPU timing: keep it between 20 and 28 ms (the 25 ms budget)
+    if (g) { if (g > 28 || g < 20) k = 24 / g; }
+    // without: slow (over 34 ms) for two periods in a row means less load, and twice as long before trying to go back up
+    else if (a > 34) { dynOk = 0; if (++dynBad > 1) { k = 28 / a; dynBad = 0; dynWait = min(dynWait * 2, 60); } }
+    // faster than 22 ms there is room; at the display's rate there is no telling how much, so try a little more now and then
+    else { dynBad = 0; if (a < 22 && a < 15) k = 20 / a; else if (++dynOk > dynWait) { k = 1.17; dynOk = 0; } }
+    k = k < 0.5 ? 0.5 : k > 1.7 ? 1.7 : k; const top = min(PIXMAX, DW * DH), lo = min(PIXMIN, top), mid = max(top / 2, lo), was = pix + det;
     // too slow: pixels down to `mid` first, then draw distance, then the remaining pixels; faster goes back the same way
     if (k < 1 ? pix > mid || det <= DETMIN : pix < mid || det >= 1) {
-      const end = k < 1 ? (det > DETMIN ? mid : PIXMIN) : det < 1 ? mid : top;
+      const end = k < 1 ? (det > DETMIN ? mid : lo) : det < 1 ? mid : top;
       pix *= k; if (k < 1 ? pix < end : pix > end) pix = end;
     } else { det *= sqrt(k); det = det < DETMIN ? DETMIN : det > 1 ? 1 : det; }
     if (was !== pix + det) keep('abyssal', [LV, pix < top ? pix | 0 : '', det]); // nothing kept at full resolution
     dynN = dynT = dynG = dynGN = 0; resize();
   }
-  F[TIME] += dt;
+  F[TIME] = FIXT >= 0 ? FIXT : F[TIME] + dt;
   {
     // touch: holding the finger away from where it went down keeps turning, like a joystick
     if (tId >= 0) {
@@ -2296,7 +2403,7 @@ function frame(now) {
     F[YAW] = yaw; F[PIT] = pitch; F[VX] = vx; F[VY] = vy; F[VZ] = vz; F[MX] = x - F[CX]; F[MY] = y - F[CY]; F[MZ] = z - F[CZ];
     collide();
   }
-  render();
+  const c0 = performance.now(); render(); PERF.cpu = performance.now() - c0; // JS time of render(): draw-call encoding and submit
   if (hud) {
     hN++; if (dtr > hMax) hMax = dtr; if (dtr < hMin) hMin = dtr; if (dtr > hPer * 1.5) { hLate++; hTot++; }
     F[HUDT] += dtr / 1000;
@@ -2447,13 +2554,15 @@ document.addEventListener('visibilitychange', () => { if (AC) document.hidden ? 
 //   F, B or 1-6 during a flight stop it
 {
   const LOGN = 1 << 16, logFrame = new Float32Array(LOGN), logGpu = new Float32Array(LOGN);
-  let flying = false, bench = false, last = 0, nFrame = 0, nGpu = 0;
+  let flying = false, bench = false, last = 0, nFrame = 0, nGpu = 0, lastN = 0;
+  const passSum = new Float64Array(PASSES.length);
   const stop = () => { flying = bench = false; dynT = 0; };
   const report = () => {
     const st = (a, n) => { const s = Array.from(a.subarray(0, n)).sort((x, y) => x - y); let sum = 0; for (const v of s) sum += v; return { n, avg: sum / n, p99: s[min(n - 1, floor(n * 0.99))], max: s[n - 1] }; };
     const fm = (o) => `avg ${o.avg.toFixed(2)}  p99 ${o.p99.toFixed(2)}  max ${o.max.toFixed(2)} ms`;
     const f = st(logFrame, nFrame);
-    info.textContent = `Fly-through ${W}x${H}, ${f.n} frames\nframe  ${fm(f)}\nGPU    ${nGpu ? fm(st(logGpu, nGpu)) : 'timestamp-query unavailable'}`;
+    const per = nGpu ? PASSES.map((p, i) => `${p} ${(passSum[i] / nGpu).toFixed(2)}`).join('  ') : '';
+    info.textContent = `Fly-through ${W}x${H}, ${f.n} frames\nframe  ${fm(f)}\nGPU    ${nGpu ? fm(st(logGpu, nGpu)) : 'timestamp-query unavailable'}\nper pass (avg ms)  ${per}`;
   };
   // frame() moves the free camera and then calls render(): step in between and put the camera on the path instead
   const draw = render;
@@ -2461,7 +2570,7 @@ document.addEventListener('visibilitychange', () => { if (AC) document.hidden ? 
     if (flying) {
       const dtr = F[LAST] - last; last = F[LAST];
       F[FLT] += min(dtr / 1000, 0.1); flyAt();
-      if (bench) { if (nFrame < LOGN) logFrame[nFrame++] = dtr; if (F[GPU] > 0 && nGpu < LOGN) logGpu[nGpu++] = F[GPU]; }
+      if (bench) { if (nFrame < LOGN) logFrame[nFrame++] = dtr; if (F[GPU] > 0 && nGpu < LOGN && PERF.n !== lastN) { lastN = PERF.n; logGpu[nGpu++] = F[GPU]; for (let i = 0; i < PASSES.length; i++) passSum[i] += PASSRAW[i]; } }
       if (F[FLT] >= FLYT) { if (bench) report(); stop(); }
     }
     draw();
@@ -2471,7 +2580,7 @@ document.addEventListener('visibilitychange', () => { if (AC) document.hidden ? 
     if (e.code === 'KeyF' || e.code === 'KeyB') {
       if (flying) stop();
       else {
-        flying = true; bench = e.code === 'KeyB'; F[FLT] = 0; last = F[LAST]; nFrame = nGpu = 0;
+        flying = true; bench = e.code === 'KeyB'; F[FLT] = 0; last = F[LAST]; nFrame = nGpu = 0; passSum.fill(0);
         // a benchmark hides the stats line and holds the resolution: dynT at -Infinity keeps frame() from tuning it
         if (bench) { hud = false; info.textContent = ''; dynT = -Infinity; }
       }

@@ -119,6 +119,11 @@ const waterViews = [0, 1, 2, 3, 4].map((m) => tWater.createView({ baseMipLevel: 
 const waterBG = waterViews.map((v) => blitBG(v));
 const waterPass = waterViews.map((v) => ({ colorAttachments: [colorAtt(v, true)] }));
 
+const mTaa = mod(W_TAA);
+const pTaa = device.createRenderPipeline({ layout: 'auto', vertex: { module: mTaa, entryPoint: 'vs' }, fragment: { module: mTaa, entryPoint: 'fs', targets: [{ format: HDR }] } });
+const uboT = device.createBuffer({ size: 160, usage: BU.UNIFORM | BU.COPY_DST });
+const TUB = new Float32Array(40), CURVP = new Float32Array(16), PREVVP = new Float32Array(16);
+let taaK = 0, taaReset = 1;
 const mRays = mod(W_RAYS), mPost = mod(W_POST), mRB = mod(W_RBLUR);
 const pRB = device.createRenderPipeline({ layout: 'auto', vertex: { module: mRB, entryPoint: 'vs' }, fragment: { module: mRB, entryPoint: 'fs', targets: [{ format: HDR }] } });
 const pRays = device.createRenderPipeline({ layout: 'auto', vertex: { module: mRays, entryPoint: 'vs' }, fragment: { module: mRays, entryPoint: 'fs', targets: [{ format: HDR }] } });
@@ -234,7 +239,7 @@ const FLYN = FLY.length / 6, FLYT = 60, LUTN = 1024, flyLUT = new Float32Array(L
 const flyPts = [];
 // per-frame float state lives in one preallocated array, so the frame loop allocates no heap numbers
 const F = new Float64Array(32), P6 = new Float64Array(6);
-const CX = 0, CY = 1, CZ = 2, YAW = 3, PIT = 4, FX = 5, FY = 6, FZ = 7, RX = 8, RZ = 9, UX = 10, UY = 11, UZ = 12, VX = 13, VY = 14, VZ = 15, TIME = 16, FLT = 17, LAST = 18, GPU = 19, HUDT = 20, SPL = 21, MX = 22, MY = 23, MZ = 24;
+const CX = 0, CY = 1, CZ = 2, YAW = 3, PIT = 4, FX = 5, FY = 6, FZ = 7, RX = 8, RZ = 9, UX = 10, UY = 11, UZ = 12, VX = 13, VY = 14, VZ = 15, TIME = 16, FLT = 17, LAST = 18, GPU = 19, HUDT = 20, SPL = 21, MX = 22, MY = 23, MZ = 24, FRAME = 25;
 // aim the camera from P6 = position + look-at point
 function aim() {
   const dx = P6[3] - P6[0], dy = P6[4] - P6[1], dz = P6[5] - P6[2];
@@ -330,9 +335,13 @@ Wd.glints = Wd.volD = Wd.gm = T.vb = T.ib = T.wp = T.wn = 0;
 // ---------------------------------------------------------------- render targets (rebuilt on resize)
 // The scene is drawn at `pix` pixels and scaled up to the window. frame() tunes it and the draw distance scale `det`
 // for 60 fps; both start where the last visit left them.
-const PIXMAX = 2560 * 1440, PIXMIN = mob ? 25e4 : 5e5, DETMIN = 0.4;
-let W = 0, H = 0, DW = 0, DH = 0, pix = +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
-let passScene, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [];
+const PIXMAX = 2560 * 1440, PIXMIN = mob ? 25e4 : LV > 1 ? 5e5 : 1920 * 1080, DETMIN = 0.4;
+// ?off=a,b,... skips draw groups to see what they cost: terrain solids chunks props fauna leaf small surf spr
+const OFF = new Set((UQ.get('off') || '').split(','));
+const FIXT = UQ.has('t') ? +UQ.get('t') : -1; // ?t=seconds freezes the animation clock (same frame before and after)
+const FIXRES = UQ.get('res') === '1'; // fixed internal resolution (full window size) and draw distance, for measuring
+let W = 0, H = 0, DW = 0, DH = 0, pix = FIXRES ? PIXMAX : +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = FIXRES ? 1 : +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
+let passScene, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [], passTaa = [], bgTaa = [], bgPostK = [], bloomBG0 = [];
 const NB = 6;
 function resize() {
   DW = max(2, round(canvas.clientWidth * devicePixelRatio)); DH = max(2, round(canvas.clientHeight * devicePixelRatio));
@@ -346,6 +355,10 @@ function resize() {
   const tMS = tex(AA > 1 ? W : 1, H, HDR, TU.RENDER_ATTACHMENT, { samples: AA }), tDp = tex(W, H, DEPTH, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING, { samples: AA });
   const tRes = tex(W, H, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay2 = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING);
   targets = [tMS, tDp, tRes, tRay, tRay2];
+  // TAA: two history textures (ping-pong); everything after the scene reads the one just written instead of tRes
+  const tHis = [0, 1].map(() => tex(TAA ? W : 1, TAA ? H : 1, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING)); targets.push(...tHis);
+  const vHis = tHis.map((t) => t.createView());
+  taaReset = 1;
   const bl = [];
   for (let i = 0; i < NB; i++) { const t = tex(max(1, W >> (i + 1)), max(1, H >> (i + 1)), HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING); bl.push(t); targets.push(t); }
   const vDp = tDp.createView(), vRes = tRes.createView(), vRay = tRay.createView(), vRay2 = tRay2.createView(), vBl = bl.map((t) => t.createView());
@@ -360,6 +373,12 @@ function resize() {
     { binding: 3, resource: tShadow.createView() }, { binding: 4, resource: tWater.createView() }, { binding: 5, resource: vDp }, { binding: 6, resource: tVol.createView() }, { binding: 7, resource: sClamp }] });
   bgPost = device.createBindGroup({ layout: pPost.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sClamp }, { binding: 2, resource: vRes },
     { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }] });
+  bgPostK = [0, 1].map((k) => device.createBindGroup({ layout: pPost.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sClamp }, { binding: 2, resource: TAA ? vHis[k] : vRes },
+    { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }] }));
+  bloomBG0 = [0, 1].map((k) => blitBG(TAA ? vHis[k] : vRes));
+  passTaa = [0, 1].map((k) => ({ colorAttachments: [colorAtt(vHis[k], false)] }));
+  bgTaa = TAA ? [0, 1].map((k) => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: uboT } }, { binding: 1, resource: sClamp },
+    { binding: 2, resource: vRes }, { binding: 3, resource: vHis[1 - k] }, { binding: 4, resource: vDp }] })) : [];
   bloomPass = []; bloomBG = [];
   // down: res -> b0 -> ... -> b5 ; up: b5 -> b4 (additive) ... -> b0
   for (let i = 0; i < NB; i++) { bloomPass.push({ colorAttachments: [colorAtt(vBl[i], true)] }); bloomBG.push(blitBG(i ? vBl[i - 1] : vRes)); }
@@ -370,26 +389,37 @@ resize();
 addEventListener('resize', resize);
 
 // ---------------------------------------------------------------- timing (GPU timestamp queries)
-let qs, qResolve, qRead = [], tsBegin, tsEnd;
+// per-pass GPU time (ms, smoothed over ~10 frames): water texture, scene, light shafts, shaft blur, bloom, composite.
+// window.__perf.ms gives it to the test tools, dev.js shows it
+const PASSES = ['water', 'scene', 'taa', 'rays', 'blur', 'bloom', 'post'], NPASS = PASSES.length, PASSMS = new Float64Array(NPASS), PASSRAW = new Float64Array(NPASS + 1);
+const PERF = window.__perf = { cpu: 0, names: PASSES, ms: PASSMS, raw: PASSRAW, n: 0, get gpu() { return F[GPU]; } };
+let qs, qResolve, qRead = [];
+const tsw = (p, begin, end) => ({ querySet: qs, beginningOfPassWriteIndex: begin ? 2 * p : undefined, endOfPassWriteIndex: end ? 2 * p + 1 : undefined });
+let tsWater0, tsWater4, tsScene, tsTaa, tsRays, tsBlur, tsBloom0, tsBloomN, tsPost;
 if (hasTS) {
-  qs = device.createQuerySet({ type: 'timestamp', count: 2 });
-  qResolve = device.createBuffer({ size: 16, usage: BU.QUERY_RESOLVE | BU.COPY_SRC });
+  qs = device.createQuerySet({ type: 'timestamp', count: 2 * NPASS });
+  qResolve = device.createBuffer({ size: 16 * NPASS, usage: BU.QUERY_RESOLVE | BU.COPY_SRC });
   for (let i = 0; i < 6; i++) {
-    const b = device.createBuffer({ size: 16, usage: BU.MAP_READ | BU.COPY_DST });
+    const b = device.createBuffer({ size: 16 * NPASS, usage: BU.MAP_READ | BU.COPY_DST });
     const o = { b, busy: false, done: null };
     o.done = () => {
       const a = new BigInt64Array(b.getMappedRange());
-      const ms = Number(a[1] - a[0]) / 1e6; F[GPU] = ms; b.unmap(); o.busy = false;
+      const ms = Number(a[2 * NPASS - 1] - a[0]) / 1e6; F[GPU] = ms;
+      for (let p = 0; p < NPASS; p++) { const v = Number(a[2 * p + 1] - a[2 * p]) / 1e6; if (v >= 0 && v < 1e3) { PASSRAW[p] = v; PASSMS[p] += (v - PASSMS[p]) * 0.1; } }
+      PASSRAW[NPASS] = ms; PERF.n++;
+      b.unmap(); o.busy = false;
       if (dynT > 0 && ms > 0 && ms < 1e3) { dynG += ms; dynGN++; }
     };
     qRead.push(o);
   }
-  tsBegin = { querySet: qs, beginningOfPassWriteIndex: 0 }; tsEnd = { querySet: qs, endOfPassWriteIndex: 1 };
+  tsWater0 = tsw(0, 1, 0); tsWater4 = tsw(0, 0, 1); tsScene = tsw(1, 1, 1); tsTaa = tsw(2, 1, 1); tsRays = tsw(3, 1, 1); tsBlur = tsw(4, 1, 1);
+  tsBloom0 = tsw(5, 1, 0); tsBloomN = tsw(5, 0, 1); tsPost = tsw(6, 1, 1);
 }
 
 // ---------------------------------------------------------------- frame
 let hud = false;
 let kf = 0, kb = 0, kl = 0, kr = 0, ku = 0, kd = 0, ks = 0, mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0, hN = 0, hMax = 0, hMin = 1e9, hPer = 1e9, hLate = 0, hTot = 0, tId = -1, tN = 0, tx0 = 0, ty0 = 0, tx = 0, ty = 0;
+const JIT = [...Array(8)].map((_, i) => { const h = (n, b) => { let f = 1, r = 0; for (n++; n > 0; n = floor(n / b)) { f /= b; r += f * (n % b); } return r - 0.5; }; return [h(i, 2), h(i, 3)]; });
 const TANH = 0.6, NEAR = 0.1, EXPO = 0.62, RAYS = 0.54;
 const submitList = [null];
 const rowOrd = new Uint8Array(CELLS);
@@ -441,6 +471,15 @@ function render() {
   m[51] = zt * zt * (3 - 2 * zt);
   let ek = (-cy - 8) / 26; ek = ek < 0 ? 0 : ek > 1 ? 1 : ek;
   m[56] = EXPO * (0.6 + 0.4 * ek); m[57] = RAYS; m[58] = det;
+  if (TAA) {
+    // sub-pixel jitter (Halton 2,3) added to the clip position; the unjittered matrix is kept for the next frame's reprojection
+    CURVP.set(UB.subarray(0, 16));
+    const hj = JIT[F[FRAME] & 7], jx = hj[0] * 2 / W, jy = hj[1] * 2 / H;
+    for (let c = 0; c < 4; c++) { UB[c * 4] += jx * UB[c * 4 + 3]; UB[c * 4 + 1] += jy * UB[c * 4 + 3]; }
+    F[FRAME]++;
+    TUB.set(PREVVP, 0); TUB.set(UB.subarray(32, 48), 16); TUB[32] = W; TUB[33] = H; TUB[34] = 1 / W; TUB[35] = 1 / H; TUB[36] = 0.12; TUB[37] = taaReset;
+    Q.writeBuffer(uboT, 0, TUB);
+  }
   Q.writeBuffer(ubo, 0, UB);
   WT[0] = F[TIME]; Q.writeBuffer(uboW, 0, WT);
 
@@ -448,8 +487,10 @@ function render() {
   const e = device.createCommandEncoder();
   let slot = null;
   if (hasTS) { for (let i = 0; i < qRead.length; i++) if (!qRead[i].busy) { slot = qRead[i]; break; } }
-  waterPass[0].timestampWrites = slot ? tsBegin : undefined;
-  passPost.timestampWrites = slot ? tsEnd : undefined;
+  waterPass[0].timestampWrites = slot ? tsWater0 : undefined; waterPass[4].timestampWrites = slot ? tsWater4 : undefined;
+  passScene.timestampWrites = slot ? tsScene : undefined; passRays.timestampWrites = slot ? tsRays : undefined; passBlur.timestampWrites = slot ? tsBlur : undefined;
+  bloomPass[0].timestampWrites = slot ? tsBloom0 : undefined; bloomPass[bloomPass.length - 1].timestampWrites = slot ? tsBloomN : undefined;
+  passPost.timestampWrites = slot ? tsPost : undefined;
   // animated water texture + mips
   let r = e.beginRenderPass(waterPass[0]); r.setPipeline(pWater); r.setBindGroup(0, bgWater); r.draw(3); r.end();
   for (let i = 1; i < 5; i++) { r = e.beginRenderPass(waterPass[i]); r.setPipeline(pMip16); r.setBindGroup(0, waterBG[i - 1]); r.draw(3); r.end(); }
@@ -457,43 +498,53 @@ function render() {
   r = e.beginRenderPass(passScene);
   r.setBindGroup(0, bg0);
   r.setPipeline(pTerrain); r.setVertexBuffer(0, vbTerrain); r.setVertexBuffer(1, ibSolids); r.setIndexBuffer(ibTerrain, 'uint32');
-  drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
+  if (!OFF.has('terrain')) drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
   r.setPipeline(pSolid); r.setVertexBuffer(0, vbMesh); r.setIndexBuffer(ibMesh, 'uint32');
-  for (let i = 0; i < 12; i++) { const g = Wd.solids.ranges[i]; if (g[1]) r.drawIndexed(meshes[i].ib.length, g[1], meshes[i].i0, meshes[i].v0, g[0]); }
-  for (let i = 0; i < NCHUNK; i++) {
+  if (!OFF.has('solids')) for (let i = 0; i < 12; i++) { const g = Wd.solids.ranges[i]; if (g[1]) r.drawIndexed(meshes[i].ib.length, g[1], meshes[i].i0, meshes[i].v0, g[0]); }
+  if (!OFF.has('chunks')) for (let i = 0; i < NCHUNK; i++) {
     const c = Wd.chunks[i], big = i > 2 && i < 6; r.setVertexBuffer(1, ibChunk[i]);
     drawCells(r, c.start, c.lo, c.hi, 3, meshes[14 + i], 0, 0, i > 5 ? 30 : big ? 40 : 96);
     if (big) drawCells(r, c.start, c.lo, c.hi, 3, meshes[20 + i], 0, 40, 150);
   }
-  for (let i = 0; i < 6; i++) {
+  if (!OFF.has('props')) for (let i = 0; i < 6; i++) {
     const lod = i === 3 || i === 4; r.setVertexBuffer(1, ibProp[i]);
     drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[4 + i], 0, 0, lod ? 6 : 110);
     if (lod) drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[18 + i], 0, 6, 110);
   }
-  r.setPipeline(pManta); r.setVertexBuffer(1, ibManta); r.drawIndexed(MANTA.ib.length, nManta, MANTA.i0, MANTA.v0, 0);
-  r.setPipeline(pFish); r.setVertexBuffer(1, ibFish); r.drawIndexed(FISH.ib.length, nFish, FISH.i0, FISH.v0, 0);
+  if (!OFF.has('fauna')) {
+    r.setPipeline(pManta); r.setVertexBuffer(1, ibManta); r.drawIndexed(MANTA.ib.length, nManta, MANTA.i0, MANTA.v0, 0);
+    r.setPipeline(pFish); r.setVertexBuffer(1, ibFish); r.drawIndexed(FISH.ib.length, nFish, FISH.i0, FISH.v0, 0);
+  }
   // kelp and plants: 9-row blades up close, 5 rows mid-range, a decimated set far away
-  r.setPipeline(pLeaf); r.setVertexBuffer(0, ibBig); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 18, 0, 24);
-  r.setPipeline(pLeaf5); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 10, 24, 58);
-  r.setPipeline(pLeafF); r.setVertexBuffer(0, ibBigF); drawCells(r, Wd.bigF.start, Wd.bigF.lo, Wd.bigF.hi, 5, false, 6, 58, 150);
-  r.setPipeline(pLeafS); r.setVertexBuffer(0, ibSmall); drawCells(r, Wd.small.start, Wd.small.lo, Wd.small.hi, 1.5, false, 6, 0, 70);
-  r.setPipeline(pSurf); r.draw(4);
-  r.setPipeline(pBack); r.draw(4);
-  r.setPipeline(pBub); r.setVertexBuffer(0, ibBubbles); r.draw(4, nBub);
-  r.setPipeline(pGl); r.setVertexBuffer(0, ibGl); r.draw(4, nGl);
-  r.setPipeline(pSnow); r.setVertexBuffer(0, ibSnowB); r.draw(4, nSnow);
+  if (!OFF.has('leaf')) {
+    r.setPipeline(pLeaf); r.setVertexBuffer(0, ibBig); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 18, 0, 24);
+    r.setPipeline(pLeaf5); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 10, 24, 58);
+    r.setPipeline(pLeafF); r.setVertexBuffer(0, ibBigF); drawCells(r, Wd.bigF.start, Wd.bigF.lo, Wd.bigF.hi, 5, false, 6, 58, 150);
+  }
+  if (!OFF.has('small')) { r.setPipeline(pLeafS); r.setVertexBuffer(0, ibSmall); drawCells(r, Wd.small.start, Wd.small.lo, Wd.small.hi, 1.5, false, 6, 0, 70); }
+  if (!OFF.has('surf')) { r.setPipeline(pSurf); r.draw(4); r.setPipeline(pBack); r.draw(4); }
+  if (!OFF.has('spr')) {
+    r.setPipeline(pBub); r.setVertexBuffer(0, ibBubbles); r.draw(4, nBub);
+    r.setPipeline(pGl); r.setVertexBuffer(0, ibGl); r.draw(4, nGl);
+    r.setPipeline(pSnow); r.setVertexBuffer(0, ibSnowB); r.draw(4, nSnow);
+  }
   r.end();
+  if (TAA) {
+    taaK ^= 1; passTaa[taaK].timestampWrites = slot ? tsTaa : undefined;
+    r = e.beginRenderPass(passTaa[taaK]); r.setPipeline(pTaa); r.setBindGroup(0, bgTaa[taaK]); r.draw(3); r.end();
+    PREVVP.set(CURVP); taaReset = 0;
+  }
   // light shafts
   r = e.beginRenderPass(passRays); r.setPipeline(pRays); r.setBindGroup(0, bgRays); r.draw(3); r.end();
   r = e.beginRenderPass(passBlur); r.setPipeline(pRB); r.setBindGroup(0, bgBlur); r.draw(3); r.end();
   // bloom
   for (let i = 0; i < bloomPass.length; i++) {
-    r = e.beginRenderPass(bloomPass[i]); r.setPipeline(i === 0 ? pDown0 : i < NB ? pDown : pUp); r.setBindGroup(0, bloomBG[i]); r.draw(3); r.end();
+    r = e.beginRenderPass(bloomPass[i]); r.setPipeline(i === 0 ? pDown0 : i < NB ? pDown : pUp); r.setBindGroup(0, i === 0 ? bloomBG0[taaK] : bloomBG[i]); r.draw(3); r.end();
   }
   // composite
   passPost.colorAttachments[0].view = ctx.getCurrentTexture().createView();
-  r = e.beginRenderPass(passPost); r.setPipeline(pPost); r.setBindGroup(0, bgPost); r.draw(3); r.end();
-  if (slot) { e.resolveQuerySet(qs, 0, 2, qResolve, 0); e.copyBufferToBuffer(qResolve, 0, slot.b, 0, 16); }
+  r = e.beginRenderPass(passPost); r.setPipeline(pPost); r.setBindGroup(0, bgPostK[taaK]); r.draw(3); r.end();
+  if (slot) { e.resolveQuerySet(qs, 0, 2 * NPASS, qResolve, 0); e.copyBufferToBuffer(qResolve, 0, slot.b, 0, 16 * NPASS); }
   submitList[0] = e.finish();
   Q.submit(submitList);
   if (slot) { slot.busy = true; slot.b.mapAsync(GPUMapMode.READ).then(slot.done); }
@@ -532,25 +583,26 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dtr = now - F[LAST]; F[LAST] = now;
   let dt = dtr / 1000; if (dt > 0.1) dt = 0.1;
-  // Dynamic resolution for 60 fps: every second (0.4 s behind the menu) scale the load by k
-  if (dtr < 1e3 && (dynT += dtr) > 0 && (dynN++, dynT > (menu ? 400 : 1000))) {
+  // Dynamic resolution for 30+ fps: every second (0.4 s behind the menu) scale the load by k. Desktop High and Medium never
+  // go below 1920x1080 pixels (PIXMIN): past that only the draw distance shrinks
+  if (!FIXRES && dtr < 1e3 && (dynT += dtr) > 0 && (dynN++, dynT > (menu ? 400 : 1000))) {
     const a = dynT / dynN, g = dynGN ? dynG / dynGN : 0; let k = 1;
-    // with GPU timing: keep it between 9.8 and 13.6 ms
-    if (g) { if (g > 13.6 || g < 9.8) k = 11.7 / g; }
-    // without: slow for two periods in a row means fewer pixels, and twice as long before trying to go back up
-    else if (a > 17.6) { dynOk = 0; if (++dynBad > 1) { k = 15 / a; dynBad = 0; dynWait = min(dynWait * 2, 60); } }
-    // at the display's rate there is no telling if there is room, so try a little more now and then
-    else { dynBad = 0; if (a < 12.5) k = 15 / a; else if (++dynOk > dynWait) { k = 1.17; dynOk = 0; } }
-    k = k < 0.5 ? 0.5 : k > 1.7 ? 1.7 : k; const top = min(PIXMAX, DW * DH), mid = max(top / 2, PIXMIN), was = pix + det;
+    // with GPU timing: keep it between 20 and 28 ms (the 25 ms budget)
+    if (g) { if (g > 28 || g < 20) k = 24 / g; }
+    // without: slow (over 34 ms) for two periods in a row means less load, and twice as long before trying to go back up
+    else if (a > 34) { dynOk = 0; if (++dynBad > 1) { k = 28 / a; dynBad = 0; dynWait = min(dynWait * 2, 60); } }
+    // faster than 22 ms there is room; at the display's rate there is no telling how much, so try a little more now and then
+    else { dynBad = 0; if (a < 22 && a < 15) k = 20 / a; else if (++dynOk > dynWait) { k = 1.17; dynOk = 0; } }
+    k = k < 0.5 ? 0.5 : k > 1.7 ? 1.7 : k; const top = min(PIXMAX, DW * DH), lo = min(PIXMIN, top), mid = max(top / 2, lo), was = pix + det;
     // too slow: pixels down to `mid` first, then draw distance, then the remaining pixels; faster goes back the same way
     if (k < 1 ? pix > mid || det <= DETMIN : pix < mid || det >= 1) {
-      const end = k < 1 ? (det > DETMIN ? mid : PIXMIN) : det < 1 ? mid : top;
+      const end = k < 1 ? (det > DETMIN ? mid : lo) : det < 1 ? mid : top;
       pix *= k; if (k < 1 ? pix < end : pix > end) pix = end;
     } else { det *= sqrt(k); det = det < DETMIN ? DETMIN : det > 1 ? 1 : det; }
     if (was !== pix + det) keep('abyssal', [LV, pix < top ? pix | 0 : '', det]); // nothing kept at full resolution
     dynN = dynT = dynG = dynGN = 0; resize();
   }
-  F[TIME] += dt;
+  F[TIME] = FIXT >= 0 ? FIXT : F[TIME] + dt;
   {
     // touch: holding the finger away from where it went down keeps turning, like a joystick
     if (tId >= 0) {
@@ -571,7 +623,7 @@ function frame(now) {
     F[YAW] = yaw; F[PIT] = pitch; F[VX] = vx; F[VY] = vy; F[VZ] = vz; F[MX] = x - F[CX]; F[MY] = y - F[CY]; F[MZ] = z - F[CZ];
     collide();
   }
-  render();
+  const c0 = performance.now(); render(); PERF.cpu = performance.now() - c0; // JS time of render(): draw-call encoding and submit
   if (hud) {
     hN++; if (dtr > hMax) hMax = dtr; if (dtr < hMin) hMin = dtr; if (dtr > hPer * 1.5) { hLate++; hTot++; }
     F[HUDT] += dtr / 1000;

@@ -6,13 +6,15 @@
 //   F, B or 1-6 during a flight stop it
 {
   const LOGN = 1 << 16, logFrame = new Float32Array(LOGN), logGpu = new Float32Array(LOGN);
-  let flying = false, bench = false, last = 0, nFrame = 0, nGpu = 0;
+  let flying = false, bench = false, last = 0, nFrame = 0, nGpu = 0, lastN = 0;
+  const passSum = new Float64Array(PASSES.length);
   const stop = () => { flying = bench = false; dynT = 0; };
   const report = () => {
     const st = (a, n) => { const s = Array.from(a.subarray(0, n)).sort((x, y) => x - y); let sum = 0; for (const v of s) sum += v; return { n, avg: sum / n, p99: s[min(n - 1, floor(n * 0.99))], max: s[n - 1] }; };
     const fm = (o) => `avg ${o.avg.toFixed(2)}  p99 ${o.p99.toFixed(2)}  max ${o.max.toFixed(2)} ms`;
     const f = st(logFrame, nFrame);
-    info.textContent = `Fly-through ${W}x${H}, ${f.n} frames\nframe  ${fm(f)}\nGPU    ${nGpu ? fm(st(logGpu, nGpu)) : 'timestamp-query unavailable'}`;
+    const per = nGpu ? PASSES.map((p, i) => `${p} ${(passSum[i] / nGpu).toFixed(2)}`).join('  ') : '';
+    info.textContent = `Fly-through ${W}x${H}, ${f.n} frames\nframe  ${fm(f)}\nGPU    ${nGpu ? fm(st(logGpu, nGpu)) : 'timestamp-query unavailable'}\nper pass (avg ms)  ${per}`;
   };
   // frame() moves the free camera and then calls render(): step in between and put the camera on the path instead
   const draw = render;
@@ -20,7 +22,7 @@
     if (flying) {
       const dtr = F[LAST] - last; last = F[LAST];
       F[FLT] += min(dtr / 1000, 0.1); flyAt();
-      if (bench) { if (nFrame < LOGN) logFrame[nFrame++] = dtr; if (F[GPU] > 0 && nGpu < LOGN) logGpu[nGpu++] = F[GPU]; }
+      if (bench) { if (nFrame < LOGN) logFrame[nFrame++] = dtr; if (F[GPU] > 0 && nGpu < LOGN && PERF.n !== lastN) { lastN = PERF.n; logGpu[nGpu++] = F[GPU]; for (let i = 0; i < PASSES.length; i++) passSum[i] += PASSRAW[i]; } }
       if (F[FLT] >= FLYT) { if (bench) report(); stop(); }
     }
     draw();
@@ -30,7 +32,7 @@
     if (e.code === 'KeyF' || e.code === 'KeyB') {
       if (flying) stop();
       else {
-        flying = true; bench = e.code === 'KeyB'; F[FLT] = 0; last = F[LAST]; nFrame = nGpu = 0;
+        flying = true; bench = e.code === 'KeyB'; F[FLT] = 0; last = F[LAST]; nFrame = nGpu = 0; passSum.fill(0);
         // a benchmark hides the stats line and holds the resolution: dynT at -Infinity keeps frame() from tuning it
         if (bench) { hud = false; info.textContent = ''; dynT = -Infinity; }
       }
