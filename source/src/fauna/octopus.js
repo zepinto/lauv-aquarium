@@ -153,7 +153,7 @@ struct IO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   let lump = vn3(vec3f(i.uv * 1.7, seed * .5 + age * .5));
   let core = 1. - ss(.2, 1., r + (n - .5) * (.8 + age * 1.3) + (n2 - .5) * .3 + (lump - .5) * .5);
   var al = ss(0., .8, core) * i.b.y;
-  al *= ss(.1, .9, d);
+  al *= ss(.35, 1.8, d);   // thin out close to the camera: fewer layers of overdraw when inside the cloud
   if (al < .002) { discard; }
   let T = exp(-SIG.g * d);
   let fg = fogIn(g.cam.xyz, v / d, d, z, g.sun.xyz);
@@ -197,7 +197,7 @@ function octNew(i) {
     phi: new Float32Array(8), rho: new Float32Array(8), alen: new Float32Array(8), aph: new Float32Array(8),
     scale: 0.92 + 0.22 * octRn(), sand: 0.4, hue: octRn(),
     pale: 0, dark: 0.05, pap: 0.85, mot: 0.75, curl: 0.2, lean: 1, flat: 0, breath: 0, pulse: 0, open: 1, blinkT: 3 + octRn() * 4,
-    jetT: 0, jetN: 0, fidget: 2, idT: 0, curious: false, curArm: 2, cx: 0, cy: 0, cz: 0, bph: 0, blink: 0, ox: 0, oz: 0, camD: 99, near: false, mx: 0, my: 0, mz: 0, lastDir: 0, inkT: 0, alarmT: 0, lastD: 99, vis: false, slot: 0, wigAmp: 0.012, home: false, pathI: 0, flick: 0,
+    jetT: 0, jetN: 0, built: false, fidget: 2, idT: 0, curious: false, curArm: 2, cx: 0, cy: 0, cz: 0, bph: 0, blink: 0, ox: 0, oz: 0, camD: 99, near: false, mx: 0, my: 0, mz: 0, lastDir: 0, inkT: 0, alarmT: 0, lastD: 99, vis: false, slot: 0, wigAmp: 0.012, home: false, pathI: 0, flick: 0,
   };
 }
 
@@ -654,7 +654,7 @@ function octStep(O, dt) {
       break;
     }
     case OS.HIDE: case OS.PEEK: {
-      const peek = O.state === OS.PEEK, k = peek ? 0.4 : 0.12;
+      const peek = O.state === OS.PEEK, k = peek ? 0.3 : -0.04;
       const tx = O.den[0] + O.dout[0] * k, ty = O.den[1] + O.dout[1] * k, tz = O.den[2] + O.dout[2] * k;
       octSwim(O, dt, tx, ty, tz, 0.25, 0.04);
       const up = Math.abs(O.dout[1]) < 0.9;
@@ -684,7 +684,7 @@ FAUNA.push({
     };
   },
   update(dt) {
-    const G = octG; if (!G.gpu || OCT_OFF) return;
+    const G = octG; if (!G.gpu || OCT_OFF || G.off) return;
     if (!G.ready) { if (G.scanN < 120000) octScanStep(3000); else octChoose(); return; }
     const t0 = performance.now();
     g_octT += dt;
@@ -710,24 +710,31 @@ FAUNA.push({
     for (const O of octO) {
       const rx = wrapD(O.P[0] - cx), rz = wrapD(O.P[2] - cz);
       O.ox = cx + rx - O.P[0]; O.oz = cz + rz - O.P[2]; O.camD = octLen(rx, O.P[1] - cy, rz);
-      O.vis = O.camD < OCT_SEE; O.near = O.camD < 30;
+      // in the view (with a wide margin), or close; far animals hidden in a den are skipped
+      const dd = O.camD || 1, dot = (rx * F[FX] + (O.P[1] - cy) * F[FY] + rz * F[FZ]) / dd;
+      O.vis = O.camD < OCT_SEE && (O.camD < 6 || dot > 0.2) && !(O.state === OS.HIDE && O.camD > 12); O.near = O.camD < 30;
+      if (!O.vis) O.built = false;
     }
     if (dt > 0) { const n = Math.ceil(dt / (1 / 40)), h = dt / n; for (let s = 0; s < n; s++) { for (const O of octO) octStep(O, h); octInkStep(h); } }
-    let slot = 0;
+    G.frame = (G.frame || 0) + 1; let nb = 0;
     for (const O of octO) {
       if (!O.vis) continue;
-      O.slot = slot++; octBuild(O, O.ox, 0, O.oz);
-      Q.writeBuffer(G.gpu.vb, O.slot * OCT_VPO * 32, octAB, 0, OCT_VPO * 32);
+      // near animals are rebuilt every frame, far ones every few (the vertex data stays on the GPU)
+      const every = O.camD < 14 ? 1 : O.camD < 40 ? 3 : 6;
+      if (O.built && (G.frame + O.i) % every && !(O.camD < 14)) continue;
+      octBuild(O, O.ox, 0, O.oz); O.built = true; nb++;
+      if (!G.bench) Q.writeBuffer(G.gpu.vb, O.i * OCT_VPO * 32, octAB, 0, OCT_VPO * 32);
     }
-    G.drawn = slot;
-    if (octInk.n) Q.writeBuffer(G.gpu.vbInk, 0, octInk.p.buffer, 0, octInk.n * 32);
+    G.drawn = nb;
+    if (octInk.n && !G.bench) Q.writeBuffer(G.gpu.vbInk, 0, octInk.p.buffer, 0, octInk.n * 32);
     G.ms = performance.now() - t0;
   },
   late() {},
   draw(r) {
-    const G = octG, g = G.gpu; if (!g || !G.ready || OCT_OFF) return;
+    const G = octG, g = G.gpu; if (!g || !G.ready || OCT_OFF || G.off) return;
     useTile(r, 4);
-    if (G.drawn) { r.setPipeline(g.pOct); r.setVertexBuffer(0, g.vb); r.setIndexBuffer(g.ib, 'uint16'); for (let s = 0; s < G.drawn; s++) r.drawIndexed(g.nIdx, 1, 0, s * OCT_VPO); }
+    r.setPipeline(g.pOct); r.setVertexBuffer(0, g.vb); r.setIndexBuffer(g.ib, 'uint16');
+    for (const O of octO) if (O.vis && O.built) r.drawIndexed(g.nIdx, 1, 0, O.i * OCT_VPO);
     if (octInk.n) { r.setPipeline(g.pInk); r.setVertexBuffer(0, g.vbInk); r.draw(4, octInk.n); }
   },
 });
@@ -737,10 +744,15 @@ window.__octo = {
   list: () => octO.map((O) => ({ i: O.i, state: O.state, t: +O.t.toFixed(2), P: Array.from(O.P), den: Array.from(O.den), front: Array.from(O.front), perch: Array.from(O.perch), dout: Array.from(O.dout), dist: +O.lastD.toFixed(1), sand: O.sand })),
   // dev: put octopus i at the den entrance, about to squeeze in
   enter(i) { const O = octO[i]; O.P.set(O.front); O.V.fill(0); O.pl.fill(0); octState(O, OS.ENTER); },
+  // dev: camera looking into the den of octopus i from the water side
+  denView(i, dist = 1.6, side = 0.5) { const O = octO[i]; const sx = -O.dout[2], sz = O.dout[0]; octG.follow = null; octG.cam = [O.den[0] + O.dout[0] * dist + sx * side, O.den[1] + O.dout[1] * dist + 0.25, O.den[2] + O.dout[2] * dist + sz * side, O.den[0] + O.dout[0] * 0.2, O.den[1] + O.dout[1] * 0.2, O.den[2] + O.dout[2] * 0.2]; },
   crawl(i) { const O = octO[i]; if (O && O.state === OS.REST && octPickWp(O)) octState(O, OS.CRAWL); return O.wp.join(); },
   state(i) { return octO[i].state; },
   scare(i) { const O = octO[i]; if (O && O.state <= OS.CRAWL) { octState(O, OS.ALARM); O.pl.fill(0); O.stepT.fill(-1); } },
   noscare: false,
+  // CPU cost of one update(1/60) (physics of all animals, geometry of the visible ones, uploads), averaged over n calls
+  bench(n = 300) { const f = FAUNA.find((q) => q.name === 'octopus'); octG.bench = true; const t0 = performance.now(); for (let i = 0; i < n; i++) f.update(1 / 60); const r = (performance.now() - t0) / n; octG.bench = false; return r; },
+  set off(v) { octG.off = !!v; }, get off() { return !!octG.off; },
   follow(i, dist, az, el, abs, dy) { octG.follow = i === undefined ? null : { i, dist, az, el, abs, dy, azc: undefined, dc: undefined }; },
   cam(x, y, z, tx, ty, tz) { octG.cam = x === undefined ? null : [x, y, z, tx, ty, tz]; },
   // dev: camera looking at octopus i from dist metres, az radians around it (0 = from the den side), el above the horizon
