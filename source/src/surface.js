@@ -41,7 +41,7 @@ fn wave(p: vec2f, t: f32, d: f32) -> vec3f {
   for (var i = 0; i < 8; i++) {
     let w = WV[i];
     let lam = TAU / length(w.xy);
-    let f = 1. - ss(lam * 22., lam * 45., d);
+    let f = 1. - ss(lam * 7., lam * 18., d);
     let ph = dot(w.xy, q) - w.w * t + WPH[i];
     r += vec3f(sin(ph), cos(ph) * w.x, cos(ph) * w.y) * (w.z * f);
   }
@@ -152,8 +152,8 @@ fn wake(p: vec3f, t: f32) -> f32 {
     let ab = b - a; let h = clamp(-dot(a, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
     let dd = length(a + ab * h);
     let age = t - mix(pv.z, q.z, h);
-    let w = .10 + .22 * age;
-    acc = max(acc, mix(pv.w, q.w, h) * exp(-age * .38) * ss(w, w * .2, dd));
+    let w = .07 + .10 * age;
+    acc = max(acc, mix(pv.w, q.w, h) * exp(-age * .7) * ss(w, w * .35, dd));
     a = b;
   }
   return acc;
@@ -164,9 +164,9 @@ fn wake(p: vec3f, t: f32) -> f32 {
   let v = g.cam.xyz - wp; let d = length(v); let V = v / d;
   let wv = wave(wp.xz, t, d);
   // ripples: the world's animated slope texture at three scales, drifting with the wind
-  let fl = ss(220., 30., d);
+  let fl = ss(130., 20., d);
   let q = wp.xz + WIND * t * .5;
-  let s = (textureSample(tW, sR, pu(q, 1.5)).ba * 1.2 + textureSample(tW, sR, pu(q.yx, .62) + .3).ba * 1.4 + textureSample(tW, sR, pu(q * .7, 3.4) + .6).ba * .8 + textureSample(tW, sR, pu(q.yx * 1.3, .29) + .1).ba * 1.1) * fl;
+  let s = textureSample(tW, sR, pu(q, 1.5)).ba * 1.2 * ss(110., 18., d) + textureSample(tW, sR, pu(q.yx, .62) + .3).ba * 1.4 * ss(55., 8., d) + textureSample(tW, sR, pu(q * .7, 3.4) + .6).ba * .8 * fl + textureSample(tW, sR, pu(q.yx * 1.3, .29) + .1).ba * 1.1 * ss(24., 4., d);
   let n = normalize(vec3f(-wv.y - s.x * 1.1, 1., -wv.z - s.y * 1.1));
   let nv = sat(dot(n, V));
   let F = .02 + .98 * pow(1. - nv, 5.);
@@ -182,7 +182,9 @@ fn wake(p: vec3f, t: f32) -> f32 {
   var foam = cap * ss(.38, .62, nz + cap * .25) * fl * .85;
   let aw = ss(.16, .03, su.a.w);
   if (aw > 0. || su.w[0].w > 0.) {
-    foam = max(foam, wake(wp, t) * ss(.28, .58, nz + .24));
+    let wk = wake(wp, t);
+    let fz = textureSample(tD, sR, pu(q * 1.1, .33)).a * .5 + textureSample(tD, sR, pu(q.yx, .8) + .2).b * .5;
+    foam = max(foam, ss(.50 - .16 * wk, .70 - .08 * wk, fz) * sat(wk * 1.6) * .7);
     let ta = wd(g.va.xyz - wp).xz; let nb = wd(g.vb.xyz - wp).xz;
     let ab = nb - ta; let h = clamp(-dot(ta, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
     let dh = length(ta + ab * h);
@@ -242,7 +244,7 @@ function surfUpdate() {
     const l = surfTrail[0];
     if (l && hypot(wrapD(lauvTmp[0] - l.x), wrapD(lauvTmp[2] - l.z)) > 5) surfTrail.length = 0;
     if (!surfTrail.length || hypot(wrapD(lauvTmp[0] - surfTrail[0].x), wrapD(lauvTmp[2] - surfTrail[0].z)) > 0.18) {
-      surfTrail.unshift({ x: lauvTmp[0], z: lauvTmp[2], t, s: clamp(0.3 + 0.5 * abs(lv.v[0]) / 1.5 + abs(lv.rpm) / 3500, 0, 1.2) });
+      surfTrail.unshift({ x: lauvTmp[0], z: lauvTmp[2], t, s: clamp(0.2 + 0.35 * abs(lv.v[0]) / 1.5 + abs(lv.rpm) / 5000, 0, 0.9) });
       if (surfTrail.length > SURF_TRAIL) surfTrail.pop();
     }
   }

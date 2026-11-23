@@ -247,7 +247,13 @@ class LauvVehicle {
     this.rotate(w[0] * dt, w[1] * dt, w[2] * dt);
     // water surface: the hull top stays at the surface
     const lim = this.surfY + this.depthMin;
-    if (this.pos[1] > lim) { this.pos[1] = lim; const vyw = R[1] * v[0] + R[4] * v[1] + R[7] * v[2] - this.surfVy; if (vyw > 0) { v[0] -= vyw * R[1]; v[1] -= vyw * R[4]; v[2] -= vyw * R[7]; } }
+    // within 10 cm of the surface (and not told to dive) the hull rides the water: it follows the waves up and down
+    const hug = this.in.pitch > -0.05 && lim - this.pos[1] < 0.1;
+    if (this.pos[1] > lim) this.pos[1] = lim; else if (hug) this.pos[1] += (lim - this.pos[1]) * Math.min(1, 15 * dt);
+    if (hug || this.pos[1] >= lim) {
+      const vyw = R[1] * v[0] + R[4] * v[1] + R[7] * v[2] - this.surfVy;
+      if (hug || vyw > 0) { v[0] -= vyw * R[1]; v[1] -= vyw * R[4]; v[2] -= vyw * R[7]; }
+    }
     this.t += dt;
   }
   // R <- R * Rodrigues(axis angle a = (ax, ay, az) in the body frame), re-orthonormalised
