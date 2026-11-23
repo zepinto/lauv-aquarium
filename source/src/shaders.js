@@ -274,10 +274,10 @@ const KDF = vec3f(.043, .045, .042);
 // infinitely long ray (the water colour) by direction: bright under the surface, mid blue level, dark below,
 // with a forward-scattering glow round the sun; it dims with depth (WKD). Every ray (terrain, surface, background,
 // sprites) is fogged with the same wFog, so the horizon has no seam.
-const WEXT = vec3f(.06, .036, .03);
-const WHOR = vec3f(.05, .21, .50);
-const WUPC = vec3f(.32, 1.0, 2.3);
-const WDNC = vec3f(.01, .07, .20);
+const WEXT = vec3f(.052, .031, .026);
+const WHOR = vec3f(.035, .19, .56);
+const WUPC = vec3f(.30, .95, 2.4);
+const WDNC = vec3f(.008, .06, .21);
 const WKD = vec3f(.06, .03, .022);
 fn wInf(y: f32, rd: vec3f, sun: vec3f) -> vec3f {
   let u = rd.y;
@@ -363,12 +363,12 @@ fn cuv(p: vec3f) -> vec2f { return p.xz - g.sun.xz * (p.y / g.sun.y); }
 fn caus(p: vec3f, d: f32) -> vec3f {
   let q = cuv(p);
   let o = vec2f(.004, .0025);
-  let q1 = pu(q, 1.9); // LOOK: caustic cells a few dm across, as in a few metres of water (3.3 m cells read as dark blobs)
+  let q1 = pu(q, 2.6); // LOOK: caustic cells a few dm across, as in a few metres of water (3.3 m cells read as dark blobs)
   let a = vec3f(textureSample(tW, sR, q1 + o).r, textureSample(tW, sR, q1).r, textureSample(tW, sR, q1 - o).r);
   let b = textureSample(tW, sR, pu(q.yx, 6.9) + .37).r;
   // LOOK: only the line cores lit (the pattern is ~0.3 in the cells, ~0.9 median, ~2.5 on the brightest lines), less
   // large-scale modulation
-  let c = smoothstep(vec3f(1.), vec3f(2.4), a) * 2.6 * (.75 + b * .5);
+  let c = smoothstep(vec3f(.9), vec3f(2.6), a) * 2.4 * (.75 + b * .5);
   return mix(c, vec3f(.3), ss(50., 140., d));
 }
 fn caus2(p: vec3f, d: f32) -> f32 {
@@ -520,7 +520,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
         let ru = sp * pk(.6) + .7;
         let ga = textureSampleGrad(tAlb, sR, ru, 7, gdx.xz * pk(.6), gdy.xz * pk(.6));
         let gn = textureSampleGrad(tNh, sR, ru, 7, gdx.xz * pk(.6), gdy.xz * pk(.6));
-        var sand = (sa1.rgb * .6 + sa2.rgb * .4) * LG[5] * vec3f(1.08, 1.02, .9);
+        var sand = (sa1.rgb * .6 + sa2.rgb * .4) * LG[5] * vec3f(1.3, 1.12, .86); // LOOK: warm pale sand
         let rw = sat(rub * 1.4 - (1. - gn.z) * .6);
         sand = mix(sand, ga.rgb * LG[7], rw);
         let ph = TAU * (190. * i.wp.x + 140. * i.wp.z) / PER + 3.2 * (big - .5) + 1.4 * (C.c - .5);
@@ -592,7 +592,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z)) * ao;
   // LOOK: caustics as bright lines over an even base (no dark blotches between them)
   // LOOK: caustics as thin bright lines over an even base: the dark cells between them read as blotches when strong
-  let dl = E * ndl * (1.9 + mix(vec3f(.4), ca, ss(.05, .35, dot(n0, L))) * 1.15);
+  let dl = E * ndl * (2.1 + mix(vec3f(.4), ca, ss(.05, .35, dot(n0, L))) * .85);
   var c = alb * (dl + am) + emi + alb * flu * dot(dl + am, vec3f(.1, .5, .5));
   let H = normalize(V + L);
   c += E * (.25 + ca) * pow(sat(dot(N, H)), mix(10., 70., gloss)) * gloss * ndl * 1.8;
