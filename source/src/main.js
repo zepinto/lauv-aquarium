@@ -40,6 +40,8 @@ const tex = (w, h, format, usage, o = {}) => device.createTexture({ size: [w, h,
 // ---------------------------------------------------------------- static resources
 const sRep = device.createSampler({ addressModeU: 'repeat', addressModeV: 'repeat', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', maxAnisotropy: LV > 1 ? 1 : 8 });
 const sClamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+// the baked volume wraps in x and z (the world is a torus) but not in y
+const sVol = device.createSampler({ addressModeU: 'repeat', addressModeV: 'clamp-to-edge', addressModeW: 'repeat', magFilter: 'linear', minFilter: 'linear' });
 const sCmp = device.createSampler({ compare: 'less-equal', magFilter: 'linear', minFilter: 'linear' });
 const tShadow = tex(SHADOW, SHADOW, DEPTH, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING);
 const tDummy = tex(1, 1, DEPTH, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING);
@@ -60,11 +62,19 @@ const bgl0 = device.createBindGroupLayout({ entries: [
   { binding: 5, visibility: VF, texture: {} }, { binding: 6, visibility: VF, texture: {} },
   { binding: 7, visibility: VF, texture: { viewDimension: '3d' } }, { binding: 8, visibility: VF, texture: {} }] });
 const mkBG0 = (u, sh) => device.createBindGroup({ layout: bgl0, entries: [
-  { binding: 0, resource: { buffer: u } }, { binding: 1, resource: sRep }, { binding: 2, resource: sClamp }, { binding: 3, resource: sCmp },
+  { binding: 0, resource: { buffer: u } }, { binding: 1, resource: sRep }, { binding: 2, resource: sVol }, { binding: 3, resource: sCmp },
   { binding: 4, resource: sh.createView() }, { binding: 5, resource: tWater.createView() }, { binding: 6, resource: tDetail.createView() },
   { binding: 7, resource: tVol.createView() }, { binding: 8, resource: tMap.createView() }] });
 const bg0 = mkBG0(ubo, tShadow), bg0s = mkBG0(uboS, tDummy);
-const pl0 = device.createPipelineLayout({ bindGroupLayouts: [bgl0] });
+// group 1: the offset of the tile copy being drawn (dynamic offset into 9 slots of 256 bytes: the 3x3 copies of the world)
+const bglTile = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: SS.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 16 } }] });
+const tileData = new Float32Array(9 * 64);
+for (let k = 0; k < 9; k++) { tileData[k * 64] = (k % 3 - 1) * PER; tileData[k * 64 + 2] = (floor(k / 3) - 1) * PER; }
+const bgTile = device.createBindGroup({ layout: bglTile, entries: [{ binding: 0, resource: { buffer: buf(tileData, BU.UNIFORM), size: 16 } }] });
+const pl0 = device.createPipelineLayout({ bindGroupLayouts: [bgl0, bglTile] });
+let curTile = -1;
+const SHREACH = 34; // m of the neighbouring tile copies that are baked into the shadow map
+const useTile = (r, k) => { if (k !== curTile) { r.setBindGroup(1, bgTile, [k * 256]); curTile = k; } };
 
 const bglBlit = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: SS.FRAGMENT, texture: {} }, { binding: 1, visibility: SS.FRAGMENT, sampler: {} }] });
 const plBlit = device.createPipelineLayout({ bindGroupLayouts: [bglBlit] });
@@ -108,7 +118,6 @@ const pSurf = scenePipe(mSurf, 'vs', 'fs', [], { strip: true }), pBack = scenePi
 const pBub = scenePipe(mSpr, 'vsBub', 'fsBub', [ibBub], { strip: true, blend: { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } });
 const ADD = { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } };
 const pSnow = scenePipe(mSpr, 'vsSnow', 'fsSnow', [ibSnow], { strip: true, blend: ADD });
-const pGl = scenePipe(mLeaf, 'vsGl', 'fsGl', [ibBub], { strip: true, blend: ADD, constants: { ROWS: 7 } });
 const pSolidSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid]), pTerrSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid], { cull: 'front' });
 const pLeafSh = shadowPipe(mLeaf, 'vs', [ibLeaf], { strip: true, constants: { ROWS: 3 } });
 
@@ -145,44 +154,53 @@ await say('Sculpting the seabed…', 0.25, 1200);
 // marks a load in progress (quality.js); leaving the page before it ends is not a crash
 keep('abyssalLoad', 1);
 addEventListener('pagehide', () => keep('abyssalLoad', ''));
-let D;
+let D, MAP;
 {
   const prims = primBuffer();
-  const m = mod(W_DENS), p = device.createComputePipeline({ layout: 'auto', compute: { module: m, entryPoint: 'main' } });
-  const size = NX * NY * NZ * 4;
+  const m = mod(W_DENS), p = device.createComputePipeline({ layout: 'auto', compute: { module: m, entryPoint: 'main' } }), pm = device.createComputePipeline({ layout: 'auto', compute: { module: m, entryPoint: 'mapMain' } });
+  const size = NX * NY * NZ * 4, msize = NX * NZ * 16;
   const u = new ArrayBuffer(48), uu = new Uint32Array(u), uf = new Float32Array(u);
   uu[0] = NX; uu[1] = NY; uu[2] = NZ; uf[4] = OX; uf[5] = OY; uf[6] = OZ; uf[7] = VS;
   uu[8] = MESAS.length; uu[9] = ARCHES.length; uu[10] = HOLES.length; uu[11] = CLEARS.length;
   const bu = buf(new Uint8Array(u), BU.UNIFORM), bp = buf(prims, BU.STORAGE);
   const bd = device.createBuffer({ size, usage: BU.STORAGE | BU.COPY_SRC }), br = device.createBuffer({ size, usage: BU.MAP_READ | BU.COPY_DST });
+  const bm = device.createBuffer({ size: msize, usage: BU.STORAGE | BU.COPY_SRC }), bmr = device.createBuffer({ size: msize, usage: BU.MAP_READ | BU.COPY_DST });
   const bg = device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: bu } }, { binding: 1, resource: { buffer: bd } }, { binding: 2, resource: { buffer: bp } }] });
-  const e = device.createCommandEncoder(), c = e.beginComputePass();
-  c.setPipeline(p); c.setBindGroup(0, bg); c.dispatchWorkgroups(NX / 4, NY / 4, NZ / 4); c.end();
-  e.copyBufferToBuffer(bd, 0, br, 0, size);
+  const bgm = device.createBindGroup({ layout: pm.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: bu } }, { binding: 2, resource: { buffer: bp } }, { binding: 3, resource: { buffer: bm } }] });
+  const e = device.createCommandEncoder();
+  let c = e.beginComputePass();
+  c.setPipeline(p); c.setBindGroup(0, bg); c.dispatchWorkgroups(NX / 4, NY / 4, NZ / 4);
+  c.setPipeline(pm); c.setBindGroup(0, bgm); c.dispatchWorkgroups(NX / 8, NZ / 8); c.end();
+  e.copyBufferToBuffer(bd, 0, br, 0, size); e.copyBufferToBuffer(bm, 0, bmr, 0, msize);
   Q.submit([e.finish()]);
-  await br.mapAsync(GPUMapMode.READ);
-  D = new Float32Array(br.getMappedRange().slice(0));
-  br.unmap(); br.destroy(); bd.destroy();
+  await br.mapAsync(GPUMapMode.READ); await bmr.mapAsync(GPUMapMode.READ);
+  D = new Float32Array(br.getMappedRange().slice(0)); MAP = new Float32Array(bmr.getMappedRange().slice(0));
+  br.unmap(); br.destroy(); bd.destroy(); bmr.unmap(); bmr.destroy(); bm.destroy();
   // rock connected to the seabed: each column's unbroken run up from the bottom is, and the rock above a gap
-  // (overhangs, specks) is when it touches rock that is. What never connects is a speck of noise floating in
-  // the water (surface nets would make it a small box), so it becomes water
-  const S = NX * NY, R = new Uint8Array(D.length), O = [1, -1, NX, -NX, S, -S], b = new Uint8Array(NX), L = [];
+  // (overhangs, specks) is when it touches rock that is (the grid wraps in x and z). What never connects is a speck of
+  // noise floating in the water (surface nets would make it a small box), so it becomes water
+  const R = new Uint8Array(D.length), b = new Uint8Array(NX), L = [], S = NX * NY;
   for (let i = 0; i < D.length;) { b.fill(1); for (let y = 0; y < NY; y++) for (let x = 0; x < NX; x++, i++) if (D[i] <= 0) b[x] = 0; else if (b[x]) R[i] = 1; else L.push(i); }
-  for (let k = 1; k; L.reverse()) { k = 0; for (const i of L) if (!R[i] && O.some((o) => R[i + o])) R[i] = k = 1; }
+  const conn = (i) => {
+    const x = i & (NX - 1), y = ((i / NX) | 0) % NY, z = (i / S) | 0, r = i - x;
+    return R[r + ((x + 1) & (NX - 1))] || R[r + ((x - 1) & (NX - 1))] || (y < NY - 1 && R[i + NX]) || (y > 0 && R[i - NX]) || R[x + NX * y + NX * NY * ((z + 1) & (NZ - 1))] || R[x + NX * y + NX * NY * ((z - 1) & (NZ - 1))];
+  };
+  for (let k = 1; k; L.reverse()) { k = 0; for (const i of L) if (!R[i] && conn(i)) R[i] = k = 1; }
   for (const i of L) if (!R[i]) D[i] = -D[i];
 }
 // Distance to the rock for collide(), in 1/127 m (> 0 in rock, clamped to ±1 m), kept only in the 4x4x4-voxel
-// bricks near the surface within the camera's reach (~2 MB). CI per brick: 0 all water, 1 all rock, n brick n-2 in CG.
-const CO = 52, CN = 102, CI = new Uint16Array(CN * CN * NY / 4);
-let CG = new Int8Array(64 * 65534);
+// bricks near the surface (the whole tile; sd() wraps). CI per brick: 0 all water, 1 all rock, n brick n-2 in CG.
+const CN = NX / 4, CI = new Uint32Array(CN * CN * NY / 4);
+let CG = new Int8Array(64 * 60000);
 {
   let n = 0;
   for (let bz = 0; bz < CN; bz++) for (let by = 1; by < NY / 4 - 1; by++) for (let bx = 0; bx < CN; bx++) {
-    if (hypot(bx - CN / 2 + 0.5, bz - CN / 2 + 0.5) > 52) continue; // more than 156 m out: never reached
     let lo = 127, hi = -127;
+    if ((n + 1) * 64 > CG.length) { const g = new Int8Array(CG.length * 2); g.set(CG); CG = g; }
     for (let z = 0; z < 4; z++) for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {
-      const i = CO + bx * 4 + x + NX * (by * 4 + y + NY * (CO + bz * 4 + z)), gz = D[i + NX * NY] - D[i - NX * NY];
-      const gx = D[i + 1] - D[i - 1], g = D[i + NX] - D[i - NX], l = sqrt(gx * gx + g * g + gz * gz) / 1.5;
+      const X = bx * 4 + x, Y = by * 4 + y, Z = bz * 4 + z, xp = (X + 1) & (NX - 1), xm = (X - 1) & (NX - 1), zp = (Z + 1) & (NZ - 1), zm = (Z - 1) & (NZ - 1);
+      const i = X + NX * (Y + NY * Z), gz = D[X + NX * (Y + NY * zp)] - D[X + NX * (Y + NY * zm)];
+      const gx = D[xp + NX * (Y + NY * Z)] - D[xm + NX * (Y + NY * Z)], g = D[i + NX] - D[i - NX], l = sqrt(gx * gx + g * g + gz * gz) / 1.5;
       const q = round(clamp(D[i] / max(l, 0.05), -1, 1) * 127);
       CG[n * 64 + x + 4 * y + 16 * z] = q; if (q < lo) lo = q; if (q > hi) hi = q;
     }
@@ -191,48 +209,17 @@ let CG = new Int8Array(64 * 65534);
   CG = CG.slice(0, n * 64);
 }
 await say('Carving canyons…', 0.32, 400);
-const T = buildTerrain(D);
+const T = buildTerrain(D, MAP);
 
-// preset viewpoints (position, look-at), keys 1-6; the world generator dresses the scene around them
+// preset viewpoints (keys 1-6): x, height above the floor, z, then the look-at point (x, height above the floor, z)
 const POSES = [
-  [10, 1.3, 7, -9, -31, -10],
-  [50, 1.3, 34, 58, -23, 8],
-  [-26, 2.2, -100, 0, -9, -108],
-  [-55, 1.5, -18, -60, -30, 8],
-  [10, 1.2, -62, 6, -22, -90],
-  [3, 1.6, 62, 1, -28, 100],
+  [0, 3, 0, 0, 3, 40],
+  [60, 4, 15, 70, 4, 40],
+  [-40, 2.5, -60, -40, 4, 0],
+  [30, 6, -110, 60, 5, -140],
+  [-110, 3, 60, -80, 6, 95],
+  [-100, 6, -90, -140, 6, -110],
 ];
-// 60 s camera path (position + look-at, Catmull-Rom): the world generator keeps it clear, dev.js flies along it
-const FLY = new Float32Array([
-  10, -42.2, 7, -9, -31, -10,
-  7.5, -41.8, 5.5, -10, -31, -12,
-  9, -40.5, 18, 17, -37, 42,
-  22, -39.2, 40, 48, -36, 45,
-  38, -39.2, 46, 57, -27, 18,
-  50, -40.4, 35, 58, -24, 8,
-  55, -39, 20, 60, -18, -10,
-  58, -34, -12, 40, -26, -60,
-  50, -30, -44, 10, -26, -80,
-  30, -30, -70, 4, -28, -90,
-  12, -38.5, -62, 6, -27, -90,
-  -4, -36.5, -70, 0, -14, -100,
-  -16, -37, -84, 0, -22, -108,
-  -29, -38, -90, -44, -34, -60,
-  -41, -38, -70, -56, -34, -40,
-  -53, -38, -50, -60, -34, -20,
-  -58, -38, -28, -60, -32, 0,
-  -57, -38, -10, -60, -30, 16,
-  -60, -38, 10, -50, -36, 40,
-  -52, -37, 36, -20, -35, 44,
-  -22, -38, 43, 4, -38, 52,
-  -6, -39.2, 44.5, 4, -37, 70,
-  3, -40.6, 53, 3, -35, 84,
-  3, -41.5, 62, 1, -30, 100,
-  4, -39, 76, 3, -22, 100,
-]);
-const FLYN = FLY.length / 6, FLYT = 60, LUTN = 1024, flyLUT = new Float32Array(LUTN + 1);
-const flyPts = [];
-// per-frame float state lives in one preallocated array, so the frame loop allocates no heap numbers
 const F = new Float64Array(32), P6 = new Float64Array(6);
 const CX = 0, CY = 1, CZ = 2, YAW = 3, PIT = 4, FX = 5, FY = 6, FZ = 7, RX = 8, RZ = 9, UX = 10, UY = 11, UZ = 12, VX = 13, VY = 14, VZ = 15, TIME = 16, FLT = 17, LAST = 18, GPU = 19, HUDT = 20, SPL = 21, MX = 22, MY = 23, MZ = 24;
 // aim the camera from P6 = position + look-at point
@@ -242,45 +229,23 @@ function aim() {
   F[YAW] = atan2(dx, -dz); F[PIT] = atan2(dy, sqrt(dx * dx + dz * dz));
 }
 const lookAt = (x, y, z, tx, ty, tz) => { P6[0] = x; P6[1] = y; P6[2] = z; P6[3] = tx; P6[4] = ty; P6[5] = tz; aim(); };
-// camera spline (Catmull-Rom over position + look-at) at parameter F[SPL]
-function flyRaw() {
-  const s = F[SPL]; let i = floor(s) | 0; if (i > FLYN - 2) i = FLYN - 2;
-  const u = s - i, i0 = (i > 0 ? i - 1 : 0) * 6, i1 = i * 6, i2 = (i + 1) * 6, i3 = (i + 2 < FLYN ? i + 2 : FLYN - 1) * 6;
-  for (let o = 0; o < 6; o++) {
-    const a = FLY[i0 + o], b = FLY[i1 + o], c = FLY[i2 + o], d = FLY[i3 + o];
-    P6[o] = 0.5 * (2 * b + (c - a) * u + (2 * a - 5 * b + 4 * c - d) * u * u + (3 * b - a - 3 * c + d) * u * u * u);
-  }
-  aim();
-}
-{ // arc-length table: flyLUT[k] = spline parameter at fraction k/LUTN of the total path length
-  const M = 4096, len = new Float32Array(M + 1); let px = 0, py = 0, pz = 0;
-  for (let k = 0; k <= M; k++) { F[SPL] = k / M * (FLYN - 1); flyRaw(); if (k) len[k] = len[k - 1] + hypot(F[CX] - px, F[CY] - py, F[CZ] - pz); px = F[CX]; py = F[CY]; pz = F[CZ]; }
-  for (let k = 0, j = 0; k <= LUTN; k++) { const d = k / LUTN * len[M]; while (j < M - 1 && len[j + 1] < d) j++; flyLUT[k] = (j + (d - len[j]) / max(len[j + 1] - len[j], 1e-6)) / M * (FLYN - 1); }
-}
-// camera on the scripted path at time F[FLT]
-function flyAt() {
-  let s = F[FLT] / FLYT; s = s < 0 ? 0 : s > 1 ? 1 : s; s = s * s * (3 - 2 * s) * 0.25 + s * 0.75;
-  s *= LUTN; let k = floor(s) | 0; if (k > LUTN - 1) k = LUTN - 1;
-  F[SPL] = flyLUT[k] + (flyLUT[k + 1] - flyLUT[k]) * (s - k); flyRaw();
-}
-for (let t = 0; t <= FLYT; t += 0.1) { F[FLT] = t; flyAt(); flyPts.push([F[CX], F[CY], F[CZ]]); }
-for (const p of POSES) flyPts.push([p[0], -40, p[2]]);
 
 await say('Growing kelp…', 0.73, 2500);
-const Wd = makeWorld(D, T, flyPts, POSES);
-for (const p of POSES) p[1] += Wd.gy(p[0], p[2]);
+const Wd = makeWorld(D, T, POSES);
+for (const p of POSES) { p[1] += Wd.gy(p[0], p[2]); p[4] += Wd.gy(p[3], p[5]); }
+const WSTAT = { terrainTris: T.ib.length / 3, big: Wd.big.n, small: Wd.small.n, props: Wd.props.map((p) => p.n), chunks: Wd.chunks.map((p) => p.n), fish: Wd.fish.length / 8, bubbles: Wd.bubbles.length / 8, loadS: performance.now() / 1000 };
 D = Wd.gy = T.smp = null; // with gy goes the generator's working memory (about 200 MB)
 
 await say('Building set pieces…', 0.94, 1200);
-// mesh ids: 0-3 boulders, 4-6 sponges, 7-8 coral, 9 tube sponge, 10 whale fluke, 11 ship, 12 manta, 13 fish,
-// 14-20 rock chunks + pebbles, 21-22 coral LOD, 23-25 far LOD of the large rock chunks
+// mesh ids: 0-3 boulders, 4-6 sponges, 7-8 coral, 9 tube sponge, 10 table coral, 11 ship, 12 manta, 13 fish,
+// 14-20 rock chunks + pebbles, 21-22 coral LOD, 23-25 far LOD of the large rock chunks, 26 brain coral, 27 encrusting mound
 const meshes = [meshChunk(1, 3), meshChunk(7, 3), meshChunk(13, 3), meshChunk(22, 3),
   meshLathe([[0, 0, 0.5], [0.34, 0, 0.6], [0.5, 0.2, 0.85], [0.6, 0.6, 1], [0.55, 0.95, 1], [0.47, 1.08, 1], [0.38, 1.1, 0.9], [0.3, 1.0, 0.45], [0.26, 0.6, 0.15], [0, 0.35, 0.05]], 18, 0.3, 9),
   meshLathe([[0, 0, 0.5], [0.2, 0, 0.6], [0.26, 0.5, 0.85], [0.4, 1.25, 1], [0.4, 1.42, 1], [0.33, 1.48, 0.9], [0.26, 1.38, 0.4], [0.18, 0.8, 0.12], [0, 0.5, 0.05]], 16, 0.35, 8),
   meshLathe([[0, 0, 0.5], [0.5, 0, 0.7], [0.72, 0.18, 1], [0.74, 0.38, 1], [0.62, 0.5, 0.9], [0.48, 0.42, 0.45], [0.4, 0.2, 0.15], [0, 0.14, 0.06]], 18, 0.25, 10),
   meshCoral(0), meshCoral(1), meshTubes()].map((m) => m.build());
-meshes.push(meshFluke(), meshShip().build(), meshManta().build(), meshFish().build(),
-  meshChunk(3).build(), meshChunk(11).build(), meshChunk(29).build(), meshChunk(5, 3).build(), meshChunk(17, 3).build(), meshChunk(41, 3).build(), meshChunk(9, 1).build(), meshCoral(0, 1).build(), meshCoral(1, 1).build(), meshChunk(5, 2, 1).build(), meshChunk(17, 2, 1).build(), meshChunk(41, 2, 1).build());
+meshes.push(meshTable().build(), meshShip().build(), meshManta().build(), meshFish().build(),
+  meshChunk(3).build(), meshChunk(11).build(), meshChunk(29).build(), meshChunk(5, 3).build(), meshChunk(17, 3).build(), meshChunk(41, 3).build(), meshChunk(9, 1).build(), meshCoral(0, 1).build(), meshCoral(1, 1).build(), meshChunk(5, 2, 1).build(), meshChunk(17, 2, 1).build(), meshChunk(41, 2, 1).build(), meshBrain().build(), meshMound().build());
 let nV = 0, nI = 0;
 for (const m of meshes) { m.v0 = nV; m.i0 = nI; nV += m.nv; nI += m.ib.length; }
 const allV = new Uint8Array(nV * 16), allI = new Uint32Array(nI);
@@ -293,7 +258,6 @@ const ibSolids = buf(solidData, BU.VERTEX);
 const ibChunk = Wd.chunks.map((c) => buf(c.data, BU.VERTEX)), ibProp = Wd.props.map((c) => buf(c.data, BU.VERTEX));
 const ibBig = buf(new Uint8Array(Wd.big.buf), BU.VERTEX), ibBigF = buf(new Uint8Array(Wd.bigF.buf), BU.VERTEX), ibSmall = buf(new Uint8Array(Wd.small.buf), BU.VERTEX);
 const ibFish = buf(Wd.fish, BU.VERTEX), ibManta = buf(Wd.mantas, BU.VERTEX), ibBubbles = buf(Wd.bubbles, BU.VERTEX), ibSnowB = buf(Wd.snow, BU.VERTEX);
-const ibGl = buf(Wd.glints, BU.VERTEX), nGl = Wd.glints.length / 8;
 const nFish = Wd.fish.length / 8, nManta = Wd.mantas.length / 8, nBub = Wd.bubbles.length / 8, nSnow = Wd.snow.length / 4;
 const MANTA = meshes[12], FISH = meshes[13];
 Q.writeTexture({ texture: tVol }, Wd.volD, { bytesPerRow: NX, rowsPerImage: NY / 2 }, [NX / 2, NY / 2, NZ / 2]);
@@ -310,22 +274,23 @@ Q.writeTexture({ texture: tMap }, Wd.gm, { bytesPerRow: 2048 }, [512, 512]);
     r.setPipeline(pMip8); r.setBindGroup(0, blitBG(tDetail.createView({ baseMipLevel: i - 1, mipLevelCount: 1 }))); r.draw(3); r.end();
   }
   r = e.beginRenderPass({ colorAttachments: [], depthStencilAttachment: { view: tShadow.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' } });
-  r.setBindGroup(0, bg0s);
+  r.setBindGroup(0, bg0s); curTile = -1; useTile(r, 4);
   r.setPipeline(pTerrSh);
   r.setVertexBuffer(0, vbTerrain); r.setVertexBuffer(1, ibSolids); r.setIndexBuffer(ibTerrain, 'uint32');
   r.drawIndexed(T.ib.length, 1, 0, 0, nSolid);
+  shadowEdge(r, T.start, 1, 0);
   r.setPipeline(pSolidSh); r.setVertexBuffer(0, vbMesh); r.setIndexBuffer(ibMesh, 'uint32');
-  for (let i = 0; i < 12; i++) { const g = Wd.solids.ranges[i]; if (g[1]) r.drawIndexed(meshes[i].ib.length, g[1], meshes[i].i0, meshes[i].v0, g[0]); }
+  { const g = Wd.solids.ranges[11]; if (g[1]) for (let k = 0; k < 9; k++) { useTile(r, k); r.drawIndexed(meshes[11].ib.length, g[1], meshes[11].i0, meshes[11].v0, g[0]); } useTile(r, 4); }
   // small rocks, sponges and corals (~35M triangles) only on High: too much for a phone's driver
-  if (!LV) for (let i = 0; i < NCHUNK; i++) { r.setVertexBuffer(1, ibChunk[i]); r.drawIndexed(meshes[14 + i].ib.length, Wd.chunks[i].n, meshes[14 + i].i0, meshes[14 + i].v0, 0); }
-  if (!LV) for (let i = 0; i < 6; i++) if (Wd.props[i].n) { r.setVertexBuffer(1, ibProp[i]); r.drawIndexed(meshes[4 + i].ib.length, Wd.props[i].n, meshes[4 + i].i0, meshes[4 + i].v0, 0); }
-  r.setPipeline(pLeafSh); r.setVertexBuffer(0, ibBig); r.draw(6, Wd.big.n);
+  if (!LV) for (let i = 0; i < NCHUNK; i++) { r.setVertexBuffer(1, ibChunk[i]); r.drawIndexed(meshes[14 + i].ib.length, Wd.chunks[i].n, meshes[14 + i].i0, meshes[14 + i].v0, 0); shadowEdge(r, Wd.chunks[i].start, meshes[14 + i], 0); }
+  if (!LV) for (let i = 0; i < PROP_IDS.length; i++) if (Wd.props[i].n) { const me = meshes[PROP_IDS[i]]; r.setVertexBuffer(1, ibProp[i]); r.drawIndexed(me.ib.length, Wd.props[i].n, me.i0, me.v0, 0); shadowEdge(r, Wd.props[i].start, me, 0); }
+  r.setPipeline(pLeafSh); r.setVertexBuffer(0, ibBig); r.draw(6, Wd.big.n); shadowEdge(r, Wd.big.start, false, 6);
   r.end();
   Q.submit([e.finish()]);
 }
 // the GPU has its own copies now: let go of the generator's (about 300 MB)
 for (const o of [Wd.big, Wd.bigF, Wd.small, ...Wd.chunks, ...Wd.props]) o.buf = o.data = 0;
-Wd.glints = Wd.volD = Wd.gm = T.vb = T.ib = T.wp = T.wn = 0;
+Wd.volD = Wd.gm = T.vb = T.ib = T.wp = T.wn = 0;
 
 // ---------------------------------------------------------------- render targets (rebuilt on resize)
 // The scene is drawn at `pix` pixels and scaled up to the window. frame() tunes it and the draw distance scale `det`
@@ -357,7 +322,7 @@ function resize() {
   bgBlur = device.createBindGroup({ layout: pRB.getBindGroupLayout(0), entries: [{ binding: 0, resource: vRay }] });
   passPost = { colorAttachments: [{ view: null, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }] };
   bgRays = device.createBindGroup({ layout: pRays.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sRep }, { binding: 2, resource: sCmp },
-    { binding: 3, resource: tShadow.createView() }, { binding: 4, resource: tWater.createView() }, { binding: 5, resource: vDp }, { binding: 6, resource: tVol.createView() }, { binding: 7, resource: sClamp }] });
+    { binding: 3, resource: tShadow.createView() }, { binding: 4, resource: tWater.createView() }, { binding: 5, resource: vDp }, { binding: 6, resource: tVol.createView() }, { binding: 7, resource: sVol }] });
   bgPost = device.createBindGroup({ layout: pPost.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sClamp }, { binding: 2, resource: vRes },
     { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }] });
   bloomPass = []; bloomBG = [];
@@ -389,38 +354,78 @@ if (hasTS) {
 
 // ---------------------------------------------------------------- frame
 let hud = false;
+const RES1 = /[?&]res=1\b/.test(location.search); // fixed full resolution: no dynamic resolution (benchmarks, test frames)
+const SKIP = {}; // debugging: SKIP.terrain / chunks / props / big / small = true leaves that set out of the frame
+let drive = null; // scripted drive of the free camera (see __world.drive)
 let kf = 0, kb = 0, kl = 0, kr = 0, ku = 0, kd = 0, ks = 0, mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0, hN = 0, hMax = 0, hMin = 1e9, hPer = 1e9, hLate = 0, hTot = 0, tId = -1, tN = 0, tx0 = 0, ty0 = 0, tx = 0, ty = 0;
 const TANH = 0.6, NEAR = 0.1, EXPO = 0.62, RAYS = 0.54;
 const submitList = [null];
-const rowOrd = new Uint8Array(CELLS);
+const rowOrds = Array.from({ length: 9 }, () => new Uint8Array(CELLS));
+const IMGS = [4, 5, 3, 7, 1, 8, 6, 2, 0]; // the 3x3 copies of the tile: k = column + 3 * row, 4 is the base tile; nearest first
 // Draws the cells of a cell-sorted buffer that are in view and within [minD, maxD) (scaled by `det`, but not for the
-// terrain) as merged runs, nearest rows first.
+// terrain) as merged runs, nearest rows first. The world repeats: every copy of the tile that comes within maxD is
+// walked in its own frame (the camera moved by minus the copy's offset), and drawn with that copy's offset.
 function drawCells(r, start, lo, hi, mar, indexed, verts, minD, maxD) {
-  const cx = F[CX], cy = F[CY], cz = F[CZ], fx = F[FX], fy = F[FY], fz = F[FZ], rx = F[RX], rz = F[RZ], ux = F[UX], uy = F[UY], uz = F[UZ];
+  const fx = F[FX], fy = F[FY], fz = F[FZ], rx = F[RX], rz = F[RZ], ux = F[UX], uy = F[UY], uz = F[UZ];
   const ds = indexed === 1 ? 1 : det * det;
   const tx = TANH * W / H, hw = CELLW * 0.5, ex = hw + mar, min2 = minD * minD * ds, max2 = maxD * maxD * ds;
-  for (let k = 0; k < CELLS; k++) {
-    const rw = rowOrd[k], row = rw * CELLS, pz = OZ + (rw + 0.5) * CELLW - cz, hz = max(abs(pz) - hw, 0);
-    let run = -1;
-    for (let x = 0; x <= CELLS; x++) {
-      const c = row + x; let v = false;
-      if (x < CELLS) {
-        const l = lo[c], h = hi[c];
-        if (l <= h) {
-          const px = OX + (x + 0.5) * CELLW - cx, py = (l + h) * 0.5 - cy, ey = (h - l) * 0.5 + mar, hx = max(abs(px) - hw, 0), h2 = hx * hx + hz * hz;
-          if (h2 < max2 && h2 >= min2) {
-            const lim = px * fx + py * fy + pz * fz + ex * abs(fx) + ey * abs(fy) + ex * abs(fz);
-            if (lim >= 0 && abs(px * rx + pz * rz) - ex * (abs(rx) + abs(rz)) <= lim * tx) v = abs(px * ux + py * uy + pz * uz) - ex * (abs(ux) + abs(uz)) - ey * abs(uy) <= lim * TANH;
+  for (let im = 0; im < 9; im++) {
+    const kk = IMGS[im], cx = F[CX] - (kk % 3 - 1) * PER, cy = F[CY], cz = F[CZ] - (floor(kk / 3) - 1) * PER;
+    const ex0 = max(abs(cx) - HPER, 0), ez0 = max(abs(cz) - HPER, 0);
+    if (ex0 * ex0 + ez0 * ez0 >= max2) continue; // this whole copy is out of range
+    const rowOrd = rowOrds[kk];
+    for (let k = 0; k < CELLS; k++) {
+      const rw = rowOrd[k], row = rw * CELLS, pz = OZ + (rw + 0.5) * CELLW - cz, hz = max(abs(pz) - hw, 0);
+      if (hz * hz >= max2) continue;
+      let run = -1;
+      for (let x = 0; x <= CELLS; x++) {
+        const c = row + x; let v = false;
+        if (x < CELLS) {
+          const l = lo[c], h = hi[c];
+          if (l <= h) {
+            const px = OX + (x + 0.5) * CELLW - cx, py = (l + h) * 0.5 - cy, ey = (h - l) * 0.5 + mar, hx = max(abs(px) - hw, 0), h2 = hx * hx + hz * hz;
+            if (h2 < max2 && h2 >= min2) {
+              const lim = px * fx + py * fy + pz * fz + ex * abs(fx) + ey * abs(fy) + ex * abs(fz);
+              if (lim >= 0 && abs(px * rx + pz * rz) - ex * (abs(rx) + abs(rz)) <= lim * tx) v = abs(px * ux + py * uy + pz * uz) - ex * (abs(ux) + abs(uz)) - ey * abs(uy) <= lim * TANH;
+            }
           }
         }
-      }
-      if (v) { if (run < 0) run = c; } else if (run >= 0) {
-        const a = start[run], n = start[c] - a;
-        if (n > 0) { if (indexed === 1) r.drawIndexed(n * 6, 1, a * 6, 0, nSolid); else if (indexed) r.drawIndexed(indexed.ib.length, n, indexed.i0, indexed.v0, a); else r.draw(verts, n, 0, a); }
-        run = -1;
+        if (v) { if (run < 0) run = c; } else if (run >= 0) {
+          const a = start[run], n = start[c] - a;
+          if (n > 0) {
+            useTile(r, kk);
+            if (indexed === 1) r.drawIndexed(n * 6, 1, a * 6, 0, nSolid); else if (indexed) r.drawIndexed(indexed.ib.length, n, indexed.i0, indexed.v0, a); else r.draw(verts, n, 0, a);
+          }
+          run = -1;
+        }
       }
     }
   }
+}
+// shadow bake: the cells of the 8 neighbouring tile copies that reach into the base tile's shadow range (they shade
+// its edges), drawn with their offsets
+function shadowEdge(r, start, indexed, verts) {
+  const lim = HPER + SHREACH + CELLW * 0.5;
+  for (let k = 0; k < 9; k++) {
+    if (k === 4) continue;
+    const ox = (k % 3 - 1) * PER, oz = (floor(k / 3) - 1) * PER;
+    for (let rw = 0; rw < CELLS; rw++) {
+      if (abs(OZ + (rw + 0.5) * CELLW + oz) > lim) continue;
+      let run = -1;
+      for (let x = 0; x <= CELLS; x++) {
+        const c = rw * CELLS + x, v = x < CELLS && abs(OX + (x + 0.5) * CELLW + ox) <= lim;
+        if (v) { if (run < 0) run = c; } else if (run >= 0) {
+          const a = start[run], n = start[c] - a;
+          if (n > 0) {
+            useTile(r, k);
+            if (indexed === 1) r.drawIndexed(n * 6, 1, a * 6, 0, nSolid); else if (indexed) r.drawIndexed(indexed.ib.length, n, indexed.i0, indexed.v0, a); else r.draw(verts, n, 0, a);
+          }
+          run = -1;
+        }
+      }
+    }
+  }
+  useTile(r, 4);
 }
 function render() {
   // camera basis (right vector is horizontal)
@@ -437,14 +442,16 @@ function render() {
   m[36] = rx; m[37] = 0; m[38] = rz; m[39] = TANH * asp;
   m[40] = ux; m[41] = uy; m[42] = uz; m[43] = TANH;
   m[44] = fx; m[45] = fy; m[46] = fz; m[47] = NEAR;
-  const zx = cx - PURPLE[0], zz = cz - PURPLE[1]; let zt = (44 - sqrt(zx * zx + zz * zz)) / 18; zt = zt < 0 ? 0 : zt > 1 ? 1 : zt;
-  m[51] = zt * zt * (3 - 2 * zt);
+  m[51] = 0;
   let ek = (-cy - 8) / 26; ek = ek < 0 ? 0 : ek > 1 ? 1 : ek;
   m[56] = EXPO * (0.6 + 0.4 * ek); m[57] = RAYS; m[58] = det;
   Q.writeBuffer(ubo, 0, UB);
   WT[0] = F[TIME]; Q.writeBuffer(uboW, 0, WT);
 
-  { let cr = floor((cz - OZ) / CELLW) | 0; cr = cr < 0 ? 0 : cr > CELLS - 1 ? CELLS - 1 : cr; let n = 0; rowOrd[n++] = cr; for (let d = 1; d < CELLS; d++) { if (cr - d >= 0) rowOrd[n++] = cr - d; if (cr + d < CELLS) rowOrd[n++] = cr + d; } }
+  for (let kk = 0; kk < 9; kk++) { // rows of each tile copy, nearest the camera first
+    const ro = rowOrds[kk]; let cr = floor((cz - (floor(kk / 3) - 1) * PER - OZ) / CELLW) | 0; cr = cr < 0 ? 0 : cr > CELLS - 1 ? CELLS - 1 : cr;
+    let n = 0; ro[n++] = cr; for (let d = 1; d < CELLS; d++) { if (cr - d >= 0) ro[n++] = cr - d; if (cr + d < CELLS) ro[n++] = cr + d; }
+  }
   const e = device.createCommandEncoder();
   let slot = null;
   if (hasTS) { for (let i = 0; i < qRead.length; i++) if (!qRead[i].busy) { slot = qRead[i]; break; } }
@@ -455,32 +462,38 @@ function render() {
   for (let i = 1; i < 5; i++) { r = e.beginRenderPass(waterPass[i]); r.setPipeline(pMip16); r.setBindGroup(0, waterBG[i - 1]); r.draw(3); r.end(); }
   // scene
   r = e.beginRenderPass(passScene);
-  r.setBindGroup(0, bg0);
+  r.setBindGroup(0, bg0); curTile = -1; useTile(r, 4);
   r.setPipeline(pTerrain); r.setVertexBuffer(0, vbTerrain); r.setVertexBuffer(1, ibSolids); r.setIndexBuffer(ibTerrain, 'uint32');
-  drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
+  if (!SKIP.terrain) drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
   r.setPipeline(pSolid); r.setVertexBuffer(0, vbMesh); r.setIndexBuffer(ibMesh, 'uint32');
-  for (let i = 0; i < 12; i++) { const g = Wd.solids.ranges[i]; if (g[1]) r.drawIndexed(meshes[i].ib.length, g[1], meshes[i].i0, meshes[i].v0, g[0]); }
-  for (let i = 0; i < NCHUNK; i++) {
+  { // the wreck: the copies of it that are near
+    const g = Wd.solids.ranges[11];
+    if (g[1]) for (let k = 0; k < 9; k++) if (hypot(F[CX] - (k % 3 - 1) * PER - Wd.shipPos[0], F[CZ] - (floor(k / 3) - 1) * PER - Wd.shipPos[2]) < 260) { useTile(r, k); r.drawIndexed(meshes[11].ib.length, g[1], meshes[11].i0, meshes[11].v0, g[0]); }
+  }
+  if (!SKIP.chunks) for (let i = 0; i < NCHUNK; i++) {
     const c = Wd.chunks[i], big = i > 2 && i < 6; r.setVertexBuffer(1, ibChunk[i]);
     drawCells(r, c.start, c.lo, c.hi, 3, meshes[14 + i], 0, 0, i > 5 ? 30 : big ? 40 : 96);
     if (big) drawCells(r, c.start, c.lo, c.hi, 3, meshes[20 + i], 0, 40, 150);
   }
-  for (let i = 0; i < 6; i++) {
-    const lod = i === 3 || i === 4; r.setVertexBuffer(1, ibProp[i]);
-    drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[4 + i], 0, 0, lod ? 6 : 110);
-    if (lod) drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[18 + i], 0, 6, 110);
+  if (!SKIP.props) for (let i = 0; i < PROP_IDS.length; i++) {
+    const id = PROP_IDS[i], lod = id === 7 || id === 8; r.setVertexBuffer(1, ibProp[i]);
+    drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[id], 0, 0, lod ? 6 : id < 4 ? 150 : 110);
+    if (lod) drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[14 + id], 0, 6, 110);
   }
+  useTile(r, 4);
   r.setPipeline(pManta); r.setVertexBuffer(1, ibManta); r.drawIndexed(MANTA.ib.length, nManta, MANTA.i0, MANTA.v0, 0);
   r.setPipeline(pFish); r.setVertexBuffer(1, ibFish); r.drawIndexed(FISH.ib.length, nFish, FISH.i0, FISH.v0, 0);
   // kelp and plants: 9-row blades up close, 5 rows mid-range, a decimated set far away
-  r.setPipeline(pLeaf); r.setVertexBuffer(0, ibBig); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 18, 0, 24);
-  r.setPipeline(pLeaf5); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 10, 24, 58);
-  r.setPipeline(pLeafF); r.setVertexBuffer(0, ibBigF); drawCells(r, Wd.bigF.start, Wd.bigF.lo, Wd.bigF.hi, 5, false, 6, 58, 150);
-  r.setPipeline(pLeafS); r.setVertexBuffer(0, ibSmall); drawCells(r, Wd.small.start, Wd.small.lo, Wd.small.hi, 1.5, false, 6, 0, 70);
+  if (!SKIP.big) {
+    r.setPipeline(pLeaf); r.setVertexBuffer(0, ibBig); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 18, 0, 24);
+    r.setPipeline(pLeaf5); drawCells(r, Wd.big.start, Wd.big.lo, Wd.big.hi, 5, false, 10, 24, 58);
+    r.setPipeline(pLeafF); r.setVertexBuffer(0, ibBigF); drawCells(r, Wd.bigF.start, Wd.bigF.lo, Wd.bigF.hi, 5, false, 6, 58, 150);
+  }
+  if (!SKIP.small) { r.setPipeline(pLeafS); r.setVertexBuffer(0, ibSmall); drawCells(r, Wd.small.start, Wd.small.lo, Wd.small.hi, 1.5, false, 6, 0, 70); }
+  useTile(r, 4);
   r.setPipeline(pSurf); r.draw(4);
   r.setPipeline(pBack); r.draw(4);
   r.setPipeline(pBub); r.setVertexBuffer(0, ibBubbles); r.draw(4, nBub);
-  r.setPipeline(pGl); r.setVertexBuffer(0, ibGl); r.draw(4, nGl);
   r.setPipeline(pSnow); r.setVertexBuffer(0, ibSnowB); r.draw(4, nSnow);
   r.end();
   // light shafts
@@ -502,9 +515,10 @@ function render() {
 // CS[j] = distance to the rock (metres, < 0 in water) at the camera + CE[3j..3j+2]: the camera, then ±0.375 m on
 // each axis for the gradient
 const CE = new Float64Array([0, 0, 0, .375, 0, 0, -.375, 0, 0, 0, .375, 0, 0, -.375, 0, 0, 0, .375, 0, 0, -.375]), CS = new Float64Array(7);
-const cv = (x, y, z) => { const b = CI[(x >> 2) + CN * ((y >> 2) + NY / 4 * (z >> 2))]; return b > 1 ? CG[b * 64 - 128 + (x & 3) + 4 * (y & 3) + 16 * (z & 3)] : b * 254 - 127; };
+const cv = (x, y, z) => { const b = CI[((x >> 2) & (CN - 1)) + CN * ((y >> 2) + NY / 4 * ((z >> 2) & (CN - 1)))]; return b > 1 ? CG[b * 64 - 128 + (x & 3) + 4 * (y & 3) + 16 * (z & 3)] : b * 254 - 127; };
 function sd(j) {
-  const x = (F[CX] + CE[j * 3] - OX) / VS - CO, y = (F[CY] + CE[j * 3 + 1] - OY) / VS, z = (F[CZ] + CE[j * 3 + 2] - OZ) / VS - CO;
+  let x = (F[CX] + CE[j * 3] - OX) / VS, y = (F[CY] + CE[j * 3 + 1] - OY) / VS, z = (F[CZ] + CE[j * 3 + 2] - OZ) / VS;
+  x -= NX * floor(x / NX); z -= NZ * floor(z / NZ); y = y < 0 ? 0 : y > NY - 2 ? NY - 2 : y; // the tile wraps
   const ix = x | 0, iy = y | 0, iz = z | 0, u = x - ix, v = y - iy, a = cv(ix, iy, iz), b = cv(ix, iy + 1, iz), c = cv(ix, iy, iz + 1), d = cv(ix, iy + 1, iz + 1);
   const p = a + (cv(ix + 1, iy, iz) - a) * u, q = b + (cv(ix + 1, iy + 1, iz) - b) * u, r = c + (cv(ix + 1, iy, iz + 1) - c) * u, s = d + (cv(ix + 1, iy + 1, iz + 1) - d) * u;
   const e = p + (q - p) * v; CS[j] = (e + (r + (s - r) * v - e) * (z - iz)) / 127;
@@ -533,7 +547,7 @@ function frame(now) {
   const dtr = now - F[LAST]; F[LAST] = now;
   let dt = dtr / 1000; if (dt > 0.1) dt = 0.1;
   // Dynamic resolution for 60 fps: every second (0.4 s behind the menu) scale the load by k
-  if (dtr < 1e3 && (dynT += dtr) > 0 && (dynN++, dynT > (menu ? 400 : 1000))) {
+  if (!RES1 && dtr < 1e3 && (dynT += dtr) > 0 && (dynN++, dynT > (menu ? 400 : 1000))) {
     const a = dynT / dynN, g = dynGN ? dynG / dynGN : 0; let k = 1;
     // with GPU timing: keep it between 9.8 and 13.6 ms
     if (g) { if (g > 13.6 || g < 9.8) k = 11.7 / g; }
@@ -566,10 +580,11 @@ function frame(now) {
     const sp = ks || tN > 1 ? 26 : 7, k = 1 - exp(-dt * 4.5), mf = tId >= 0 ? 0.7 : kf - kb, mr = kr - kl, mu = ku - kd, cp = cos(pitch), sy = sin(yaw), cw = cos(yaw);
     const vx = F[VX] + ((sy * cp * mf + cw * mr) * sp - F[VX]) * k, vy = F[VY] + ((sin(pitch) * mf + mu) * sp - F[VY]) * k, vz = F[VZ] + ((-cw * cp * mf + sy * mr) * sp - F[VZ]) * k;
     let x = F[CX] + vx * dt, y = F[CY] + vy * dt, z = F[CZ] + vz * dt;
-    const rad = sqrt(x * x + z * z); if (rad > 150) { x *= 150 / rad; z *= 150 / rad; }
-    y = y < -52 ? -52 : y > -1.2 ? -1.2 : y;
+    y = y < OY + 3 ? OY + 3 : y > -0.6 ? -0.6 : y;
     F[YAW] = yaw; F[PIT] = pitch; F[VX] = vx; F[VY] = vy; F[VZ] = vz; F[MX] = x - F[CX]; F[MY] = y - F[CY]; F[MZ] = z - F[CZ];
-    collide();
+    if (drive && drive.noclip) { F[CX] += F[MX]; F[CY] += F[MY]; F[CZ] += F[MZ]; } else collide();
+    if (drive) { drive.log.push(dtr); drive.dist += sqrt(F[MX] * F[MX] + F[MY] * F[MY] + F[MZ] * F[MZ]); if (drive.dist >= drive.len) drive.done = true; }
+    F[CX] = wrapT(F[CX]); F[CZ] = wrapT(F[CZ]); // keep the camera in the base tile so floats stay precise
   }
   render();
   if (hud) {
@@ -641,3 +656,35 @@ render(); await Q.onSubmittedWorkDone();
 setTimeout(keep, 15e3, 'abyssalLoad', ''); // the load counts as survived after 15 s of frames
 ui(true);
 requestAnimationFrame((t) => { F[LAST] = t; requestAnimationFrame(frame); });
+
+// ---------------------------------------------------------------- test hooks (world piece)
+// __world.set(x, y, z, yaw, pitch)  free camera pose (the position is wrapped into the base tile); yaw 0 looks along -z, pi/2 along +x
+// __world.pose(i)                   the preset viewpoint i (0-5)
+// __world.drive({len, yaw, pitch, y, noclip})  fly the free camera straight on at 26 m/s for len metres, timing every frame
+// __world.driveResult()             null while driving, then {frames, meters, max, p95, p99, mean, hitches}
+// __world.state()                   camera x, y, z, yaw, pitch
+window.__world = {
+  ready: true, stats: WSTAT, skip: SKIP, gpu: () => F[GPU],
+  set(x, y, z, yaw, pitch) { F[CX] = wrapT(x); F[CY] = y; F[CZ] = wrapT(z); F[YAW] = yaw; F[PIT] = pitch; F[VX] = F[VY] = F[VZ] = 0; mdx = mdy = lkx = lky = l2x = l2y = 0; },
+  pose(i) { lookAt(...POSES[i]); },
+  // the ground map as a PNG data URL: sand yellow, rock grey, brighter = shallower floor
+  mapImage() {
+    const c = document.createElement('canvas'); c.width = NX; c.height = NZ; const g = c.getContext('2d'), im = g.createImageData(NX, NZ);
+    for (let i = 0; i < NX * NZ; i++) { const s = MAP[i * 4], fl = clamp((MAP[i * 4 + 1] + 26) / 14, 0, 1) * 0.5 + 0.5, v = 255 * (1 - fl * 0.4); im.data.set([v * (0.5 + 0.5 * s), v * (0.5 + 0.4 * s), v * (0.5 - 0.1 * s), 255], i * 4); }
+    g.putImageData(im, 0, 0);
+    g.fillStyle = '#f00'; for (const m of MESAS) { g.fillRect((m[0] - OX) / VS - 2, (m[1] - OZ) / VS - 2, 4, 4); g.fillRect((m[2] - OX) / VS - 2, (m[3] - OZ) / VS - 2, 4, 4); }
+    return c.toDataURL();
+  },
+  state: () => ({ x: F[CX], y: F[CY], z: F[CZ], yaw: F[YAW], pitch: F[PIT], tile: PER }),
+  drive(o) {
+    drive = { len: o.len || 768, dist: 0, log: [], done: false, noclip: !!o.noclip };
+    this.set(F[CX], o.y ?? F[CY], F[CZ], o.yaw ?? F[YAW], o.pitch || 0);
+    kf = 1; ks = 1;
+  },
+  driveResult() {
+    if (!drive || !drive.done) return null;
+    kf = ks = 0;
+    const d = drive.log.slice(3).sort((a, b) => a - b), mean = d.reduce((a, b) => a + b, 0) / d.length;
+    return { frames: d.length, meters: drive.dist, max: d[d.length - 1], p95: d[floor(d.length * 0.95)], p99: d[floor(d.length * 0.99)], mean, hitches: d.filter((v) => v > 2.5 * mean + 8).length };
+  },
+};
