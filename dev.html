@@ -1633,7 +1633,7 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
     let ff = nf / (1. + dot(nf, vec3f(.25, .5, .25))); let hh = nh / (1. + dot(nh, vec3f(.25, .5, .25)));
     let mn = min(e, min(min(bb, dd), min(ff, hh))); let mx = max(e, max(max(bb, dd), max(ff, hh)));
     let amp = sqrt(clamp(min(mn, vec3f(1.) - mx) / max(mx, vec3f(1e-4)), vec3f(0.), vec3f(1.)));
-    let wc = -amp * .17;
+    let wc = -amp * .2;
     let sh = clamp((e + wc * (bb + dd + ff + hh)) / (1. + 4. * wc), vec3f(0.), vec3f(.999));
     sc = sh / max(vec3f(1.) - vec3f(dot(sh, vec3f(.25, .5, .25))), vec3f(1e-3));
   }
@@ -2369,7 +2369,7 @@ fn ggx(nh: f32, a: f32) -> f32 { let a2 = a * a; let d = nh * nh * (a2 - 1.) + 1
   let z = zone(i.wp); let dist = length(i.wp - g.cam.xyz);
   let v1 = vol(i.wp + N * .25); let v2 = vol(i.wp + N * .9);
   let ao = mix(.4, 1., sat((v1.r - .5) * 6.)) * mix(.75, 1., sat((v2.r - .5) * 3.));
-  let sh = shadow9(i.wp + N * .02);
+  let sh = shadow9(i.wp + N * .02, 0.);
   let E = sunE(i.wp.y, z) * sh;
   let ndl = sat(dot(N, L)); let ndv = max(dot(N, V), .03);
   let ca = caus(i.wp, dist);
@@ -3285,7 +3285,7 @@ let hud = false;
 const SKIP = {}; for (const k of (QS.get('off') || '').split(',')) SKIP[k] = true; // ?off=terrain,chunks,props,big,small // debugging: SKIP.terrain / chunks / props / big / small = true leaves that set out of the frame
 let drive = null; // scripted drive of the LAUV (see __world.drive)
 let mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0, hN = 0, hMax = 0, hMin = 1e9, hPer = 1e9, hLate = 0, hTot = 0, tId = -1, tN = 0, tx0 = 0, ty0 = 0, tx = 0, ty = 0;
-const JITS = 0.6; // jitter spread (pixels): less than 1 trades some edge smoothing for sharper detail
+const JITS = 0.5; // jitter spread (pixels): less than 1 trades some edge smoothing for sharper detail
 const JIT = [...Array(8)].map((_, i) => { const h = (n, b) => { let f = 1, r = 0; for (n++; n > 0; n = floor(n / b)) { f /= b; r += f * (n % b); } return r - 0.5; }; return [h(i, 2), h(i, 3)]; });
 const TANH = 0.6, NEAR = 0.1, EXPO = 0.62, RAYS = 0.54;
 const submitList = [null];
@@ -3728,47 +3728,6 @@ function sound() {
 const mute = () => { muted = !muted; OUT.gain.setTargetAtTime(muted ? 0 : VOL, AC.currentTime, 0.08); };
 document.addEventListener('visibilitychange', () => { if (AC) document.hidden ? AC.suspend() : AC.resume(); });
 
-// development tools: only in dev.html (npm run build:dev), never in index.html
-// ============================================================================
-//   F    fly the camera along the scripted path (FLY in main.js), one minute through the whole world
-//   B    the same flight as a benchmark: the resolution stays fixed, every frame is timed, the result is shown at the end
-//   F, B or 1-6 during a flight stop it
-{
-  const LOGN = 1 << 16, logFrame = new Float32Array(LOGN), logGpu = new Float32Array(LOGN);
-  let flying = false, bench = false, last = 0, nFrame = 0, nGpu = 0, lastN = 0;
-  const passSum = new Float64Array(PASSES.length);
-  const stop = () => { flying = bench = false; dynT = 0; };
-  const report = () => {
-    const st = (a, n) => { const s = Array.from(a.subarray(0, n)).sort((x, y) => x - y); let sum = 0; for (const v of s) sum += v; return { n, avg: sum / n, p99: s[min(n - 1, floor(n * 0.99))], max: s[n - 1] }; };
-    const fm = (o) => `avg ${o.avg.toFixed(2)}  p99 ${o.p99.toFixed(2)}  max ${o.max.toFixed(2)} ms`;
-    const f = st(logFrame, nFrame);
-    const per = nGpu ? PASSES.map((p, i) => `${p} ${(passSum[i] / nGpu).toFixed(2)}`).join('  ') : '';
-    info.textContent = `Fly-through ${W}x${H}, ${f.n} frames\nframe  ${fm(f)}\nGPU    ${nGpu ? fm(st(logGpu, nGpu)) : 'timestamp-query unavailable'}\nper pass (avg ms)  ${per}`;
-  };
-  // frame() moves the free camera and then calls render(): step in between and put the camera on the path instead
-  const draw = render;
-  render = () => {
-    if (flying) {
-      const dtr = F[LAST] - last; last = F[LAST];
-      F[FLT] += min(dtr / 1000, 0.1); flyAt();
-      if (bench) { if (nFrame < LOGN) logFrame[nFrame++] = dtr; if (F[GPU] > 0 && nGpu < LOGN && PERF.n !== lastN) { lastN = PERF.n; logGpu[nGpu++] = F[GPU]; for (let i = 0; i < PASSES.length; i++) passSum[i] += PASSRAW[i]; } }
-      if (F[FLT] >= FLYT) { if (bench) report(); stop(); }
-    }
-    draw();
-  };
-  addEventListener('keydown', (e) => {
-    if (menu || e.repeat) return;
-    if (e.code === 'KeyF' || e.code === 'KeyB') {
-      if (flying) stop();
-      else {
-        flying = true; bench = e.code === 'KeyB'; F[FLT] = 0; last = F[LAST]; nFrame = nGpu = 0; passSum.fill(0);
-        // a benchmark hides the stats line and holds the resolution: dynT at -Infinity keeps frame() from tuning it
-        if (bench) { hud = false; info.textContent = ''; dynT = -Infinity; }
-      }
-    } else if (/Digit[1-6]/.test(e.code)) stop();
-  });
-}
-=======
 // development tools: none (the world piece's test hooks, __world, live at the end of main.js)
 
 })().catch(e=>{console.error(e);document.body.className='l e';document.getElementById('s').textContent=(e.cause?'':'Failed to start: ')+e.message});

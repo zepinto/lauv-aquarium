@@ -868,7 +868,7 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
     let ff = nf / (1. + dot(nf, vec3f(.25, .5, .25))); let hh = nh / (1. + dot(nh, vec3f(.25, .5, .25)));
     let mn = min(e, min(min(bb, dd), min(ff, hh))); let mx = max(e, max(max(bb, dd), max(ff, hh)));
     let amp = sqrt(clamp(min(mn, vec3f(1.) - mx) / max(mx, vec3f(1e-4)), vec3f(0.), vec3f(1.)));
-    let wc = -amp * .17;
+    let wc = -amp * .2;
     let sh = clamp((e + wc * (bb + dd + ff + hh)) / (1. + 4. * wc), vec3f(0.), vec3f(.999));
     sc = sh / max(vec3f(1.) - vec3f(dot(sh, vec3f(.25, .5, .25))), vec3f(1e-3));
   }

@@ -150,7 +150,7 @@ fn ggx(nh: f32, a: f32) -> f32 { let a2 = a * a; let d = nh * nh * (a2 - 1.) + 1
   let z = zone(i.wp); let dist = length(i.wp - g.cam.xyz);
   let v1 = vol(i.wp + N * .25); let v2 = vol(i.wp + N * .9);
   let ao = mix(.4, 1., sat((v1.r - .5) * 6.)) * mix(.75, 1., sat((v2.r - .5) * 3.));
-  let sh = shadow9(i.wp + N * .02);
+  let sh = shadow9(i.wp + N * .02, 0.);
   let E = sunE(i.wp.y, z) * sh;
   let ndl = sat(dot(N, L)); let ndv = max(dot(N, V), .03);
   let ca = caus(i.wp, dist);

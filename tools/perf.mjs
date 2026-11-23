@@ -7,9 +7,9 @@ const POSES = (process.env.POSES || '1,2,3,4,5,6').split(',').map(Number);
 const b = await launch();
 for (const q of qs) {
   const page = await b.newPage({ viewport: { width: 1920, height: 1080 } });
-  page.on('pageerror', e => console.log('pageerror: ' + e.message));
+  page.on('pageerror', e => console.log('pageerror: ' + e.message + ' ' + (e.stack || '').slice(0, 700)));
   await page.goto('http://127.0.0.1:' + port + '/' + (process.env.PAGE || 'index.html') + '?' + q);
-  await page.waitForFunction(() => window.__perf && document.querySelector('#d:not([disabled])')?.offsetParent, null, { timeout: 260000 });
+  await page.waitForFunction(() => window.__perf && window.__app?.ready && document.querySelector('#d:not([disabled])')?.offsetParent, null, { timeout: 260000 });
   await page.evaluate(() => window.__app ? __app.start() : document.querySelector('#d').click());
   await page.waitForTimeout(1500);
   const rows = [];

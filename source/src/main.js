@@ -390,7 +390,7 @@ let hud = false;
 const SKIP = {}; for (const k of (QS.get('off') || '').split(',')) SKIP[k] = true; // ?off=terrain,chunks,props,big,small // debugging: SKIP.terrain / chunks / props / big / small = true leaves that set out of the frame
 let drive = null; // scripted drive of the LAUV (see __world.drive)
 let mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0, hN = 0, hMax = 0, hMin = 1e9, hPer = 1e9, hLate = 0, hTot = 0, tId = -1, tN = 0, tx0 = 0, ty0 = 0, tx = 0, ty = 0;
-const JITS = 0.6; // jitter spread (pixels): less than 1 trades some edge smoothing for sharper detail
+const JITS = 0.5; // jitter spread (pixels): less than 1 trades some edge smoothing for sharper detail
 const JIT = [...Array(8)].map((_, i) => { const h = (n, b) => { let f = 1, r = 0; for (n++; n > 0; n = floor(n / b)) { f /= b; r += f * (n % b); } return r - 0.5; }; return [h(i, 2), h(i, 3)]; });
 const TANH = 0.6, NEAR = 0.1, EXPO = 0.62, RAYS = 0.54;
 const submitList = [null];
