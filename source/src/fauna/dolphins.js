@@ -59,7 +59,12 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   alb = select(alb, finc, isfin);
   alb *= .86 + .28 * tx.b;
   // rake marks and mottling
-  alb += vec3f(.06) * ss(.74, .9, tx.a) * (1. - f32(isfin)) * ss(-.2, .6, tt);
+  alb += vec3f(.05) * ss(.74, .9, tx.a) * (1. - f32(isfin)) * ss(-.2, .6, tt);
+  // rake marks (paired pale scratches), old scars, fine speckle
+  let rk = ss(.90, .985, sin(i.op.x * 190. + i.op.y * 55. + i.sd * 7.) * .5 + .5) * ss(.62, .8, tx.b) * ss(.25, .45, s) * (1. - f32(isfin));
+  let rk2 = ss(.92, .99, sin(i.op.x * 90. - i.op.y * 120. + i.sd * 3.) * .5 + .5) * ss(.7, .88, tx.a) * ss(.2, .5, s);
+  alb = mix(alb, alb + vec3f(.11, .105, .1), max(rk, rk2) * ss(-.5, .3, tt) * .5);
+  alb *= 1. - .25 * ss(.8, .95, tx.b) * ss(.0, .5, tt);
   // eye, mouth line, blowhole (side features: the eye is at 14 % of the length, level with the mouth corner)
   let sd = step(.3, lat) * (1. - f32(isfin));
   let eye = ss(.016, .006, length(vec2f(i.op.x - .36, i.op.y - .013))) * sd;
@@ -68,6 +73,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   let mouth = ss(.0028, .0008, abs(i.op.y - my)) * step(.372, i.op.x) * (1. - f32(isfin));
   let blow = ss(.014, .006, length(vec2f(i.op.x - .245, i.op.z))) * step(.6, n.y) * (1. - f32(isfin));
   alb = mix(alb, vec3f(.05, .045, .045), eyer * .45);
+  alb = mix(alb, alb + vec3f(.06), ss(.05, .03, length(vec2f(i.op.x - .36, i.op.y - .013))) * (1. - eyer) * sd * .5);
   alb = mix(alb, vec3f(.008), eye);
   alb = mix(alb, alb * .35, mouth * .8);
   alb = mix(alb, vec3f(.01), blow * .9);
@@ -80,7 +86,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   c += select(vec3f(0.), alb * E * sat(dot(-n, L)) * .5, isfin);
   // wet skin: a glossy sun lobe, a broad sheen and the sky reflected at grazing angles
   let H = normalize(V + L); let nv = sat(dot(n, V));
-  c += E * (pow(sat(dot(n, H)), 70.) * 1.3 + pow(sat(dot(n, H)), 12.) * .12) * (.4 + ca * .6) * (1. - mouth) * (1. - .8 * f32(isfin));
+  c += E * (pow(sat(dot(n, H)), 60.) * .4 + pow(sat(dot(n, H)), 10.) * .1) * (.4 + ca * .6) * (1. - mouth) * (1. - .8 * f32(isfin));
   let sky = amb(i.wp, vec3f(0., 1., 0.), vv.g, z);
   c += sky * pow(1. - nv, 4.) * .55 + alb * sky * ca * .25 * sat(-n.y);
   return fin(fog(c, i.wp, z));
