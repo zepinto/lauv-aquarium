@@ -492,32 +492,40 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     // ---- LOOK: rock from scanned CC0 textures (textures/, Poly Haven): two rock types per rock (by seed) or per
     // region (terrain), blended by their height maps; under-water tint; reef growth (encrusting coralline crust and
     // algae turf) on up-facing parts that settles into the hollows first
-    let rs = select(fract(reg.a * 2.3 + reg.b * .7), hs(sd * 17.31), mat == 1);
-    let la = select(i32(rs * 4.99), 1, mat == 0);
-    let lb = select((la + 1 + i32(hs(sd * 3.7) * 2.99)) % 5, 0, mat == 0);
-    let s1 = pk(.52) * ts * mix(.8, 1.25, hs(sd * 5.1)); let s2 = pk(.37) * ts;
-    let ra = tpl(i.op, gdx, gdy, tw, s1, la);
-    let rb = tpl(i.op.zxy + 13.7, gdx.zxy, gdy.zxy, tw.zxy, s2, lb);
-    let mab = ss(-.12, .12, (big - .5) * 1.5 + (big2 - .5) * .8 + (rb.h - ra.h) * .7);
-    alb = mix(ra.alb * LG[la], rb.alb * LG[lb], mab);
-    let th = mix(ra.h, rb.h, mab);
-    tn = mix(ra.n, rb.n.yzx, mab); tnk = 1.15;
-    // per rock / per region: brightness and hue drift, then the grey-olive of rock under water
-    let vh = hs(sd * 9.13 + floor(reg.b * 4.));
-    alb *= mix(.75, 1.25, vh) * (.8 + .4 * big);
-    let gl = dot(alb, vec3f(.3, .59, .11));
-    alb = mix(vec3f(gl), alb, .5) * mix(vec3f(1.), vec3f(.86, .97, .84), big2);
-    // reef growth on top
-    let upf = ss(.05, .8, n0.y);
-    if (upf > .01) {
-      let cg = tpl(i.op + 5.1, gdx, gdy, tw, pk(.7) * ts, 6);
-      let gw = ss(.05, .3, upf * (.5 + .9 * big2) - th * .5 + cg.h * .35 - .25);
-      alb = mix(alb, cg.alb * LG[6] * vec3f(.85, .95, .78), gw);
-      tn = mix(tn, cg.n, gw);
+    // LOOK: on flat sand the rock layers are not sampled at all (sand covers them)
+    let sK0 = select(0., ss(.55, .82, n0.y), mat == 0);
+    var th = .5;
+    if (sK0 < .99) {
+      let rs = select(fract(reg.a * 2.3 + reg.b * .7), hs(sd * 17.31), mat == 1);
+      let la = select(i32(rs * 4.99), 1, mat == 0);
+      let lb = select((la + 1 + i32(hs(sd * 3.7) * 2.99)) % 5, 0, mat == 0);
+      let s1 = pk(.52) * ts * mix(.8, 1.25, hs(sd * 5.1)); let s2 = pk(.37) * ts;
+      // (a layer whose weight is ~0 is not sampled: most rock is one type or the other)
+      let m0 = (big - .5) * 1.5 + (big2 - .5) * .8;
+      var ra = PB(vec3f(.5), vec3f(0.), .5); var rb = PB(vec3f(.5), vec3f(0.), .5);
+      if (m0 < .47) { ra = tpl(i.op, gdx, gdy, tw, s1, la); }
+      if (m0 > -.47) { rb = tpl(i.op.zxy + 13.7, gdx.zxy, gdy.zxy, tw.zxy, s2, lb); }
+      let mab = ss(-.12, .12, m0 + (rb.h - ra.h) * .7 * ss(.47, .25, abs(m0))); // continuous where a layer is skipped
+      alb = mix(ra.alb * LG[la], rb.alb * LG[lb], mab);
+      th = mix(ra.h, rb.h, mab);
+      tn = mix(ra.n, rb.n.yzx, mab); tnk = 1.15;
+      // per rock / per region: brightness and hue drift, then the grey-olive of rock under water
+      let vh = hs(sd * 9.13 + floor(reg.b * 4.));
+      alb *= mix(.75, 1.25, vh) * (.8 + .4 * big);
+      let gl = dot(alb, vec3f(.3, .59, .11));
+      alb = mix(vec3f(gl), alb, .5) * mix(vec3f(1.), vec3f(.86, .97, .84), big2);
+      // reef growth on top
+      let upf = ss(.05, .8, n0.y);
+      if (upf > .01) {
+        let cg = tpl(i.op + 5.1, gdx, gdy, tw, pk(.7) * ts, 6);
+        let gw = ss(.05, .3, upf * (.5 + .9 * big2) - th * .5 + cg.h * .35 - .25);
+        alb = mix(alb, cg.alb * LG[6] * vec3f(.85, .95, .78), gw);
+        tn = mix(tn, cg.n, gw);
+      }
+      // a little pink coralline on the sides and green film on the tops (the base's masks, much subtler)
+      alb = mix(alb, vec3f(.40, .20, .24) * (.6 + .8 * th), ss(.62, .72, big2 * .6 + C.c * .5) * (1. - ss(.2, .6, n0.y)) * .35);
+      alb = mix(alb, vec3f(.10, .17, .07) * (.6 + .8 * th), ss(.35, .65, big * .6 + B.c * .5) * upf * .35);
     }
-    // a little pink coralline on the sides and green film on the tops (the base's masks, much subtler)
-    alb = mix(alb, vec3f(.40, .20, .24) * (.6 + .8 * th), ss(.62, .72, big2 * .6 + C.c * .5) * (1. - ss(.2, .6, n0.y)) * .35);
-    alb = mix(alb, vec3f(.10, .17, .07) * (.6 + .8 * th), ss(.35, .65, big * .6 + B.c * .5) * upf * .35);
     vao *= .6 + .4 * ss(.0, .45, th);
     bump = .9; gloss = .08;
     if (mat == 0) {
