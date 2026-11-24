@@ -59,10 +59,10 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
   if (ty < .5) {
     // southern stingray: sand-coloured, mottled, pale speckles; white underneath with a darker rim; eyes and spiracles
     let mot = tx.b * .6 + tx.a * .4;
-    back = mix(vec3f(.15, .125, .085), vec3f(.075, .062, .042), ss(.3, .75, mot)) * (.8 + .4 * tx.a);
-    back += vec3f(.09, .08, .06) * ss(.8, .92, tx.a);
-    back = mix(back, back * .45, spots(i.op.xz, 14., .2, 5.) * .7 * ss(.1, .5, au));
-    back = mix(back, back * 1.5, spots(i.op.xz + 3., 9., .22, 8.) * .5);
+    back = mix(vec3f(.085, .07, .048), vec3f(.03, .025, .018), ss(.3, .7, mot)) * (.8 + .4 * tx.a);
+    back += vec3f(.22, .19, .14) * ss(.78, .9, tx.a);
+    back = mix(back, vec3f(.012), spots(i.op.xz, 11., .26, 5.) * .85 * ss(.1, .5, au));
+    back = mix(back, vec3f(.3, .26, .19), spots(i.op.xz + 3., 8., .2, 8.) * .8);
     back = mix(back, back * 1.35, ss(.6, 1., au) * .6);
     let eye = ss(.05, .025, length(vec2f(abs(i.op.x) - .14, zz - .5)));
     let spir = ss(.07, .03, length(vec2f(abs(i.op.x) - .24, zz - .33))) * .85;
@@ -71,8 +71,8 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
     gl = .25;
   } else if (ty < 1.5) {
     // spotted eagle ray: blue-black back with a white dotted pattern, white belly
-    let sp = spots(i.op.xz * vec2f(1., 1.), 6.5, .26, 3.) * ss(1., .15, au) * ss(-.4, .1, zz);
-    back = mix(vec3f(.012, .016, .028), vec3f(.03, .04, .07), ss(.5, .9, tx.a)) + vec3f(.62, .64, .62) * sp * .85;
+    let sp = spots(i.op.xz * vec2f(1., 1.), 5.2, .3, 3.) * ss(1., .15, au) * ss(-.4, .1, zz);
+    back = mix(vec3f(.006, .008, .016), vec3f(.02, .026, .045), ss(.5, .9, tx.a)) + vec3f(.9, .92, .88) * sp;
     back = mix(back, vec3f(.07, .08, .1), ss(.34, .5, zz) * .5);
     let eye = ss(.035, .014, length(vec2f(abs(i.op.x) - .17, zz - .22)));
     back = mix(back, vec3f(.005), eye);
@@ -113,12 +113,17 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) w
   return o;
 }
 @fragment fn fs(i: PO) -> @location(0) vec4f {
-  let r2 = dot(i.uv, i.uv);
-  let n = .62 + .38 * sin(i.uv.x * 4.1 + i.fl.z * 31.) * sin(i.uv.y * 3.7 - i.fl.z * 17.) + .15 * sin((i.uv.x + i.uv.y) * 9. + i.fl.z * 7.);
-  let al = pow(max(1. - r2, 0.), 1.6) * n * i.fl.y * pow(1. - i.fl.x, 1.3);
+  let sd = i.fl.z;
+  // billowy: a ragged edge from two noise octaves, lit on the side facing up / the sun, dense in the core
+  let a = atan2(i.uv.y, i.uv.x);
+  let rag = .75 + .22 * sin(a * 3. + sd * 11.) + .12 * sin(a * 7. - sd * 5. + i.fl.x * 3.) + .06 * sin(a * 13. + sd * 3.);
+  let r = length(i.uv) / rag;
+  let core = .6 + .4 * sin(i.uv.x * 5.3 + sd * 31.) * sin(i.uv.y * 4.7 - sd * 17.);
+  let al = (1. - ss(.35, 1., r)) * (.45 + .55 * core) * i.fl.y * pow(1. - i.fl.x, 1.2) * ss(0., .08, i.fl.x);
   let z = zone(i.wp); let v = i.wp - g.cam.xyz; let d = length(v);
   let E = sunE(i.wp.y, z) * (.55 + .45 * shadow1(i.wp));
-  var c = vec3f(1.0, .94, .78) * (E * .7 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * 1.0);
+  let lit = .62 + .5 * ss(-.6, .8, i.uv.y) + .25 * ss(.6, 1., r) * ss(-.2, .8, i.uv.y);
+  var c = vec3f(1.0, .94, .78) * (E * .75 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * 1.0) * lit * (1. - .25 * (1. - core) * (1. - r));
   let T = exp(-SIG.g * d) * ss(.15, .8, d);
   c = c * T + fogIn(g.cam.xyz, v / d, d, z, g.sun.xyz) * (1. - T);
   return vec4f(min(max(c * al, vec3f(0.)), vec3f(12.)), al * mix(.5, 1., T));
@@ -144,15 +149,15 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) w
   var c = mix(base * 1.12, base * .5, dip) * n;
   let T = exp(-SIG.g * d);
   c = c * T + fogIn(g.cam.xyz, v / d, d, z, g.sun.xyz) * (1. - T);
-  let al = max(dip * .75, rim * .5) * i.fl.y * ss(1., .85, r);
+  let al = max(dip * .28, rim * .3) * i.fl.y * ss(1., .85, r);
   return vec4f(c * al, al);
 }
 `;
   // ---------------------------------------------------------------- meshes
   // planform of one species: nose edge zl(au) and tail edge zt(au) (au = |x|, wing tip at 1), thickness th(au)
   const PLAN = {
-    sting: { zl: (a) => 0.02 + 0.93 * pow(max(1 - pow(a, 2.2), 0), 0.6), zt: (a) => 0.02 - 0.82 * pow(max(1 - pow(a, 2.1), 0), 0.6), th: (a) => 0.17 * pow(1 - a, 1.0) + 0.006 + 0.17 * exp(-pow(a / 0.3, 2)), tail: 2.0, tr: 0.05 },
-    eagle: { zl: (a) => -0.1 + 0.62 * pow(max(1 - pow(a, 1.35), 0), 0.8) + 0.12 * exp(-pow(a / 0.09, 2)), zt: (a) => -0.1 - 0.34 * pow(max(1 - pow(a, 1.5), 0), 0.6), th: (a) => 0.12 * pow(1 - a, 1.1) + 0.005 + 0.2 * exp(-pow(a / 0.24, 2)), tail: 5.5, tr: 0.022 },
+    sting: { zl: (a) => 0.02 + 0.93 * pow(max(1 - pow(a, 2.2), 0), 0.6), zt: (a) => 0.02 - 0.82 * pow(max(1 - pow(a, 2.1), 0), 0.6), th: (a) => 0.17 * pow(1 - a, 1.0) + 0.006 + 0.17 * exp(-pow(a / 0.3, 2)), tail: 2.0, tr: 0.08 },
+    eagle: { zl: (a) => -0.1 + 0.62 * pow(max(1 - pow(a, 1.35), 0), 0.8) + 0.12 * exp(-pow(a / 0.09, 2)), zt: (a) => -0.1 - 0.34 * pow(max(1 - pow(a, 1.5), 0), 0.6), th: (a) => 0.12 * pow(1 - a, 1.1) + 0.005 + 0.2 * exp(-pow(a / 0.24, 2)), tail: 5.5, tr: 0.032 },
     manta: { zl: (a) => 0.52 - 0.74 * pow(a, 1.35) + 0.07 * exp(-pow((a - 0.13) / 0.05, 2)) - 0.05 * exp(-pow(a / 0.05, 2)) - 0.08 * pow(a, 5), zt: (a) => -0.5 + 0.3 * pow(a, 0.8) + 0.02 - 0.08 * pow(a, 5), th: (a) => 0.11 * pow(1 - a, 1.15) + 0.005 + 0.16 * exp(-pow(a / 0.24, 2)), tail: 1.0, tr: 0.02 },
   };
   function disc(P) {
@@ -175,7 +180,7 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) w
   function species(kind) {
     const P = PLAN[kind], parts = [disc(P), tail(P, P.tail, P.tr, 0)];
     if (kind === 'sting') {   // the spine: a short dark thorn on the tail
-      const m = new Mesh(); m.tube([[0, 0.03, -1.2], [0, 0.045, -1.5], [0, 0.04, -1.85]], (k) => 0.014 * (1 - k / 3.2), 4, true, () => 0); parts.push(m);
+      const m = new Mesh(); m.tube([[0, 0.05, -1.0], [0, 0.08, -1.4], [0, 0.07, -1.9]], (k) => 0.03 * (1 - k / 3.2), 4, true, () => 0); parts.push(m);
     }
     if (kind === 'manta') for (const sx of [-1, 1]) {   // cephalic fins
       const m = new Mesh();
@@ -241,15 +246,15 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) w
   function puff(x, y, z, r, n, up, size) {
     for (let k = 0; k < n && np < NP; k++) {
       const a = rng() * TAU, d = r * rf(0.15, 1), s = rf(0.2, 0.65), o = np * 8; np++;
-      pp[o] = x + cos(a) * d; pp[o + 1] = y + rf(0, 0.12); pp[o + 2] = z + sin(a) * d; pp[o + 3] = size * rf(0.7, 1.3); pp[o + 4] = 0; pp[o + 5] = rf(0.3, 0.55); pp[o + 6] = rng() * 10; pp[o + 7] = 0;
-      pv[(np - 1) * 3] = cos(a) * s; pv[(np - 1) * 3 + 1] = up * rf(0.3, 1); pv[(np - 1) * 3 + 2] = sin(a) * s; pl[np - 1] = rf(3, 5.5);
+      pp[o] = x + cos(a) * d; pp[o + 1] = y + rf(0, 0.12); pp[o + 2] = z + sin(a) * d; pp[o + 3] = size * rf(0.7, 1.3); pp[o + 4] = 0; pp[o + 5] = rf(0.35, 0.7); pp[o + 6] = rng() * 10; pp[o + 7] = 0;
+      pv[(np - 1) * 3] = cos(a) * s; pv[(np - 1) * 3 + 1] = up * rf(0.3, 1); pv[(np - 1) * 3 + 2] = sin(a) * s; pl[np - 1] = rf(5, 9);
     }
   }
   function puffUpdate(dt) {
     for (let k = 0; k < np; k++) {
       const o = k * 8; pp[o + 4] += dt / pl[k];
       if (pp[o + 4] >= 1) { np--; if (k < np) { for (let j = 0; j < 8; j++) pp[o + j] = pp[np * 8 + j]; for (let j = 0; j < 3; j++) pv[k * 3 + j] = pv[np * 3 + j]; pl[k] = pl[np]; } k--; continue; }
-      const damp = exp(-dt * 1.5); pv[k * 3] *= damp; pv[k * 3 + 1] = pv[k * 3 + 1] * damp + 0.02 * dt; pv[k * 3 + 2] *= damp;
+      const damp = exp(-dt * 1.5); pv[k * 3] *= damp; pv[k * 3 + 1] = pv[k * 3 + 1] * damp - (pp[o + 4] > 0.35 ? 0.05 : -0.02) * dt; pv[k * 3 + 2] *= damp;
       pp[o] += pv[k * 3] * dt; pp[o + 1] += pv[k * 3 + 1] * dt; pp[o + 2] += pv[k * 3 + 2] * dt;
     }
     if (np) Q.writeBuffer(pbuf, 0, pp.buffer, 0, np * 32);
@@ -279,7 +284,7 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) w
       r.t += dt; r.ampT = 0.5; r.freq = 1.6;
       if (r.t > r.react) {
         r.state = LIFT; r.t = 0; r.yaw = atan2(away[0], -away[2]) + rf(-0.5, 0.5);
-        puff(r.p[0], r.p[1], r.p[2], 1.0 * r.scale, 70, 0.7, 0.85 * (0.6 + r.scale)); if (r.site >= 0) pitLift(r); if (r.site >= 0) { sites[r.site].used = -1; r.site = -1; }
+        puff(r.p[0], r.p[1], r.p[2], 1.1 * r.scale, 110, 0.9, 0.5 * (0.6 + r.scale)); if (r.site >= 0) pitLift(r); if (r.site >= 0) { sites[r.site].used = -1; r.site = -1; }
       }
     } else if (r.state === LIFT) {
       r.t += dt; r.ampT = 1; r.freq = 3.0; yawDes = r.yaw;
