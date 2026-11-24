@@ -73,9 +73,9 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
   } else {
     let base = mix(vec3f(.34, .165, .095), vec3f(.48, .33, .22), sand);
     let m1 = vn3(q * vec3f(14., 30., 30.) + seed) * .6 + vn3(q * 60. + seed * 2.) * .4;
-    let m2 = vn3(q * vec3f(26., 50., 50.) + 11. + seed + t * .05);
+    let m2 = vn3(q * vec3f(26., 50., 50.) + 11. + seed + vec3f(t * .3, 0., t * .25));
     // chromatophores: broad warm and dark patches with fine flecks, drifting slowly like clouds
-    let cl = vn3(vec3f(q.x * 11., q.y * 24., q.z * 24.) + vec3f(t * .07, 0., seed));
+    let cl = vn3(vec3f(q.x * 11., q.y * 24., q.z * 24.) + vec3f(t * .45, t * .2, seed));
     var col = base * (1. + (m1 - .5) * 1.4 * mot);
     col = mix(col, base * vec3f(.42, .32, .28), ss(.5, .75, cl) * mot * .8);
     col = mix(col, base * vec3f(1.35, 1.25, 1.15), ss(.62, .9, m2) * mot * .4);
@@ -111,10 +111,10 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
     let h = hgt;
     let r1 = cross(dpy, N); let r2 = cross(N, dpx); let det = dot(dpx, r1);
     let grad = sign(det) * (dhx * r1 + dhy * r2);
-    N = normalize(abs(det) * N - grad * .0014 * ss(4., 1.2, dist));
+    N = normalize(abs(det) * N - grad * .0042 * ss(4., 1.2, dist));
     // papillae catch the light: pale tips, dark crevices between them
     alb = alb * (1. - .3 * pap * ss(.45, .0, h)) + vec3f(.34, .31, .26) * pap * ss(.55, .95, h) * (1. - dark * .6) * .5;
-    gloss = mix(.6, .3, pap);
+    gloss = mix(.28, .12, pap);
   }
   alb = max(alb, vec3f(.004));
   let L = g.sun.xyz; let V = normalize(g.cam.xyz - i.wp);
@@ -130,7 +130,7 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
   var c = alb * (dl + am * 2.8);
   // wet skin: a tight highlight and a soft sheen at grazing angles; blanched skin glows a little from within
   let H = normalize(V + L);
-  c += E * (.3 + ca) * pow(sat(dot(N, H)), mix(18., 90., gloss)) * gloss * ndl * 1.6 * spec;
+  c += E * (.3 + ca) * pow(sat(dot(N, H)), mix(8., 60., gloss)) * gloss * ndl * 0.9 * spec;
   c += (amb(i.wp, reflect(-V, N), v1.g, z) * ao) * .12 * pow(1. - sat(dot(N, V)), 3.) * gloss;
   c += alb * pale * am * .5;
     return fin(fog(c, i.wp, z));
@@ -154,13 +154,14 @@ struct IO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   let n2 = vn3(p3 * 4.3 + 17.);
   let lump = vn3(vec3f(i.uv * 1.7, seed * .5 + age * .5));
   let core = 1. - ss(.2, 1., r + (n - .5) * (.8 + age * 1.3) + (n2 - .5) * .3 + (lump - .5) * .5);
-  var al = ss(0., .8, core) * i.b.y;
-  al *= ss(.35, 1.8, d);   // thin out close to the camera: fewer layers of overdraw when inside the cloud
+  var al = ss(0., .45, core) * i.b.y;
+  al *= ss(.3, 1.5, d);   // thin out close to the camera: fewer layers of overdraw when inside the cloud
   if (al < .002) { discard; }
   let T = exp(-SIG.g * d);
   let fg = fogIn(g.cam.xyz, v / d, d, z, g.sun.xyz);
   let E = sunE(i.wp.y, z) * (.3 + .7 * i.sh);
   var c = vec3f(.05, .044, .03) * (E * .3 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * 1.1) * (.5 + n * .8) + vec3f(.004, .003, .003);
+  c *= 1. + 2.2 * ss(-.2, .9, i.uv.y) * (.5 + n);   // lit on top
   c = c * T + fg * (1. - T);
   return vec4f(min(max(c * al, vec3f(0.)), vec3f(12.)), al);
 }
@@ -344,7 +345,7 @@ function octArmChain(O, bx, by, bz, gx, gy, gz, L, upx, upy, upz, upk, latk, sg,
       ch[k * 3] = px; ch[k * 3 + 1] = py; ch[k * 3 + 2] = pz;
     }
     // wriggle
-    const u = s / L, am = wig * Math.pow(u, 1.2), w1 = am * Math.sin(ph + u * 6 - t * 2.1), w2 = am * 0.6 * Math.sin(ph * 1.7 + u * 4.4 - t * 1.6);
+    const u = s / L, am = wig * (0.35 + u) * u, w1 = am * Math.sin(ph + u * 7 - t * 2.2), w2 = am * 0.8 * Math.sin(ph * 1.7 + u * 5.2 - t * 1.7);
     ch[k * 3] += nx * w1 + hx * w2; ch[k * 3 + 1] += ny * w1 + hy * w2; ch[k * 3 + 2] += nz * w1 + hz * w2;
   }
 }
@@ -461,7 +462,7 @@ function octInkBurst(O, dx, dy, dz) {
   for (let k = 0; k < 30; k++) {
     const a = octRn() * TAU, b = octRn() * 2 - 1, r = Math.sqrt(1 - b * b), ux = r * Math.cos(a), uy = b, uz = r * Math.sin(a), sp = 0.14 + 0.22 * octRn();
     const h = 0.2 + 1.3 * (k / 30) * (0.6 + 0.4 * octRn()), w = 0.9 - 0.5 * (k / 30);
-    octInkAdd(O.P[0] + O.A[0] * h + ux * 0.14 * w - dx * 0.1, O.P[1] + O.A[1] * h + uy * 0.1 - dy * 0.1, O.P[2] + O.A[2] * h + uz * 0.14 * w - dz * 0.1, ux * sp * 0.7 - dx * 0.15, 0.3 + 0.4 * octRn() + uy * 0.1, uz * sp * 0.7 - dz * 0.15, 0.36 + 0.24 * octRn(), 15 + 5 * octRn(), 0.8 + 0.2 * octRn());
+    octInkAdd(O.P[0] + O.A[0] * h + ux * 0.14 * w - dx * 0.1, O.P[1] + O.A[1] * h + uy * 0.1 - dy * 0.1, O.P[2] + O.A[2] * h + uz * 0.14 * w - dz * 0.1, ux * sp * 0.7 - dx * 0.15, 0.3 + 0.4 * octRn() + uy * 0.1, uz * sp * 0.7 - dz * 0.15, 0.34 + 0.2 * octRn(), 20 + 6 * octRn(), 1.0);
   }
 }
 // a thin haze round the blob that spreads for longer: the ink disperses slowly
@@ -479,16 +480,16 @@ function octInkStep(dt) {
     const dm = Math.exp(-dt * 0.9), sd = k.p[o + 6] * 40, px = k.p[o], py = k.p[o + 1], pz = k.p[o + 2];
     k.v[i * 3] = k.v[i * 3] * dm + Math.sin(py * 2.3 + t * 0.6 + sd) * 0.05 * dt; k.v[i * 3 + 1] = k.v[i * 3 + 1] * dm + (Math.sin(px * 1.7 + pz * 1.3 + t * 0.5 + sd) * 0.03 + 0.01) * dt; k.v[i * 3 + 2] = k.v[i * 3 + 2] * dm + Math.cos(py * 2.1 - t * 0.55 + sd) * 0.05 * dt;
     k.p[o] += k.v[i * 3] * dt; k.p[o + 1] += k.v[i * 3 + 1] * dt; k.p[o + 2] += k.v[i * 3 + 2] * dt;
-    k.p[o + 3] = k.s0[i] * (1 + 4.6 * Math.sqrt(a));
+    k.p[o + 3] = k.s0[i] * (1 + 2.6 * (1 - Math.exp(-a * k.life[i] * 6)) + 1.4 * Math.sqrt(a));
     // alpha: grows in over the first moments, thins out as the cloud spreads
-    k.p[o + 5] = Math.min(1, a / 0.03) * Math.pow(1 - a, 1.3) * k.a0[i];
+    k.p[o + 5] = Math.min(1, a / 0.03) * Math.min(1, Math.pow(1 - a, 0.8) * 1.4) * k.a0[i];
   }
 }
 
 // ---------------------------------------------------------------- behaviour
 const octSkin = (O, dt, tp, td, tpap, tmot, rate, rf) => {
   const k = 1 - Math.exp(-rate * dt), kf = 1 - Math.exp(-(rf || rate) * dt);
-  O.pale += (tp - O.pale) * kf; O.dark += (td - O.dark) * kf; O.pap += (tpap - O.pap) * k; O.mot += (tmot - O.mot) * k;
+  O.pale += (tp - O.pale) * kf; O.dark += (td - O.dark) * kf; O.pap += (tpap * (0.75 + 0.25 * Math.sin(g_octT * 1.1 + O.i)) - O.pap) * k; O.mot += (tmot * (0.8 + 0.2 * Math.sin(g_octT * 1.7 + O.i * 2)) - O.mot) * k;
 };
 // turn the axes: up axis towards (ax, ay, az) and the facing direction towards (fx, fy, fz) (made perpendicular), at rate k per second
 function octTurn(O, dt, ax, ay, az, fx, fy, fz, k) {
@@ -557,7 +558,7 @@ function octCrawlArms(O, dt, lead) {
     } else if (O.pl[i]) {
       const dx = O.tip[o] - O.ideal[o], dy = O.tip[o + 1] - O.ideal[o + 1], dz = O.tip[o + 2] - O.ideal[o + 2], dd = octLen(dx, dy, dz);
       let go = (lead > 0 ? dd > 0.2 : dd > 0.5) && busy < 3;
-      if (!go && lead === 0 && O.fidget < 0 && busy < 1 && octRn() < 0.5) { O.fidget = 2.5 + octRn() * 4; go = true; }
+      if (!go && lead === 0 && O.fidget < 0 && busy < 1 && octRn() < 0.9) { O.fidget = 1.0 + octRn() * 1.8; go = true; }
       if (go) { busy++; O.stepT[i] = 0; O.pl[i] = 0; for (let k = 0; k < 3; k++) { O.stepA[o + k] = O.tip[o + k]; O.stepB[o + k] = O.ideal[o + k] + (lead > 0 ? 0 : (octRn() - 0.5) * 0.1); } }
     } else { // settling after a swim
       const e = Math.min(1, dt * 7); for (let k = 0; k < 3; k++) O.tip[o + k] += (O.ideal[o + k] - O.tip[o + k]) * e;
@@ -598,7 +599,7 @@ function octStep(O, dt) {
         octTurn(O, dt, O.perchN[0], O.perchN[1], O.perchN[2], fx, fy, fz, crawl ? 3 : 1.5);
         O.lean += (lean - O.lean) * Math.min(1, dt * 2); O.flat += (0 - O.flat) * Math.min(1, dt * 3); O.curl += ((crawl ? 0.4 : 0.3) - O.curl) * Math.min(1, dt * 3);
         octSkin(O, dt, 0, crawl ? 0.08 : 0.05 + ds * 0.4 + 0.07 * Math.sin(g_octT * 0.3 + O.i), crawl ? 0.5 : dist < 14 ? 0.98 : 0.85, crawl ? 0.55 : dist < 14 ? 0.5 : 0.8, 1.6);
-        O.wigAmp += ((crawl ? 0.07 : 0.055) - O.wigAmp) * Math.min(1, dt * 2);
+        O.wigAmp += ((crawl ? 0.13 : 0.11) - O.wigAmp) * Math.min(1, dt * 2);
         if (crawl || dist >= 14) O.curious = false;
         if (O.vis) octCrawlArms(O, dt, crawl ? 0.12 : 0);
         if (!crawl && O.t > O.restT && dist > 12 && octPickWp(O)) { octState(O, OS.CRAWL); }
@@ -677,18 +678,18 @@ function octStep(O, dt) {
 
 // staging: a camera 3 m to the side of the perch-den line with a clear view of both, and the LAUV coming in from the far side of the perch
 function octClear(x0, y0, z0, x1, y1, z1, r) { const l = octLen(x1 - x0, y1 - y0, z1 - z0); for (let s = 0.2; s < l; s += 0.15) { const k = s / l; if (sdAt(x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, z0 + (z1 - z0) * k) > -r) return false; } return true; }
-function octStage(O, vehOnly) {
+function octStage(O, vehOnly, sdWant) {
   let fx = O.front[0] - O.perch[0], fz = O.front[2] - O.perch[2]; const fl = octLen(fx, 0, fz) || 1; fx /= fl; fz /= fl;
   const mx = (O.perch[0] + O.front[0]) / 2, my = (O.perch[1] + O.front[1]) / 2 + 0.25, mz = (O.perch[2] + O.front[2]) / 2;
   let best = null, bs = -1;
-  for (let sd = -1; sd <= 1; sd += 2) for (let dd = 2.4; dd <= 3.8; dd += 0.35) for (let ey = 0.5; ey <= 1.3; ey += 0.2) for (let rot = -0.5; rot <= 0.5; rot += 0.25) {
+  for (let sd = -1; sd <= 1; sd += 2) for (let dd = 2.0; dd <= 3.2; dd += 0.3) for (let ey = 0.5; ey <= 1.3; ey += 0.2) for (let rot = -0.5; rot <= 0.5; rot += 0.25) {
     const a = Math.atan2(-fz * sd, fx * sd) + rot, cx = mx + Math.sin(a) * dd, cz = mz + Math.cos(a) * dd, cy = O.perch[1] + ey;
     if (sdAt(cx, cy, cz) > -0.5) continue;
     if (!octClear(cx, cy, cz, O.perch[0], O.perch[1] + 0.2, O.perch[2], 0.15) || !octClear(cx, cy, cz, O.front[0], O.front[1], O.front[2], 0.15) || !octClear(cx, cy, cz, O.den[0] + O.dout[0] * 0.3, O.den[1] + O.dout[1] * 0.3, O.den[2] + O.dout[2] * 0.3, 0.1)) continue;
     // the vehicle's approach: from behind the perch (away from the den), 7 m out
     const vx = O.perch[0] - fx * 7, vz = O.perch[2] - fz * 7, vy = O.perch[1] + 0.7;
     if (!octClear(vx, vy, vz, O.perch[0], vy, O.perch[2], 0.35)) continue;
-    const sc = 10 - dd - 2 * Math.abs(rot) - 0.5 * Math.abs(ey - 0.8); if (sc > bs) { bs = sc; best = { cam: [cx, cy, cz, O.perch[0] * 0.6 + O.front[0] * 0.4, O.perch[1] * 0.6 + O.front[1] * 0.4 + 0.15, O.perch[2] * 0.6 + O.front[2] * 0.4], veh: [vx, vy, vz], yaw: Math.atan2(fx, -fz) }; }
+    const sc = 10 - dd - 2 * Math.abs(rot) - 0.5 * Math.abs(ey - 0.8) + (sdWant && sd === sdWant ? 3 : 0); if (sc > bs) { bs = sc; best = { cam: [cx, cy, cz, O.perch[0] * 0.6 + O.front[0] * 0.4, O.perch[1] * 0.6 + O.front[1] * 0.4 + 0.15, O.perch[2] * 0.6 + O.front[2] * 0.4], veh: [vx, vy, vz], yaw: Math.atan2(fx, -fz) }; }
   }
   if (!best) { // no clear side view: 6 m from the animal on the open side
     best = { cam: null, veh: [O.perch[0] - fx * 6, O.perch[1] + 0.8, O.perch[2] - fz * 6], yaw: Math.atan2(fx, -fz) };
@@ -780,7 +781,7 @@ window.__octo = {
   scare(i) { const O = octO[i]; if (O && O.state <= OS.CRAWL) { octState(O, OS.ALARM); O.pl.fill(0); O.stepT.fill(-1); } },
   noscare: false,
   // stage octopus i for a clip: fixed camera, LAUV 7 m out on the far side (returns the pose, or null)
-  stage(i) { const O = octO[i], b = octStage(O, false); octG.follow = null; if (b.cam) octG.cam = b.cam; lauvPlace(b.veh[0], b.veh[1], b.veh[2], b.yaw, 0); lv.setSpeed(1.1); return b; },
+  stage(i, side) { const O = octO[i], b = octStage(O, false, side); octG.follow = null; if (b.cam) octG.cam = b.cam; lauvPlace(b.veh[0], b.veh[1], b.veh[2], b.yaw, 0); lv.setSpeed(1.1); return b; },
   canStage(i) { const O = octO[i]; return !!octStage(O, false).cam; },
   // CPU cost of one update(1/60) (physics of all animals, geometry of the visible ones, uploads), averaged over n calls
   bench(n = 300) { const f = FAUNA.find((q) => q.name === 'octopus'); octG.bench = true; const t0 = performance.now(); for (let i = 0; i < n; i++) f.update(1 / 60); const r = (performance.now() - t0) / n; octG.bench = false; return r; },
