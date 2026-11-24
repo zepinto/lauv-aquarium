@@ -283,9 +283,9 @@ const KDF = vec3f(.043, .045, .042);
 // with a forward-scattering glow round the sun; it dims with depth (WKD). Every ray (terrain, surface, background,
 // sprites) is fogged with the same wFog, so the horizon has no seam.
 const WEXT = vec3f(.052, .031, .026);
-const WHOR = vec3f(.035, .19, .56);
+const WHOR = vec3f(.025, .15, .48);
 const WUPC = vec3f(.30, .95, 2.4);
-const WDNC = vec3f(.008, .06, .21);
+const WDNC = vec3f(.006, .045, .17);
 const WKD = vec3f(.06, .03, .022);
 fn wInf(y: f32, rd: vec3f, sun: vec3f) -> vec3f {
   let u = rd.y;
@@ -394,7 +394,7 @@ fn sunE(y: f32, z: f32) -> vec3f { return SUNC * exp(kd(z) * (min(y, 0.) / g.sun
 fn vol(p: vec3f) -> vec4f { return textureSampleLevel(tV, sC, (p - vec3f(${OX}., ${OY}., ${OZ}.)) / vec3f(PER, ${NY * VS}, PER), 0.); }
 fn amb(p: vec3f, n: vec3f, sky: f32, z: f32) -> vec3f {
   let up = n.y * .5 + .5;
-  return mix(vec3f(.24, .48, .54), vec3f(.34, .56, .82), z) * exp(kd(z) * min(p.y, 0.) * 1.2) * (.3 + .7 * sky) * (.2 + .8 * up * up) * .95 * (.55 + .45 * sat(-p.y / 30.)) + vec3f(.003, .010, .016);
+  return mix(vec3f(.24, .48, .54), vec3f(.34, .56, .82), z) * exp(kd(z) * min(p.y, 0.) * 1.2) * (.35 + .65 * sky) * (.32 + .68 * up * up) * (.55 + .45 * sat(-p.y / 30.)) + vec3f(.003, .010, .016);
 }
 fn zone(p: vec3f) -> f32 { return g.sun.w; }
 fn side(p: vec3f, n: vec3f, open: f32, z: f32) -> vec3f { return mix(WCOL, PCOL, z) * exp(kd(z) * min(p.y, 0.)) * open * (1. - abs(n.y)) * .7; }
@@ -622,7 +622,8 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let z = zone(i.wp);
   let E = sunE(i.wp.y, z) * shadowS(i.wp + n0 * .25, i.cp.xy, dist) * vehSh(i.wp); // LOOK: soft shadows (PCSS near, cheaper far)
   let ndl = sat(dot(N, L));
-  let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z)) * ao;
+  // LOOK: + light bounced up from the sunlit sand onto faces that look down (rock detail stays readable in shadow)
+  let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z) + sunE(i.wp.y, z) * vec3f(.16, .15, .11) * sat(-N.y * .8 + .25)) * ao;
   // LOOK: caustics as bright lines over an even base (no dark blotches between them)
   // LOOK: caustics as thin bright lines over an even base: the dark cells between them read as blotches when strong
   let dl = E * ndl * (2.1 + mix(vec3f(.4), ca, ss(.05, .35, dot(n0, L))) * .85);
@@ -728,20 +729,23 @@ struct GO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   let V = normalize(g.cam.xyz - i.wp); let L = g.sun.xyz;
   let z = zone(i.wp);
   let lt = sD(vec2f(i.uv.x * .13 + i.sd.x * 3.7, i.uv.y * .8 + i.sd.y * 5.3));
+  // LOOK: ragged, torn margins instead of a clean polygon edge (TAA smooths the outline)
+  let rag = lt.a * .55 + .45 * fract(sin(floor(i.uv.y * 23. + i.sd.y * 50.) * 91.7) * 4375.5);
+  if (abs(i.uv.x) > 1. - .32 * rag * ss(26., 4., dist) * ss(.02, .15, i.uv.y)) { discard; }
   let vv = vol(i.wp + vec3f(0., .8, 0.));
   let E = sunE(i.wp.y, z) * shadow1(i.wp + L * .3);
   let ndl = dot(n, L);
   // LOOK: duller, olive-brown kelp (less yellow), with a midrib and cell texture so blades are not flat
   let lum0 = dot(i.col, vec3f(.3, .59, .11));
   let col = mix(vec3f(lum0), i.col, .62) * vec3f(.95, 1., .78) * (.85 - .25 * ss(.2, .9, i.uv.y));
-  let rib = 1. - .3 * ss(.07, .0, abs(i.uv.x)) * ss(.05, .2, i.uv.y);
+  let rib = (1. - .3 * ss(.07, .0, abs(i.uv.x)) * ss(.05, .2, i.uv.y)) * (.9 + .1 * sin(abs(i.uv.x) * 30. + i.sd.x * 9.)); // + fine veins
   var alb = col * rib * (.72 + .28 * ss(0., .25, abs(i.uv.x))) * mix(.5, 1.12, i.uv.y) * (1. - .45 * ss(30., 8., dist) * ss(.6, 1., sin(i.uv.y * 40. - abs(i.uv.x) * 7. + i.sd.x * 40.))) * (.58 + .42 * ss(0., .13, abs(i.uv.x))) * (.5 + 1.0 * lt.b) * (.65 + .7 * lt.a);
   let ndv = sat(dot(n, V));
   alb *= mix(.55, 1., ss(.0, .5, 1. - abs(i.uv.x))); // darker, softer margins instead of a hard edge
   let ir = .5 + .5 * cos(TAU * (vec3f(0., .33, .67) + ndv * 1.1 + i.sd.x * .22 + i.uv.y * .5 + .55));
   alb = mix(alb, alb * .5 + ir * vec3f(.15, .13, .30), i.pr.z * (1. - ndv) * .8);
   let tr = (max(-ndl, 0.) * 1.4 + .12) * i.pr.y;
-  let trc = alb * mix(vec3f(1.), vec3f(1.6, 1.7, .9), sat(i.pr.y) * (1. - i.pr.z));
+  let trc = alb * mix(vec3f(1.), vec3f(1.35, 1.3, .7), sat(i.pr.y) * (1. - i.pr.z)); // LOOK: transmitted light olive-gold, not lime
   let aov = sat((vv.r - .5) * 6.) * mix(.4, 1., i.uv.y);
   let am = (amb(i.wp, n, vv.g, z) + amb(i.wp, -n, vv.g, z) * i.pr.y * .55 * vec3f(1.1, 1.15, .7) + side(i.wp, n, sat((vv.r - .5) * 4.), z) * .6) * (.3 + .7 * aov);
   var c = E * (.06 + ca * 1.5) * (alb * max(ndl, 0.) + trc * tr) + alb * am;
@@ -749,6 +753,8 @@ struct GO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   c += E * (pow(sat(dot(n, H)), 40.) * (.45 + ir * i.pr.z * 2.) + pow(sat(dot(n, H)), 9.) * .07) + am * ir * i.pr.z * pow(1. - ndv, 3.) * 1.5;
   c += E * trc * i.pr.y * (pow(sat(dot(-V, L)), 2.) * 3.2 + .25 * lt.b) * (.5 + 1.2 * ss(0., .4, abs(i.uv.x) * -1. + .5));
   c += alb * i.pr.w * (.5 + 3. * dot(am + E * .3, vec3f(.1, .5, .5)));
+  // LOOK: translucency: where the sun lights the far side of the blade, the side we see glows through
+  c += E * trc * i.pr.y * sat(-dot(n, L)) * sat(dot(n, V) * 4.) * 1.1 * (.6 + .6 * lt.b);
   return fin(fog(c, i.wp, z));
 }
 `;
@@ -869,6 +875,8 @@ fn surfBelow(wp: vec3f) -> vec3f {
   // the water below, seen at a flatter angle: close to the haze at the horizon, so the surface fades into it
   let refl = wInf(0., normalize(vec3f(R.x, R.y * .3, R.z)), g.sun.xyz) * 1.2 + vec3f(.02, .07, .12);
   var c = mix(refl, sky * (1. - fr) + refl * fr, win);
+  // LOOK: at grazing angles the far surface takes the colour of the haze (no flat lid at the horizon)
+  c = mix(wInf(-2., normalize(vec3f(V.x, .02, V.z)), g.sun.xyz), c, ss(.03, .32, V.y));
   // crest lines: the caustic pattern on the underside, brightest near the window
   let cr = textureSample(tW, sR, pu(wp.xz, 9.) + s * .02).r;
   c += vec3f(.7, .9, 1.) * min(cr, 3.) * .35 * fl * (.25 + .75 * win);
@@ -1015,7 +1023,7 @@ const W_RAYS = S_G + W_FS + /*wgsl*/`
   let mu = max(dot(rd, sx), 0.);
   let ph = mix(.2 + 2.0 * mu * mu * mu, .8, g.sun.w);
   let wc = mix(WCOL + vec3f(.04, .07, .05), PCOL + vec3f(.28, .16, .12), g.sun.w);
-  return vec4f(min(acc * dt * sgz * wc * SUNC * ph * g.mis.y * (1. - .55 * g.sun.w) * .7, vec3f(20.)), zl); // LOOK: .7
+  return vec4f(min(acc * dt * sgz * wc * SUNC * ph * g.mis.y * (1. - .55 * g.sun.w) * .95, vec3f(20.)), zl); // LOOK: shafts
 }
 `;
 // depth-aware 3x3 blur of the half-res shafts (hides the sampling dither)
@@ -1122,12 +1130,12 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
   c += acc / ws;
   let bl = textureSampleLevel(tB, sC, uv, 0.).rgb;
   c = mix(c, bl, .06) + bl * .03;
-  c *= g.mis.x * 1.35; // LOOK: exposure (the darker water column and even caustics need a little more)
+  c *= g.mis.x * 1.25; // LOOK: exposure (the darker water column and even caustics need a little more)
   let q = uv - .5;
   c *= 1. - dot(q, q) * .55;
   c = tmap(c);
   let l0 = dot(c, vec3f(.2126, .7152, .0722));
-  let l = mix(l0, l0 * l0 * (3. - 2. * l0), .45); // LOOK: gentler S-curve and saturation (no bleached highlights)
+  let l = mix(l0, l0 * l0 * (3. - 2. * l0), .62); // LOOK: gentler S-curve and saturation (no bleached highlights)
   c *= l / max(l0, 1e-4);
   c = mix(c, vec3f(l), ss(.6, 1., l) * .15);
   c = mix(vec3f(l), c, 1.18) + vec3f(.004, .002, 0.);
