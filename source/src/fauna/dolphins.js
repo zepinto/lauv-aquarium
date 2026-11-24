@@ -18,10 +18,10 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   let w = clamp((.2 - l.x) / .7, 0., 1.);
   let wt = w * w; let k = 5.2;
   let arg = ph - l.x * k;
-  let ym = .105 * amp;
+  let ym = .125 * amp;
   let dy = ym * wt * sin(arg) - ym * .22 * (1. - w) * sin(arg + .5);
   let slope = ym * (-k * wt * cos(arg) - 2. * w / .7 * sin(arg));
-  let dz = i.d.x * w * w * .22 + .014 * amp * w * sin(arg + 1.3);
+  let dz = i.d.x * w * w * .22 + .03 * amp * w * sin(arg + 1.3);
   l.y += dy; l.z += dz;
   // the flippers steer: swing up / down with d.y
   if (abs(part + .88) < .05) { l.y += i.d.y * (abs(l.z) - .08) * 1.2; }
@@ -155,7 +155,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   const pod = { mode: 'cruise', t: 0, cool: 0, lx: 0, lz: 0, head: 0, spd: 2.3, orbit: 1, still: 0, deep: 0, init: false, visits: 0 };
   const CRUISE_OFF = [[0, 0], [-3.2, 2.6], [-3.6, -2.4], [-6.5, 0.6], [-3.6, 3.6]];   // [forward, right] in the leader's frame
   // escort slots in the LAUV's frame: forward, right, height above the vehicle (m): bow riders ahead, flank, wake
-  const SLOTS = [[2.7, 0.85, 0.55], [2.2, -1.05, 0.4], [0.2, 1.7, 0.9], [-1.2, -1.8, 0.7], [-0.4, 2.7, 0.2]];
+  const SLOTS = [[2.2, 1.0, 0.45], [1.7, -1.2, 0.35], [0.1, 1.6, 0.5], [-1.0, -1.7, 0.45], [-0.5, 2.4, 0.15]];
   const wrapA = (a) => a - TAU * floor((a + PI) / TAU);
   const ready = () => typeof window.__app === 'object';
   const tgt = new Float64Array(3), vd = new Float64Array(3);
@@ -250,7 +250,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
       const cxp = cos(th) * 4.5, czp = sin(th) * 4.5;
       tgt[0] = bfV.x + (ox + (cxp - ox) * k) + bfV.vx * lead * (1 - k); tgt[2] = bfV.z + (oz + (czp - oz) * k) + bfV.vz * lead * (1 - k);
       slotY = bfClamp(bfV.y + sl[2], -5.5, -0.55);
-      tvx = bfV.vx * (1 - k); tvz = bfV.vz * (1 - k); vmax = pod.mode === 'approach' ? 6 : 5; gain = 1.6;
+      tvx = bfV.vx * (1 - k); tvz = bfV.vz * (1 - k); vmax = pod.mode === 'approach' ? 8 : 5; gain = 1.6;
       tgt[0] = bfV.x + wrapD(tgt[0] - bfV.x); tgt[2] = bfV.z + wrapD(tgt[2] - bfV.z);
     } else {
       const o = CRUISE_OFF[i], h = pod.head, f0 = sin(h), f1 = -cos(h), r0 = cos(h), r1 = sin(h);
@@ -293,9 +293,9 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
     // --- swimming: beat frequency follows speed, amplitude follows effort (gliding in the bow wave, hard when climbing / catching up)
     const catchUp = escort ? bfClamp(hypot(dx, dz) / 2.5, 0, 1) : 0;
     let ampT = 0.3 + 0.12 * sp + 0.4 * bfClamp(d.v[1] * 0.5, 0, 1) + 0.45 * catchUp;
-    if (escort && catchUp < 0.25 && pod.mode === 'escort') ampT = 0.1 + 0.35 * bfClamp(abs(d.v[1]), 0, 1);   // riding the pressure wave: almost no beat
+    if (escort && catchUp < 0.25 && pod.mode === 'escort') ampT = 0.5 + 0.3 * bfClamp(abs(d.v[1]), 0, 1);   // riding the pressure wave: almost no beat
     d.amp += (bfClamp(ampT, 0.08, 1) - d.amp) * min(1, 2.5 * dt);
-    d.phase += TAU * (0.55 + 0.5 * sp) * dt;
+    d.phase += TAU * (0.9 + 0.45 * sp) * dt;
     d.bend += (bfClamp(d.yawRate * 0.8, -0.9, 0.9) - d.bend) * min(1, 6 * dt);
     d.flip += (bfClamp(-d.v[1] * 0.12, -0.3, 0.3) - d.flip) * min(1, 4 * dt);
     // --- breath: the blowhole clears the surface -> exhale bubbles and a blow
@@ -337,7 +337,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
     } else if (pod.mode === 'approach' || pod.mode === 'escort') {
       if (!moving) pod.still += dt; else pod.still = max(0, pod.still - dt);
       pod.deep = bfV.depth > 15 ? pod.deep + dt : 0;
-      if (pod.mode === 'approach' && (pod.t > 30 || dist < 9)) { pod.mode = 'escort'; pod.t = 0; }
+      if (pod.mode === 'approach' && (pod.t > 30 || dist < 6)) { pod.mode = 'escort'; pod.t = 0; }
       if (pod.mode === 'escort' && (pod.t > 75 || pod.still > 14 || pod.deep > 6)) {
         pod.mode = 'leave'; pod.t = 0; pod.cool = 70; pod.orbit = -pod.orbit; pod.visits++;
         // swim away from the vehicle
