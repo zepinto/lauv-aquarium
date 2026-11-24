@@ -1,0 +1,23 @@
+Third-party assets
+==================
+
+Material textures in textures/ (and source/textures/), loaded by source/src/look.js
+------------------------------------------------------------------------------------
+From Poly Haven (https://polyhaven.com), licensed CC0 1.0 Universal (public domain dedication,
+https://creativecommons.org/publicdomain/zero/1.0/). No attribution is required; the authors are credited here anyway.
+Each was downloaded at 2K and repacked at 1024x1024: N_name_alb.jpg is the diffuse (albedo) map, N_name_nh.jpg holds
+the OpenGL normal map in RG and the displacement (height, stretched to the full range) in B.
+
+- seaside_rock (Seaside Rock) by Dimitrios Savva: https://polyhaven.com/a/seaside_rock
+- rock_face_03 (Rock Face 03) by Dario Barresi, Rico Cilliers: https://polyhaven.com/a/rock_face_03
+- rock_pitted_mossy (Rock Pitted Mossy) by Dimitrios Savva, Rico Cilliers: https://polyhaven.com/a/rock_pitted_mossy
+- tiger_rock (Tiger Rock) by Dario Barresi: https://polyhaven.com/a/tiger_rock
+- rock_boulder_cracked (Rock Boulder Cracked) by Dario Barresi, Dimitrios Savva: https://polyhaven.com/a/rock_boulder_cracked
+- sand_03 (Sand 03) by Charlotte Baglioni: https://polyhaven.com/a/sand_03
+- coral_ground_02 (Coral Ground 02) by Rob Tuytel: https://polyhaven.com/a/coral_ground_02
+- coral_gravel (Coral Gravel) by Rob Tuytel: https://polyhaven.com/a/coral_gravel
+
+Other assets
+------------
+- lauv-omst.glb: OceanScan LAUV model (OceanScan-MST).
+- The base code is Abyssal Garden (MIT, see LICENSE).

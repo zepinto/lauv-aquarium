@@ -277,14 +277,35 @@ fn kd(z: f32) -> vec3f { return mix(KD, KDZ, z); }
 fn sg(z: f32) -> vec3f { return mix(SIG, vec3f(.034, .026, .022), z); }
 fn fin(c: vec3f) -> vec4f { return vec4f(min(max(c, vec3f(0.)), vec3f(40.)), 1.); }
 const KDF = vec3f(.043, .045, .042);
-fn fogIn(ro: vec3f, rd: vec3f, d: f32, z: f32, sun: vec3f) -> vec3f {
-  let k = mix(KD, KDF, z);
-  let a = sg(z) - k * rd.y;
-  let I = (1. - exp(-a * d)) / a;
+// ---- LOOK: water column -------------------------------------------------------------------------------------
+// Beam extinction per metre (red goes first, so things turn blue-green with distance), and the radiance of an
+// infinitely long ray (the water colour) by direction: bright under the surface, mid blue level, dark below,
+// with a forward-scattering glow round the sun; it dims with depth (WKD). Every ray (terrain, surface, background,
+// sprites) is fogged with the same wFog, so the horizon has no seam.
+const WEXT = vec3f(.052, .031, .026);
+const WHOR = vec3f(.025, .15, .48);
+const WUPC = vec3f(.30, .95, 2.4);
+const WDNC = vec3f(.006, .045, .17);
+const WKD = vec3f(.06, .03, .022);
+fn wInf(y: f32, rd: vec3f, sun: vec3f) -> vec3f {
+  let u = rd.y;
+  var c = mix(WHOR, WDNC, ss(0., -.75, u));
+  c = mix(c, WUPC, ss(-.02, .95, u) * ss(-.02, .95, u));
   let mu = max(dot(rd, sun), 0.);
-  let m2 = mu * mu;
-  return mix(WCOL, PCOL, z) * sg(z) * exp(k * ro.y) * I * (.5 + .45 * m2 * m2);
+  let m4 = mu * mu * mu * mu;
+  c += vec3f(.55, .85, .80) * (m4 * m4 * .9 + m4 * .25);
+  return c * exp(WKD * min(y, 0.));
 }
+fn wT(d: f32) -> vec3f { return exp(-WEXT * d); }
+// the depth the in-scattered light of a ray is taken at: a few attenuation lengths along it (continuous at the horizon)
+fn wY(ro: vec3f, rd: vec3f, d: f32) -> f32 { return min(ro.y + rd.y * min(d, 22.) * .5, 0.); }
+fn wFog(c: vec3f, ro: vec3f, rd: vec3f, d: f32, sun: vec3f) -> vec3f {
+  let T = wT(d);
+  return c * T + wInf(wY(ro, rd, d), rd, sun) * (1. - T);
+}
+// in-scattered light over d metres (what the base code's sprites add to their colour)
+fn fogIn(ro: vec3f, rd: vec3f, d: f32, z: f32, sun: vec3f) -> vec3f { return wInf(wY(ro, rd, d), rd, sun) * (1. - wT(d)); }
+// ---- end LOOK water column
 `;
 
 const S_B = /*wgsl*/`diagnostic(off, derivative_uniformity);` + S_G + /*wgsl*/`
@@ -315,6 +336,30 @@ fn shadow9(p: vec3f, d: f32) -> f32 {
   for (var x = -1; x <= 1; x++) { for (var y = -1; y <= 1; y++) { a += textureSampleCompareLevel(tSh, sS, s.xy + vec2f(f32(x), f32(y)) * e, s.z); } }
   return a / 9.;
 }
+// ---- LOOK: soft sun shadows (PCSS): a blocker search, then a rotated Poisson filter whose radius grows with the
+// distance to the blocker (sunlight under waves is a wide, wobbling source): sharp at contact, soft far from it
+const PD = array<vec2f, 12>(vec2f(-.326, -.406), vec2f(-.840, -.074), vec2f(-.696, .457), vec2f(-.203, .621), vec2f(.962, -.195), vec2f(.473, -.480),
+  vec2f(.519, .767), vec2f(.185, -.893), vec2f(.507, .064), vec2f(.896, .412), vec2f(-.322, -.933), vec2f(-.792, -.598));
+fn shadowS(p: vec3f, fc: vec2f, dd: f32) -> f32 {
+  if (LOW || FASTSH || dd > 45.) { return shadow9(p, dd); }
+  let s = shUV(p); let tx = 1. / ${SHADOW}.;
+  let a = ign(fc) * TAU; let cs = vec2f(cos(a), sin(a));
+  var bd = 0.; var bn = 0.;
+  for (var k = 0; k < 6; k++) {
+    let o = PD[k * 2]; let q = s.xy + vec2f(o.x * cs.x - o.y * cs.y, o.x * cs.y + o.y * cs.x) * 9. * tx;
+    let d = textureLoad(tSh, vec2i(clamp(q, vec2f(0.), vec2f(.9999)) * ${SHADOW}.), 0);
+    if (d < s.z) { bd += d; bn += 1.; }
+  }
+  if (bn < .5) { return 1.; }
+  let dz = max(s.z - bd / bn, 0.) * 300.;
+  let rad = clamp(dz * .045 * ${SHADOW}. / 450., 1.2, 16.) * tx;
+  var v = 0.;
+  for (var k = 0; k < 12; k++) {
+    let o = PD[k]; v += textureSampleCompareLevel(tSh, sS, s.xy + vec2f(o.x * cs.x - o.y * cs.y, o.x * cs.y + o.y * cs.x) * rad, s.z);
+  }
+  return v / 12.;
+}
+// ---- end LOOK soft shadows
 // the LAUV's shadow on the terrain: its axis (va.xyz tail, vb.xyz nose, va.w radius) as a soft capsule along the sun direction
 fn vehSh(p: vec3f) -> f32 {
   let L = g.sun.xyz; let a = wd(g.va.xyz - p); let b = wd(g.vb.xyz - p);
@@ -331,10 +376,12 @@ fn caus(p: vec3f, d: f32) -> vec3f {
   if (d > 100.) { return vec3f(.33); } // the mix below is 100% flat from here: skip the 4 texture reads
   let q = cuv(p);
   let o = vec2f(.004, .0025);
-  let q1 = pu(q, 3.3);
+  let q1 = pu(q, 2.6); // LOOK: caustic cells a few dm across, as in a few metres of water (3.3 m cells read as dark blobs)
   let a = vec3f(textureSample(tW, sR, q1 + o).r, textureSample(tW, sR, q1).r, textureSample(tW, sR, q1 - o).r);
   let b = textureSample(tW, sR, pu(q.yx, 6.9) + .37).r;
-  let c = min(pow(a, vec3f(2.0)) * 7. * (.4 + b * 1.4), vec3f(6.));
+  // LOOK: only the line cores lit (the pattern is ~0.3 in the cells, ~0.9 median, ~2.5 on the brightest lines), less
+  // large-scale modulation
+  let c = smoothstep(vec3f(.9), vec3f(2.6), a) * 2.4 * (.75 + b * .5);
   return mix(c, vec3f(.3), ss(50., 140., d));
 }
 fn caus2(p: vec3f, d: f32) -> f32 {
@@ -347,24 +394,58 @@ fn sunE(y: f32, z: f32) -> vec3f { return SUNC * exp(kd(z) * (min(y, 0.) / g.sun
 fn vol(p: vec3f) -> vec4f { return textureSampleLevel(tV, sC, (p - vec3f(${OX}., ${OY}., ${OZ}.)) / vec3f(PER, ${NY * VS}, PER), 0.); }
 fn amb(p: vec3f, n: vec3f, sky: f32, z: f32) -> vec3f {
   let up = n.y * .5 + .5;
-  return mix(vec3f(.22, .60, .80), vec3f(.34, .56, .82), z) * exp(kd(z) * min(p.y, 0.) * 1.2) * (.3 + .7 * sky) * (.2 + .8 * up * up) * .95 * (.55 + .45 * sat(-p.y / 30.)) + vec3f(.003, .010, .016);
+  return mix(vec3f(.24, .48, .54), vec3f(.34, .56, .82), z) * exp(kd(z) * min(p.y, 0.) * 1.2) * (.35 + .65 * sky) * (.32 + .68 * up * up) * (.55 + .45 * sat(-p.y / 30.)) + vec3f(.003, .010, .016);
 }
 fn zone(p: vec3f) -> f32 { return g.sun.w; }
 fn side(p: vec3f, n: vec3f, open: f32, z: f32) -> vec3f { return mix(WCOL, PCOL, z) * exp(kd(z) * min(p.y, 0.)) * open * (1. - abs(n.y)) * .7; }
 // skylight at most 150 m along the ray: past that, terrain and the background behind it (vsB) get the same haze
+// LOOK: one water column for everything (wFog); in-scatter a little dimmer where the ray ends under overhangs
 fn fog(c: vec3f, wp: vec3f, z: f32) -> vec3f {
   var ro = g.cam.xyz; let v = wp - ro; var d = length(v); let rd = v / d;
   if (ro.y > 0.) {   // the camera is in the air: the water starts where the ray crosses the surface (surface.js)
     if (wp.y >= 0.) { return c; }
     let t0 = min(ro.y / max(-rd.y, 1e-4), d); ro += rd * t0; d -= t0;
   }
-  return c * exp(-sg(z) * d) * ss(230., 185., d) + fogIn(ro, rd, d, z, g.sun.xyz) * (.58 + .42 * vol(ro + rd * min(d, 150.)).g);
+  let T = wT(d) * ss(235., 190., d);
+  return c * T + wInf(wY(ro, rd, d), rd, g.sun.xyz) * (1. - T) * (.78 + .22 * vol(ro + rd * min(d, 150.)).g);
 }
 fn qrot(q: vec4f, v: vec3f) -> vec3f { return v + 2. * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
 `;
 
+// ---------------------------------------------------------------- LOOK: scanned CC0 material textures (look.js loads them)
+// tAlb: albedo (sRGB) and tNh: normal xy + height, 8 layers: 0 seaside rock, 1 rock face, 2 pitted mossy rock,
+// 3 tiger rock, 4 cracked boulder, 5 sand, 6 coral ground (crust + turf), 7 coral gravel. LG: per-layer albedo gain
+// that brings each scan to a plausible reflectance.
+const S_PBR = /*wgsl*/`
+@group(0) @binding(9) var tAlb: texture_2d_array<f32>;
+@group(0) @binding(10) var tNh: texture_2d_array<f32>;
+const GSH = ${TAA ? .62 : 1}; // with TAA the textures are sampled a little sharper (as sD does)
+var<private> LG: array<f32, 8> = array<f32, 8>(1.7, .85, .42, 1.25, .45, 1.9, .95, 1.05);
+struct PB { alb: vec3f, n: vec3f, h: f32 };
+// triplanar (planes with ~no weight skipped), normals as world-axis perturbations (UDN blend)
+fn tpl(p: vec3f, dx0: vec3f, dy0: vec3f, w: vec3f, s: f32, L: i32) -> PB {
+  let dx = dx0 * GSH; let dy = dy0 * GSH;
+  var o: PB; o.alb = vec3f(0.); o.n = vec3f(0.); o.h = 0.;
+  if (w.x > .03) {
+    let uv = p.zy * s; let a = textureSampleGrad(tAlb, sR, uv, L, dx.zy * s, dy.zy * s); let b = textureSampleGrad(tNh, sR, uv, L, dx.zy * s, dy.zy * s);
+    let t = b.xy * 2. - 1.; o.alb += a.rgb * w.x; o.h += b.z * w.x; o.n += vec3f(0., -t.y, t.x) * w.x;
+  }
+  if (w.y > .03) {
+    let uv = p.xz * s; let a = textureSampleGrad(tAlb, sR, uv, L, dx.xz * s, dy.xz * s); let b = textureSampleGrad(tNh, sR, uv, L, dx.xz * s, dy.xz * s);
+    let t = b.xy * 2. - 1.; o.alb += a.rgb * w.y; o.h += b.z * w.y; o.n += vec3f(t.x, 0., -t.y) * w.y;
+  }
+  if (w.z > .03) {
+    let uv = p.xy * s; let a = textureSampleGrad(tAlb, sR, uv, L, dx.xy * s, dy.xy * s); let b = textureSampleGrad(tNh, sR, uv, L, dx.xy * s, dy.xy * s);
+    let t = b.xy * 2. - 1.; o.alb += a.rgb * w.z; o.h += b.z * w.z; o.n += vec3f(t.x, -t.y, 0.) * w.z;
+  }
+  let ws = 1. / (w.x * f32(w.x > .03) + w.y * f32(w.y > .03) + w.z * f32(w.z > .03));
+  o.alb *= ws; o.h *= ws; o.n *= ws;
+  return o;
+}
+`;
+
 // ---------------------------------------------------------------- solid meshes (terrain, rocks, set pieces, sponges, coral)
-const W_SOLID = S_B + /*wgsl*/`
+const W_SOLID = S_B + S_PBR + /*wgsl*/`
 struct VI { @location(0) p: vec3f, @location(1) n: vec4f, @location(2) a: vec4f, @location(3) b: vec4f, @location(4) c: vec4f };
 struct VO { @invariant @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) op: vec3f, @location(3) on: vec3f,
   @location(4) @interpolate(flat) m: vec4f, @location(5) @interpolate(flat) q: vec4f, @location(6) ao: f32 };
@@ -413,52 +494,82 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   var bump = 1.7; var gloss = .1; var alb = vec3f(0.); var emi = vec3f(0.); var vao = 1.; var flu = 0.;
   let flt = ss(.72, .93, n0.y);
   var sK = 0.; var rdir = vec2f(0.);
+  // LOOK: scanned-texture normals (object space) and how strongly they count; derivatives for textureSampleGrad
+  let gdx = dpdx(i.op) * GSH; let gdy = dpdy(i.op) * GSH;
+  var tw = pow(abs(on), vec3f(6.)); tw /= (tw.x + tw.y + tw.z);
+  var tn = vec3f(0.); var tnk = 0.;
+  let near = ss(70., 8., dist);
   if (mat <= 1) {
-    // layered rock: grey / olive / brown beds, pale and warm encrustation patches, algae on up-facing parts
-    let st = i.op.y * .55 + A.h * 1.6 + big * 5. + big2 * 3.;
-    let bed = hs(floor(st)); let sf = fract(st);
-    alb = mix(vec3f(.11, .12, .13), vec3f(.33, .30, .25), sat(A.c * 1.5 - .25));
-    alb = mix(alb, mix(vec3f(.26, .19, .10), vec3f(.20, .22, .14), bed), ss(.42, .66, big) * .7);
-    alb *= mix(.72, 1.15, bed) * (1. - .45 * ss(.12, .0, sf) * (1. - abs(on.y)));
-    let enc = ss(.46, .6, big2 * .6 + B.c * .5) * ss(.3, .6, hgt);
-    alb = mix(alb, mix(vec3f(.34, .17, .15), vec3f(.38, .27, .12), ss(.45, .6, A.c)) * (.5 + .8 * B.h), enc * .5);
-    alb = mix(alb, vec3f(.44, .44, .40) * (.5 + .7 * C.h), ss(.60, .70, B.c * .6 + C.c * .5) * .3);
-    let alg = ss(-.1, .6, n0.y) * ss(.3, .52, B.c * .55 + big * .5);
-    alb = mix(alb, vec3f(.05, .14, .06), alg * .45);
-    {
-      // three rock types: pale limestone, dark basalt, rust sandstone; chosen per rock (instances) or by region (terrain)
-      let pick = select(reg.a * 1.6 - .3 + (big2 - .5) * .5, hs(sd * 91.3), mat == 1);
-      let lime = vec3f(.62, .58, .46) * (.55 + .7 * hgt); let basalt = vec3f(.10, .085, .075) * (.6 + 1.0 * hgt); let rust = vec3f(.50, .27, .15) * (.5 + .8 * hgt);
-      var rk = mix(alb, lime, ss(.62, .72, pick) * .85);
-      rk = mix(rk, basalt, ss(.34, .24, pick) * .9);
-      rk = mix(rk, rust, ss(.46, .52, pick) * ss(.58, .52, pick) * .8);
-      alb = rk;
+    // ---- LOOK: rock from scanned CC0 textures (textures/, Poly Haven): two rock types per rock (by seed) or per
+    // region (terrain), blended by their height maps; under-water tint; reef growth (encrusting coralline crust and
+    // algae turf) on up-facing parts that settles into the hollows first
+    // LOOK: on flat sand the rock layers are not sampled at all (sand covers them)
+    let sK0 = select(0., ss(.55, .82, n0.y), mat == 0);
+    var th = .5;
+    if (sK0 < .99) {
+      let rs = select(fract(reg.a * 2.3 + reg.b * .7), hs(sd * 17.31), mat == 1);
+      let la = select(i32(rs * 4.99), 1, mat == 0);
+      let lb = select((la + 1 + i32(hs(sd * 3.7) * 2.99)) % 5, 0, mat == 0);
+      let s1 = pk(.52) * ts * mix(.8, 1.25, hs(sd * 5.1)); let s2 = pk(.37) * ts;
+      // (a layer whose weight is ~0 is not sampled: most rock is one type or the other)
+      let m0 = (big - .5) * 1.5 + (big2 - .5) * .8;
+      var ra = PB(vec3f(.5), vec3f(0.), .5); var rb = PB(vec3f(.5), vec3f(0.), .5);
+      if (m0 < .47) { ra = tpl(i.op, gdx, gdy, tw, s1, la); }
+      if (m0 > -.47) { rb = tpl(i.op.zxy + 13.7, gdx.zxy, gdy.zxy, tw.zxy, s2, lb); }
+      let mab = ss(-.12, .12, m0 + (rb.h - ra.h) * .7 * ss(.47, .25, abs(m0))); // continuous where a layer is skipped
+      alb = mix(ra.alb * LG[la], rb.alb * LG[lb], mab);
+      th = mix(ra.h, rb.h, mab);
+      tn = mix(ra.n, rb.n.yzx, mab); tnk = 1.15;
+      // per rock / per region: brightness and hue drift, then the grey-olive of rock under water
+      let vh = hs(sd * 9.13 + floor(reg.b * 4.));
+      alb *= mix(.75, 1.25, vh) * (.8 + .4 * big);
+      let gl = dot(alb, vec3f(.3, .59, .11));
+      alb = mix(vec3f(gl), alb, .5) * mix(vec3f(1.), vec3f(.86, .97, .84), big2);
+      // reef growth on top
+      let upf = ss(.05, .8, n0.y);
+      if (upf > .01) {
+        let cg = tpl(i.op + 5.1, gdx, gdy, tw, pk(.7) * ts, 6);
+        let gw = ss(.05, .3, upf * (.5 + .9 * big2) - th * .5 + cg.h * .35 - .25);
+        alb = mix(alb, cg.alb * LG[6] * vec3f(.85, .95, .78), gw);
+        tn = mix(tn, cg.n, gw);
+      }
+      // a little pink coralline on the sides and green film on the tops (the base's masks, much subtler)
+      alb = mix(alb, vec3f(.40, .20, .24) * (.6 + .8 * th), ss(.62, .72, big2 * .6 + C.c * .5) * (1. - ss(.2, .6, n0.y)) * .35);
+      alb = mix(alb, vec3f(.10, .17, .07) * (.6 + .8 * th), ss(.35, .65, big * .6 + B.c * .5) * upf * .35);
     }
-    {
-      alb = mix(alb, vec3f(.16, .30, .10) * (.5 + hgt), ss(.35, .65, big * .6 + B.c * .5) * ss(-.2, .5, n0.y) * .55);
-      alb = mix(alb, vec3f(.62, .26, .36) * (.6 + .6 * hgt), ss(.62, .7, big2 * .6 + C.c * .5) * (1. - ss(.2, .6, n0.y)) * .6);
-      alb = mix(alb, vec3f(.50, .43, .30) * (.6 + .5 * hgt), ss(.5, .85, n0.y) * (.35 + .4 * A.c));
-    }
-    alb *= (.22 + 1.3 * hgt) * mix(1., .62 + .76 * F.h, fk);
-    sgro = -ss(.14, .0, sf) * (1. - abs(on.y)) * 1.2;
+    vao *= .6 + .4 * ss(.0, .45, th);
+    bump = .9; gloss = .08;
     if (mat == 0) {
-      // sand on the flats: warm, fine grained, with ripples that run across the current
-      sK = i.ao * ss(.55, .82, n0.y);
-      var sand = mix(vec3f(.29, .24, .15), vec3f(.40, .35, .24), ss(.3, .7, C.c));
-      sand *= .72 + .55 * B.h + .2 * (A.c - .5);
-      sand = mix(sand, sand * vec3f(.7, .72, .68), ss(.55, .75, big2) * .6);
-      let ph = TAU * (190. * i.wp.x + 140. * i.wp.z) / PER + 3.2 * (big - .5) + 1.4 * (C.c - .5);
-      let fade = ss(34., 8., dist);
-      let rp = sin(ph) * fade;
-      sand *= (1. + .13 * rp) * (.82 + .36 * mix(F.h, B.h, ss(6., 1.5, dist))) ;
-      // grit: dark and pale specks that fade out with distance, and a green-brown algae film in patches
-      let grit = hs(dot(floor(i.wp * 55.), vec3f(1., 57., 113.))); sand *= 1. + (grit - .5) * .16 * ss(5., 1., dist) + (hs(floor(i.wp.x * 9.) + floor(i.wp.z * 9.) * 31.) - .5) * .12;
-      sand = mix(sand, vec3f(.24, .27, .13), gm.a * .35 * ss(.2, .8, A.c));
-      sand *= mix(vec3f(1.), vec3f(1.15, 1.02, .78), ss(.35, .65, big2)) * mix(.8, 1.12, big);
-      alb = mix(alb, sand, sK);
-      rdir = vec2f(190., 140.) / 236.;
-      rdir *= cos(ph) * fade * .8;
-      gloss = mix(gloss, .06, sK); bump = mix(bump, .8, sK);
+      // ---- LOOK: sand on the flats: scanned sand at two scales (no visible tiling), coral rubble in patches,
+      // ripples across the current, grit and an algae film
+      sK = ss(.55, .82, n0.y); // LOOK: the vertex AO (blob-shaped on the flats) no longer mixes dark rock into the sand
+      if (sK > .01) {
+        let sp = i.op.xz;
+        let su1 = sp * pk(.55); let su2 = sp.yx * pk(.17) + .31;
+        let sa1 = textureSampleGrad(tAlb, sR, su1, 5, gdx.xz * pk(.55), gdy.xz * pk(.55));
+        let sa2 = textureSampleGrad(tAlb, sR, su2, 5, gdx.zx * pk(.17), gdy.zx * pk(.17));
+        let sn1 = textureSampleGrad(tNh, sR, su1, 5, gdx.xz * pk(.55), gdy.xz * pk(.55));
+        let rub = ss(.52, .64, big2 * .7 + reg.b * .3 + gm.a * .2);
+        let ru = sp * pk(.6) + .7;
+        let ga = textureSampleGrad(tAlb, sR, ru, 7, gdx.xz * pk(.6), gdy.xz * pk(.6));
+        let gn = textureSampleGrad(tNh, sR, ru, 7, gdx.xz * pk(.6), gdy.xz * pk(.6));
+        var sand = (sa1.rgb * .6 + sa2.rgb * .4) * LG[5] * vec3f(1.3, 1.12, .86); // LOOK: warm pale sand
+        let rw = sat(rub * 1.4 - (1. - gn.z) * .6);
+        sand = mix(sand, ga.rgb * LG[7], rw);
+        let ph = TAU * (190. * i.wp.x + 140. * i.wp.z) / PER + 3.2 * (big - .5) + 1.4 * (C.c - .5);
+        let fade = ss(34., 8., dist);
+        let rp = sin(ph) * fade;
+        sand *= (1. + .10 * rp * (1. - rw)) * mix(.85, 1.1, big);
+        let grit = hs(dot(floor(i.wp * 55.), vec3f(1., 57., 113.))); sand *= 1. + (grit - .5) * .12 * ss(5., 1., dist);
+        sand = mix(sand, vec3f(.20, .22, .11), gm.a * .3 * ss(.2, .8, A.c));
+        sand *= mix(vec3f(1.), vec3f(1.08, 1.0, .85), ss(.35, .65, big2));
+        alb = mix(alb, sand, sK);
+        let s1n = sn1.xy * 2. - 1.; let g1n = gn.xy * 2. - 1.;
+        tn = mix(tn, vec3f(mix(s1n.x, g1n.x, rw), 0., mix(s1n.y, g1n.y, rw)), sK);
+        rdir = vec2f(190., 140.) / 236.;
+        rdir *= cos(ph) * fade * .28 * (1. - rw); // LOOK: was .8 (dark dashes on the slopes facing away from the sun)
+      }
+      gloss = mix(gloss, .05, sK); bump = mix(bump, .5, sK);
     }
   } else if (mat == 3) {
     alb = mix(vec3f(.13, .085, .05), vec3f(.36, .25, .14), Wd.b) * (.6 + .5 * B.h);
@@ -470,39 +581,52 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     // sponges: brown, tan, rust and a muted violet
     let hue = fract(sd * 7.31);
     alb = mix(vec3f(.46, .26, .12), vec3f(.60, .44, .24), fract(hue * 3.));
-    if (hue > .72) { alb = vec3f(.42, .24, .46); }
+    if (hue > .72) { alb = vec3f(.24, .15, .20); } // LOOK: duller violet
     if (hue < .2) { alb = vec3f(.62, .22, .10); }
     if (hue > .3 && hue < .38) { alb = vec3f(.70, .54, .14); }
     alb *= (.45 + .75 * B.h) * (.7 + .3 * C.h);
     vao = i.ao * i.ao; gloss = .15; bump = 1.4; flu = .12;
+    { // LOOK: pores and crust from the coral-ground scan
+      let sx = tpl(i.op + sd * 7., gdx, gdy, tw, pk(1.6) * ts, 6);
+      alb *= .5 + 1.1 * dot(sx.alb, vec3f(.3, .59, .11)) * LG[6]; tn = sx.n; tnk = .9; vao *= .65 + .35 * sx.h;
+    }
   } else {
     // corals: tan, olive, cream, now and then pink, orange or lilac
     let hue = fract(sd * 5.73);
     alb = mix(vec3f(.52, .40, .22), vec3f(.36, .40, .16), fract(hue * 4.));
     if (hue > .55) { alb = vec3f(.50, .45, .32); }
-    if (hue > .8) { alb = vec3f(.76, .38, .44); }
+    if (hue > .8) { alb = vec3f(.62, .27, .32); } // LOOK: less pastel
     if (hue > .9) { alb = vec3f(.78, .40, .15); }
-    if (hue > .96) { alb = vec3f(.40, .32, .62); }
+    if (hue > .96) { alb = vec3f(.32, .22, .48); }
     alb *= (.4 + .8 * B.h) * (.5 + .9 * i.ao * i.ao);
     if (mat == 6) {
       let hh = fract(sd * 3.77);
       alb = mix(mix(vec3f(.85, .30, .10), vec3f(.85, .12, .35), ss(.25, .35, hh)), mix(vec3f(.90, .70, .12), vec3f(.35, .25, .75), ss(.75, .85, hh)), ss(.5, .6, hh)) * (.55 + .7 * B.h) * (.6 + .6 * i.ao);
+      alb = mix(vec3f(dot(alb, vec3f(.3, .59, .11))), alb, .6) * .75; // LOOK: hero corals less candy-coloured
       gloss = .3;
     }
     flu = .1; gloss = .2; bump = 1.5;
+    { // LOOK: polyp texture and grime from the coral-gravel scan; the hollows darker
+      let sx = tpl(i.op + sd * 5., gdx, gdy, tw, pk(2.2) * ts, 7);
+      alb *= .45 + 1.2 * dot(sx.alb, vec3f(.3, .59, .11)) * LG[7]; tn = sx.n; tnk = .8; vao *= .6 + .4 * sx.h;
+    }
   }
   let rip = 0.;
-  if (mat == 0) { alb *= 1. - .7 * gm.g; vao *= 1. - .5 * gm.g; }
+  if (mat == 0) { alb *= 1. - .15 * gm.g; vao *= 1. - .25 * gm.g; } // LOOK: the baked contact map made dark blobs; SSAO does contact shadows now
 
-  let N = normalize(qrot(i.q, normalize(on + (A.n * .85 + B.n * .65 + C.n * .45 * ss(60., 12., dist) + F.n * .5 * fk) * bump + vec3f(rdir.x, sgro, rdir.y))));
+  let N = normalize(qrot(i.q, normalize(on + (A.n * .85 + B.n * .65 + C.n * .45 * ss(60., 12., dist) * (1. - tnk * .6)) * bump + tn * tnk * near + vec3f(rdir.x, sgro, rdir.y)))); // LOOK: + scanned normals
   let L = g.sun.xyz; let V = normalize(g.cam.xyz - i.wp);
   let v1 = vol(i.wp + n0 * 1.5); let v2 = vol(i.wp + n0 * 4.5);
-  let ao = (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45) * vao * ss(.12, .6, hgt);
+  // LOOK: the procedural cavity term (hgt) only darkens rock a little now, and never sand: it made dark blotches
+  let ao = (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45) * vao * mix(mix(.6, 1., ss(.12, .6, hgt)), 1., sK);
   let z = zone(i.wp);
-  let E = sunE(i.wp.y, z) * shadow9(i.wp + n0 * .35, dist) * vehSh(i.wp);
+  let E = sunE(i.wp.y, z) * shadowS(i.wp + n0 * .25, i.cp.xy, dist) * vehSh(i.wp); // LOOK: soft shadows (PCSS near, cheaper far)
   let ndl = sat(dot(N, L));
-  let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z)) * ao;
-  let dl = E * ndl * (.06 + mix(vec3f(.3), ca, ss(.05, .35, dot(n0, L))) * 2.3);
+  // LOOK: + light bounced up from the sunlit sand onto faces that look down (rock detail stays readable in shadow)
+  let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z) + sunE(i.wp.y, z) * vec3f(.16, .15, .11) * sat(-N.y * .8 + .25)) * ao;
+  // LOOK: caustics as bright lines over an even base (no dark blotches between them)
+  // LOOK: caustics as thin bright lines over an even base: the dark cells between them read as blotches when strong
+  let dl = E * ndl * (2.1 + mix(vec3f(.4), ca, ss(.05, .35, dot(n0, L))) * .85);
   var c = alb * (dl + am) + emi + alb * flu * dot(dl + am, vec3f(.1, .5, .5));
   let H = normalize(V + L);
   c += E * (.25 + ca) * pow(sat(dot(N, H)), mix(10., 70., gloss)) * gloss * ndl * 1.8;
@@ -606,16 +730,23 @@ struct GO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   let V = normalize(g.cam.xyz - i.wp); let L = g.sun.xyz;
   let z = zone(i.wp);
   let lt = sD(vec2f(i.uv.x * .13 + i.sd.x * 3.7, i.uv.y * .8 + i.sd.y * 5.3));
+  // LOOK: ragged, torn margins instead of a clean polygon edge (TAA smooths the outline)
+  let rag = lt.a * .55 + .45 * fract(sin(floor(i.uv.y * 23. + i.sd.y * 50.) * 91.7) * 4375.5);
+  if (abs(i.uv.x) > 1. - .32 * rag * ss(26., 4., dist) * ss(.02, .15, i.uv.y)) { discard; }
   let vv = vol(i.wp + vec3f(0., .8, 0.));
   let E = sunE(i.wp.y, z) * shadow1(i.wp + L * .3);
   let ndl = dot(n, L);
-  var alb = i.col * (.72 + .28 * ss(0., .25, abs(i.uv.x))) * mix(.5, 1.12, i.uv.y) * (1. - .45 * ss(30., 8., dist) * ss(.6, 1., sin(i.uv.y * 40. - abs(i.uv.x) * 7. + i.sd.x * 40.))) * (.58 + .42 * ss(0., .13, abs(i.uv.x))) * (.5 + 1.0 * lt.b) * (.65 + .7 * lt.a);
+  // LOOK: duller, olive-brown kelp (less yellow), with a midrib and cell texture so blades are not flat
+  let lum0 = dot(i.col, vec3f(.3, .59, .11));
+  let col = mix(vec3f(lum0), i.col, .62) * vec3f(.95, 1., .78) * (.85 - .25 * ss(.2, .9, i.uv.y));
+  let rib = (1. - .3 * ss(.07, .0, abs(i.uv.x)) * ss(.05, .2, i.uv.y)) * (.9 + .1 * sin(abs(i.uv.x) * 30. + i.sd.x * 9.)); // + fine veins
+  var alb = col * rib * (.72 + .28 * ss(0., .25, abs(i.uv.x))) * mix(.5, 1.12, i.uv.y) * (1. - .45 * ss(30., 8., dist) * ss(.6, 1., sin(i.uv.y * 40. - abs(i.uv.x) * 7. + i.sd.x * 40.))) * (.58 + .42 * ss(0., .13, abs(i.uv.x))) * (.5 + 1.0 * lt.b) * (.65 + .7 * lt.a);
   let ndv = sat(dot(n, V));
   alb *= mix(.55, 1., ss(.0, .5, 1. - abs(i.uv.x))); // darker, softer margins instead of a hard edge
   let ir = .5 + .5 * cos(TAU * (vec3f(0., .33, .67) + ndv * 1.1 + i.sd.x * .22 + i.uv.y * .5 + .55));
   alb = mix(alb, alb * .5 + ir * vec3f(.15, .13, .30), i.pr.z * (1. - ndv) * .8);
   let tr = (max(-ndl, 0.) * 1.4 + .12) * i.pr.y;
-  let trc = alb * mix(vec3f(1.), vec3f(1.6, 1.7, .9), sat(i.pr.y) * (1. - i.pr.z));
+  let trc = alb * mix(vec3f(1.), vec3f(1.35, 1.3, .7), sat(i.pr.y) * (1. - i.pr.z)); // LOOK: transmitted light olive-gold, not lime
   let aov = sat((vv.r - .5) * 6.) * mix(.4, 1., i.uv.y);
   let am = (amb(i.wp, n, vv.g, z) + amb(i.wp, -n, vv.g, z) * i.pr.y * .55 * vec3f(1.1, 1.15, .7) + side(i.wp, n, sat((vv.r - .5) * 4.), z) * .6) * (.3 + .7 * aov);
   var c = E * (.06 + ca * 1.5) * (alb * max(ndl, 0.) + trc * tr) + alb * am;
@@ -623,6 +754,8 @@ struct GO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   c += E * (pow(sat(dot(n, H)), 40.) * (.45 + ir * i.pr.z * 2.) + pow(sat(dot(n, H)), 9.) * .07) + am * ir * i.pr.z * pow(1. - ndv, 3.) * 1.5;
   c += E * trc * i.pr.y * (pow(sat(dot(-V, L)), 2.) * 3.2 + .25 * lt.b) * (.5 + 1.2 * ss(0., .4, abs(i.uv.x) * -1. + .5));
   c += alb * i.pr.w * (.5 + 3. * dot(am + E * .3, vec3f(.1, .5, .5)));
+  // LOOK: translucency: where the sun lights the far side of the blade, the side we see glows through
+  c += E * trc * i.pr.y * sat(-dot(n, L)) * sat(dot(n, V) * 4.) * 1.1 * (.6 + .6 * lt.b);
   return fin(fog(c, i.wp, z));
 }
 `;
@@ -720,7 +853,39 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f };
   o.cp = g.vp * vec4f(o.wp, 1.);
   return o;
 }
+// ---- LOOK: the surface seen from below: Snell's window (sky, clouds, sun) inside 48.6 deg, total internal
+// reflection of the water outside it, wave normals that calm with distance, bright crest lines; fogged like the rest
+fn surfBelow(wp: vec3f) -> vec3f {
+  let v = wp - g.cam.xyz; let d = length(v); let V = v / d; let t = g.cam.w;
+  let fl = ss(140., 4., d);
+  let s = (textureSample(tW, sR, pu(wp.xz, 13.)).ba + textureSample(tW, sR, pu(wp.zx, 4.7) + .2).ba * .9 + textureSample(tW, sR, pu(wp.xz, 37.) + .6).ba * .35 + textureSample(tW, sR, pu(wp.xz, 1.9) + .3).ba * .6 * ss(40., 3., d)) * fl;
+  let n = normalize(vec3f(-s.x * .5, -1., -s.y * .5));
+  let ci = sat(dot(V, -n));
+  let k = 1. - 1.769 * (1. - ci * ci);
+  let rr = refract(V, n, 1.33);
+  let up = max(rr.y, 0.);
+  var sky = mix(vec3f(1.5, 2.1, 2.5), vec3f(.75, 1.55, 3.0), sqrt(up));
+  let cuv = rr.xz / max(rr.y, .1) * .05 + vec2f(t * .0015, t * .0007);
+  let cl = ss(.42, .75, textureSample(tD, sR, cuv).a * .7 + textureSample(tD, sR, cuv * 3.1 + .3).a * .3);
+  sky = mix(sky, vec3f(3.2, 3.3, 3.4), cl * .85 * ss(.05, .3, up));
+  let sd = max(dot(rr, g.sun.xyz), 0.);
+  sky += vec3f(1., .93, .8) * (pow(sd, 900.) * 40. + pow(sd, 40.) * 2. + pow(sd, 5.) * .4);
+  let fr = pow(1. - sqrt(max(k, 0.)), 5.);
+  let win = ss(0., .1, k);
+  let R = reflect(V, n);
+  // the water below, seen at a flatter angle: close to the haze at the horizon, so the surface fades into it
+  let refl = wInf(0., normalize(vec3f(R.x, R.y * .3, R.z)), g.sun.xyz) * 1.2 + vec3f(.02, .07, .12);
+  var c = mix(refl, sky * (1. - fr) + refl * fr, win);
+  // LOOK: at grazing angles the far surface takes the colour of the haze (no flat lid at the horizon)
+  c = mix(wInf(-2., normalize(vec3f(V.x, .02, V.z)), g.sun.xyz), c, ss(.03, .32, V.y));
+  // crest lines: the caustic pattern on the underside, brightest near the window
+  let cr = textureSample(tW, sR, pu(wp.xz, 9.) + s * .02).r;
+  c += vec3f(.7, .9, 1.) * min(cr, 3.) * .35 * fl * (.25 + .75 * win);
+  return c;
+}
+// ---- end LOOK surface
 @fragment fn fs(i: VO) -> @location(0) vec4f {
+  if (g.cam.y < 0.) { return fin(fog(surfBelow(i.wp), i.wp, zone(i.wp))); }   // LOOK: below the surface
   let v = i.wp - g.cam.xyz; let d = length(v); let V = v / d;
   let fl = ss(80., 8., d);
   let s = (textureSample(tW, sR, pu(i.wp.xz, 13.)).ba + textureSample(tW, sR, pu(i.wp.zx, 4.7) + .2).ba * .9 + textureSample(tW, sR, pu(i.wp.xz, 37.) + .6).ba * .35 + textureSample(tW, sR, pu(i.wp.xz, 1.9) + .3).ba * .5 * ss(60., 5., d)) * fl;
@@ -833,18 +998,21 @@ const W_RAYS = S_G + W_FS + /*wgsl*/`
   let rv = g.fwd.xyz + g.right.xyz * (nd.x * g.right.w) + g.up.xyz * (nd.y * g.up.w);
   let rl = length(rv); let rd = rv / rl;
   let zl = g.fwd.w / max(dp, 1e-6);
-  var tm = min(zl * rl, 120.); var t0 = 0.;
-  if (g.cam.y > 0.) {   // camera in the air: the shafts start where the ray enters the water
+  // LOOK: march at most 55 m of water (past that the water column, wFog, carries the light). Under water, a ray that
+  // meets the surface goes on as its mirror image (total internal reflection), so the shafts don't stop at the
+  // waterline and there is no seam at the horizon; from the air the shafts start where the ray enters the water
+  var tm = min(zl * rl, 55.); var t0 = 0.;
+  if (g.cam.y > 0.) {
     if (rd.y >= 0.) { return vec4f(0., 0., 0., zl); }
-    t0 = -g.cam.y / rd.y; tm = max(tm, t0);
-  } else if (rd.y > 1e-4) { tm = min(tm, -g.cam.y / rd.y); }
-  let ro = g.cam.xyz; let sx = g.sun.xyz; let k = kd(g.sun.w); let sgz = sg(g.sun.w);
+    t0 = -g.cam.y / rd.y; tm = min(zl * rl, t0 + 55.); tm = max(tm, t0);
+  } else if (rd.y > 1e-4 && zl * rl > -g.cam.y / rd.y - .5) { tm = 55.; }
+  let ro = g.cam.xyz; let sx = g.sun.xyz; let k = kd(g.sun.w); let sgz = WEXT.g; // LOOK: water column extinction
   let dt = (tm - t0) / ${RAYN}.;
   let j = ign(fc.xy);
   var acc = vec3f(0.);
   for (var n = 0; n < ${RAYN}; n++) {
     let t = t0 + (f32(n) + j) * dt;
-    let p = ro + rd * t;
+    var p = ro + rd * t; p.y = -abs(p.y);
     let s = g.sm * vec4f(wt(p), 1.);
     let vis = textureSampleCompareLevel(tSh, sS, vec2f(s.x * .5 + .5, .5 - s.y * .5), s.z - .0006);
     let q = p.xz - sx.xz * (p.y / sx.y);
@@ -856,7 +1024,7 @@ const W_RAYS = S_G + W_FS + /*wgsl*/`
   let mu = max(dot(rd, sx), 0.);
   let ph = mix(.2 + 2.0 * mu * mu * mu, .8, g.sun.w);
   let wc = mix(WCOL + vec3f(.04, .07, .05), PCOL + vec3f(.28, .16, .12), g.sun.w);
-  return vec4f(min(acc * dt * sgz * wc * SUNC * ph * g.mis.y * (1. - .55 * g.sun.w), vec3f(20.)), zl);
+  return vec4f(min(acc * dt * sgz * wc * SUNC * ph * g.mis.y * (1. - .55 * g.sun.w) * .95, vec3f(20.)), zl); // LOOK: shafts
 }
 `;
 // depth-aware 3x3 blur of the half-res shafts (hides the sampling dither)
@@ -875,6 +1043,39 @@ const W_RBLUR = W_FS + /*wgsl*/`
 }
 `;
 
+// ---------------------------------------------------------------- LOOK: contact shadows (screen-space ambient occlusion, half res)
+// 8 samples on a rotated spiral within ~0.7 m of each pixel (world space, from the depth buffer); rg = ao, linear depth
+const W_AO = S_G + W_FS + /*wgsl*/`
+@group(0) @binding(0) var<uniform> g: G;
+@group(0) @binding(1) var tDp: texture_depth${AA > 1 ? '_multisampled' : ''}_2d;
+fn zAt(p: vec2i) -> f32 { let m = vec2i(textureDimensions(tDp)) - 1; return g.fwd.w / max(textureLoad(tDp, clamp(p, vec2i(0), m), 0), 1e-6); }
+fn posAt(p: vec2i) -> vec3f {
+  let uv = (vec2f(p) + .5) * g.res.zw; let nd = vec2f(uv.x * 2. - 1., 1. - uv.y * 2.);
+  return (g.fwd.xyz + g.right.xyz * (nd.x * g.right.w) + g.up.xyz * (nd.y * g.up.w)) * zAt(p);
+}
+@fragment fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
+  let p = vec2i(fc.xy) * 2;
+  let P = posAt(p); let z = dot(P, g.fwd.xyz);
+  if (z > 60.) { return vec4f(1., z, 0., 0.); }
+  // normal from the nearer neighbours (no smearing across silhouettes)
+  let px = posAt(p + vec2i(2, 0)); let nx = posAt(p - vec2i(2, 0)); let py = posAt(p + vec2i(0, 2)); let ny = posAt(p - vec2i(0, 2));
+  let dx = select(P - nx, px - P, abs(dot(px - P, g.fwd.xyz)) < abs(dot(P - nx, g.fwd.xyz)));
+  let dy = select(P - ny, py - P, abs(dot(py - P, g.fwd.xyz)) < abs(dot(P - ny, g.fwd.xyz)));
+  var n = normalize(cross(dy, dx)); if (dot(n, P) > 0.) { n = -n; }
+  let R = .7; let rpx = R / (z * 2. * g.up.w) / g.res.w; // radius in pixels
+  let a0 = ign(fc.xy) * TAU;
+  var ao = 0.;
+  for (var k = 0; k < 8; k++) {
+    let f = (f32(k) + .5) / 8.; let an = a0 + f32(k) * 2.4;
+    let o = vec2f(cos(an), sin(an)) * rpx * f;
+    let S = posAt(p + vec2i(o)) - P;
+    let l2 = dot(S, S);
+    ao += max(dot(S, n) - .02 * z * .05, 0.) / (l2 + .02) * ss(R * R * 4., R * R, l2);
+  }
+  return vec4f(sat(1. - ao * .9 / 8.), z, 0., 0.);
+}
+`;
+
 // ---------------------------------------------------------------- final composite
 const W_POST = S_G + W_FS + /*wgsl*/`
 @group(0) @binding(0) var<uniform> g: G;
@@ -883,6 +1084,7 @@ const W_POST = S_G + W_FS + /*wgsl*/`
 @group(0) @binding(3) var tR: texture_2d<f32>;
 @group(0) @binding(4) var tB: texture_2d<f32>;
 @group(0) @binding(5) var tDp: texture_depth${AA > 1 ? '_multisampled' : ''}_2d;
+@group(0) @binding(6) var tAO: texture_2d<f32>; // LOOK: contact shadows
 fn tmap(x: vec3f) -> vec3f { return sat3((x * (2.51 * x + .03)) / (x * (2.43 * x + .59) + .14)); }
 fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
 @fragment fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
@@ -915,18 +1117,29 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
     let sh = clamp((e + wc * (bb + dd + ff + hh)) / (1. + 4. * wc), vec3f(0.), vec3f(.999));
     sc = sh / max(vec3f(1.) - vec3f(dot(sh, vec3f(.25, .5, .25))), vec3f(1e-3));
   }
-  var c = sc + acc / ws;
+  var c = sc;
+  { // LOOK: contact shadows: depth-aware 3x3 of the half-res AO, on what the water still lets through
+    let mo = vec2i(textureDimensions(tAO)) - 1; let hp = vec2i(fc.xy * .5);
+    var ao = 0.; var aw = 0.;
+    for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
+      let a = textureLoad(tAO, clamp(hp + vec2i(x, y), vec2i(0), mo), 0);
+      let w = 1. / (.02 + abs(a.g - zf) / zf); ao += a.r * w; aw += w;
+    } }
+    ao /= aw;
+    c *= 1. - (1. - ao) * exp(-WEXT.g * zf) * .85;
+  }
+  c += acc / ws;
   let bl = textureSampleLevel(tB, sC, uv, 0.).rgb;
   c = mix(c, bl, .06) + bl * .03;
-  c *= g.mis.x;
+  c *= g.mis.x * 1.25; // LOOK: exposure (the darker water column and even caustics need a little more)
   let q = uv - .5;
   c *= 1. - dot(q, q) * .55;
   c = tmap(c);
   let l0 = dot(c, vec3f(.2126, .7152, .0722));
-  let l = mix(l0, l0 * l0 * (3. - 2. * l0), .8);
+  let l = mix(l0, l0 * l0 * (3. - 2. * l0), .62); // LOOK: gentler S-curve and saturation (no bleached highlights)
   c *= l / max(l0, 1e-4);
-  c = mix(c, vec3f(l), ss(.55, 1., l) * .1);
-  c = mix(vec3f(l), c, 1.3) + vec3f(.006, .002, 0.);
+  c = mix(c, vec3f(l), ss(.6, 1., l) * .15);
+  c = mix(vec3f(l), c, 1.18) + vec3f(.004, .002, 0.);
   c = pow(max(c, vec3f(0.)), vec3f(1. / 2.2));
   let n = ign(fc.xy) + ign(fc.xy + 37.) - 1.;
   return vec4f(c + n / 255., 1.);

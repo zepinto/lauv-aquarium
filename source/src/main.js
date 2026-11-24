@@ -50,6 +50,9 @@ const tDetail = tex(1024, 1024, 'rgba8unorm', TU.RENDER_ATTACHMENT | TU.TEXTURE_
 const tVol = tex(NX / 2, NY / 2, 'rg8unorm', TU.TEXTURE_BINDING | TU.COPY_DST, { d: NZ / 2 });
 const tMap = tex(512, 512, 'rgba8unorm', TU.TEXTURE_BINDING | TU.COPY_DST);
 
+// LOOK: debug switches (tests, per-pass costs) and a camera orbit for test shots (free camera at azimuth / elevation)
+const LOOKDBG = { rays: 1, ao: 1, orbit(az, el) { lauvS.camMode = 'free'; lauvS.camAz = az; lauvS.camEl = el; lauvS.snap = 1; } }; window.__look = LOOKDBG;
+const LOOK = lookTextures(); // LOOK: scanned material textures (look.js), loading in the background
 const UB = new Float32Array(68), UBS = new Float32Array(68);
 const ubo = device.createBuffer({ size: 272, usage: BU.UNIFORM | BU.COPY_DST }), uboS = device.createBuffer({ size: 272, usage: BU.UNIFORM | BU.COPY_DST });
 const WT = new Float32Array(4), uboW = device.createBuffer({ size: 16, usage: BU.UNIFORM | BU.COPY_DST });
@@ -60,11 +63,13 @@ const bgl0 = device.createBindGroupLayout({ entries: [
   { binding: 1, visibility: VF, sampler: {} }, { binding: 2, visibility: VF, sampler: {} }, { binding: 3, visibility: VF, sampler: { type: 'comparison' } },
   { binding: 4, visibility: VF, texture: { sampleType: 'depth' } },
   { binding: 5, visibility: VF, texture: {} }, { binding: 6, visibility: VF, texture: {} },
-  { binding: 7, visibility: VF, texture: { viewDimension: '3d' } }, { binding: 8, visibility: VF, texture: {} }] });
+  { binding: 7, visibility: VF, texture: { viewDimension: '3d' } }, { binding: 8, visibility: VF, texture: {} },
+  { binding: 9, visibility: VF, texture: { viewDimension: '2d-array' } }, { binding: 10, visibility: VF, texture: { viewDimension: '2d-array' } }] }); // 9, 10: LOOK material textures
 const mkBG0 = (u, sh) => device.createBindGroup({ layout: bgl0, entries: [
   { binding: 0, resource: { buffer: u } }, { binding: 1, resource: sRep }, { binding: 2, resource: sVol }, { binding: 3, resource: sCmp },
   { binding: 4, resource: sh.createView() }, { binding: 5, resource: tWater.createView() }, { binding: 6, resource: tDetail.createView() },
-  { binding: 7, resource: tVol.createView() }, { binding: 8, resource: tMap.createView() }] });
+  { binding: 7, resource: tVol.createView() }, { binding: 8, resource: tMap.createView() },
+  { binding: 9, resource: LOOK.albView }, { binding: 10, resource: LOOK.nhView }] });
 const bg0 = mkBG0(ubo, tShadow), bg0s = mkBG0(uboS, tDummy);
 // group 1: the offset of the tile copy being drawn (dynamic offset into 9 slots of 256 bytes: the 3x3 copies of the world)
 const bglTile = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: SS.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: 16 } }] });
@@ -141,6 +146,7 @@ const uboT = device.createBuffer({ size: 160, usage: BU.UNIFORM | BU.COPY_DST })
 const TUB = new Float32Array(40), CURVP = new Float32Array(16), PREVVP = new Float32Array(16);
 let taaK = 0, taaReset = 1;
 const mRays = mod(W_RAYS), mPost = mod(W_POST), mRB = mod(W_RBLUR);
+const mAO = mod(W_AO), pAO = device.createRenderPipeline({ layout: 'auto', vertex: { module: mAO, entryPoint: 'vs' }, fragment: { module: mAO, entryPoint: 'fs', targets: [{ format: 'rg16float' }] } }); // LOOK: contact shadows
 const pRB = device.createRenderPipeline({ layout: 'auto', vertex: { module: mRB, entryPoint: 'vs' }, fragment: { module: mRB, entryPoint: 'fs', targets: [{ format: HDR }] } });
 const pRays = device.createRenderPipeline({ layout: 'auto', vertex: { module: mRays, entryPoint: 'vs' }, fragment: { module: mRays, entryPoint: 'fs', targets: [{ format: HDR }] } });
 const pPost = device.createRenderPipeline({ layout: 'auto', vertex: { module: mPost, entryPoint: 'vs' }, fragment: { module: mPost, entryPoint: 'fs', targets: [{ format: FMT }] } });
@@ -316,6 +322,7 @@ const QS = new URLSearchParams(location.search), RES1 = QS.get('res') === '1', F
 const SYNC = QS.get('sync') === '1';
 let W = 0, H = 0, DW = 0, DH = 0, pix = RES1 ? PIXMAX : +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = RES1 ? 1 : +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
 let passScene, passDepth, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [], passTaa = [], bgTaa = [], bgPostK = [], bloomBG0 = [];
+let passAO, bgAO; // LOOK: contact shadows
 const NB = 6;
 function resize() {
   DW = max(2, round(canvas.clientWidth * devicePixelRatio)); DH = max(2, round(canvas.clientHeight * devicePixelRatio));
@@ -329,6 +336,9 @@ function resize() {
   const tMS = tex(AA > 1 ? W : 1, H, HDR, TU.RENDER_ATTACHMENT, { samples: AA }), tDp = tex(W, H, DEPTH, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING, { samples: AA });
   const tRes = tex(W, H, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay2 = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING);
   targets = [tMS, tDp, tRes, tRay, tRay2];
+  const tAO = tex(W / 2, H / 2, 'rg16float', TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING); targets.push(tAO); // LOOK: contact shadows
+  passAO = { colorAttachments: [{ ...colorAtt(tAO.createView(), true), clearValue: [1, 6e4, 0, 0] }] };
+  bgAO = device.createBindGroup({ layout: pAO.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: tDp.createView() }] });
   // TAA: two history textures (ping-pong); everything after the scene reads the one just written instead of tRes
   const tHis = [0, 1].map(() => tex(TAA ? W : 1, TAA ? H : 1, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING)); targets.push(...tHis);
   const vHis = tHis.map((t) => t.createView());
@@ -347,9 +357,9 @@ function resize() {
   bgRays = device.createBindGroup({ layout: pRays.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sRep }, { binding: 2, resource: sCmp },
     { binding: 3, resource: tShadow.createView() }, { binding: 4, resource: tWater.createView() }, { binding: 5, resource: vDp }, { binding: 6, resource: tVol.createView() }, { binding: 7, resource: sVol }] });
   bgPost = device.createBindGroup({ layout: pPost.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sClamp }, { binding: 2, resource: vRes },
-    { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }] });
+    { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }, { binding: 6, resource: tAO.createView() }] });
   bgPostK = [0, 1].map((k) => device.createBindGroup({ layout: pPost.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sClamp }, { binding: 2, resource: TAA ? vHis[k] : vRes },
-    { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }] }));
+    { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }, { binding: 6, resource: tAO.createView() }] })); // 6: LOOK AO
   bloomBG0 = [0, 1].map((k) => blitBG(TAA ? vHis[k] : vRes));
   passTaa = [0, 1].map((k) => ({ colorAttachments: [colorAtt(vHis[k], false)] }));
   bgTaa = TAA ? [0, 1].map((k) => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: uboT } }, { binding: 1, resource: sClamp },
@@ -366,11 +376,11 @@ addEventListener('resize', resize);
 // ---------------------------------------------------------------- timing (GPU timestamp queries)
 // per-pass GPU time (ms, smoothed over ~10 frames): water texture, scene, light shafts, shaft blur, bloom, composite.
 // window.__perf.ms gives it to the test tools, dev.js shows it
-const PASSES = ['water', 'scene', 'taa', 'rays', 'blur', 'bloom', 'post'], NPASS = PASSES.length, PASSMS = new Float64Array(NPASS), PASSRAW = new Float64Array(NPASS + 1);
+const PASSES = ['water', 'scene', 'taa', 'rays', 'blur', 'bloom', 'ao', 'post'], NPASS = PASSES.length, PASSMS = new Float64Array(NPASS), PASSRAW = new Float64Array(NPASS + 1);
 const PERF = window.__perf = { cpu: 0, names: PASSES, ms: PASSMS, raw: PASSRAW, n: 0, get gpu() { return F[GPU]; } };
 let qs, qResolve, qRead = [];
 const tsw = (p, begin, end) => ({ querySet: qs, beginningOfPassWriteIndex: begin ? 2 * p : undefined, endOfPassWriteIndex: end ? 2 * p + 1 : undefined });
-let tsWater0, tsWater4, tsScene0, tsScene1, tsTaa, tsRays, tsBlur, tsBloom0, tsBloomN, tsPost;
+let tsWater0, tsWater4, tsScene0, tsScene1, tsTaa, tsRays, tsBlur, tsBloom0, tsBloomN, tsPost, tsAO;
 if (hasTS) {
   qs = device.createQuerySet({ type: 'timestamp', count: 2 * NPASS });
   qResolve = device.createBuffer({ size: 16 * NPASS, usage: BU.QUERY_RESOLVE | BU.COPY_SRC });
@@ -388,7 +398,7 @@ if (hasTS) {
     qRead.push(o);
   }
   tsWater0 = tsw(0, 1, 0); tsWater4 = tsw(0, 0, 1); tsScene0 = tsw(1, 1, 0); tsScene1 = tsw(1, 0, 1); tsTaa = tsw(2, 1, 1); tsRays = tsw(3, 1, 1); tsBlur = tsw(4, 1, 1);
-  tsBloom0 = tsw(5, 1, 0); tsBloomN = tsw(5, 0, 1); tsPost = tsw(6, 1, 1);
+  tsBloom0 = tsw(5, 1, 0); tsBloomN = tsw(5, 0, 1); tsAO = tsw(6, 1, 1); tsPost = tsw(7, 1, 1); // 6: LOOK AO
 }
 
 // ---------------------------------------------------------------- frame
@@ -509,7 +519,7 @@ function render() {
   m[44] = fx; m[45] = fy; m[46] = fz; m[47] = NEAR;
   m[51] = 0;
   let ek = (-cy - 8) / 26; ek = ek < 0 ? 0 : ek > 1 ? 1 : ek;
-  m[56] = EXPO * (0.6 + 0.4 * ek); m[57] = RAYS; m[58] = det;
+  m[56] = EXPO * (0.6 + 0.4 * ek); m[57] = RAYS * LOOKDBG.rays; m[58] = det;
   m[59] = cy <= 0 ? 0 : cy >= 0.6 ? 1 : (cy / 0.6) * (cy / 0.6) * (3 - 2 * cy / 0.6);   // camera in the air: how far the world below looks refracted (proj())
   CULLK = 1 - 0.22 * m[59];
   lauvUpdate(); surfUpdate();
@@ -566,6 +576,8 @@ function render() {
   r.setPipeline(pSnow); r.setVertexBuffer(0, ibSnowB); r.draw(4, nSnow);
   lauvDrawParticles(r);
   r.end();
+  passAO.timestampWrites = slot ? tsAO : undefined; // LOOK: contact shadows (off: cleared to 1)
+  r = e.beginRenderPass(passAO); if (LOOKDBG.ao) { r.setPipeline(pAO); r.setBindGroup(0, bgAO); r.draw(3); } r.end();
   if (TAA) {
     taaK ^= 1; passTaa[taaK].timestampWrites = slot ? tsTaa : undefined;
     r = e.beginRenderPass(passTaa[taaK]); r.setPipeline(pTaa); r.setBindGroup(0, bgTaa[taaK]); r.draw(3); r.end();
@@ -682,6 +694,7 @@ document.addEventListener('pointerlockchange', () => ui(!document.pointerLockEle
 // draw the first frame and wait for the GPU to finish it (pipelines get compiled on first use) before the reveal
 lauvHudInit(); lauvFace(...POSES[0]);
 await say('Letting the light in…', 1, 400);
+await LOOK.ready;
 render(); await Q.onSubmittedWorkDone();
 setTimeout(keep, 15e3, 'abyssalLoad', ''); // the load counts as survived after 15 s of frames
 ui(true);
