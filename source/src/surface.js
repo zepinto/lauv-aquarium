@@ -152,9 +152,12 @@ const SURF_RRS = (() => {
 
 // the text of WGSL function `name` in src (to share one with another module: the surface from below is the look piece's)
 const wgslFn = (src, name) => { const i = src.indexOf('fn ' + name + '('); let d = 0; for (let k = src.indexOf('{', i); k < src.length; k++) { if (src[k] === '{') d++; else if (src[k] === '}' && --d === 0) return src.slice(i, k + 1) + '\n'; } throw new Error('no fn ' + name); };
+const SURF_V = +(new URLSearchParams(location.search).get('sv') || 0);   // cost experiments (dev): 1 flat water, 2 no refraction, 3 no clouds in the reflection, 4 no scene copy
+const SURF_WK = 512, SURF_WKE = 64;   // the wake texture: texels, metres across
 const SURF_M = 128, SURF_LV = 12, SURF_SP0 = 0.08, SURF_TRAIL = 48, SURF_NP = 4;
 const W_SURFA = S_B + /*wgsl*/`
-struct SU { a: vec4f, o: vec4f, sv: vec4f, w: array<vec4f, ${SURF_TRAIL}> }   // a: speed, rpm/2100, the vehicle's clock (wake ages), hull height above the water; o: foam threshold, 0, 0, 0; sv: slope variance per cascade, unresolved; w: wake points (x, z, birth time, strength), newest first
+struct SU { a: vec4f, o: vec4f, sv: vec4f, bb: vec4f, w: array<vec4f, ${SURF_TRAIL}> }   // bb: the wake's bounding box (min x, min z, max x, max z, relative to its newest point)
+   // a: speed, rpm/2100, the vehicle's clock (wake ages), hull height above the water; o: foam threshold, 0, 0, 0; sv: slope variance per cascade, unresolved; w: wake points (x, z, birth time, strength), newest first
 @group(1) @binding(1) var<uniform> su: SU;
 @group(1) @binding(2) var tFl: texture_2d<f32>;          // height of the sea floor (r: (h + 40) / 40), from the world's ground map
 @group(1) @binding(3) var tDisp: texture_2d_array<f32>;  // per cascade: Dx, h, Dz, accumulated foam (label space)
@@ -162,6 +165,8 @@ struct SU { a: vec4f, o: vec4f, sv: vec4f, w: array<vec4f, ${SURF_TRAIL}> }   //
 @group(1) @binding(5) var<storage, read> pr: array<vec4f, ${SURF_NP}>;   // the probe: [0] the vehicle, [1] the camera: height, slope x, z, Jacobian
 @group(1) @binding(6) var tScn: texture_2d<f32>;         // the scene under the water (copied before the water is drawn)
 @group(1) @binding(7) var tScnD: texture_depth_2d;
+@group(1) @binding(8) var sO: sampler;                   // the ocean textures: trilinear, a little anisotropy
+@group(1) @binding(9) var tWake: texture_2d<f32>;        // the hull's foam trail round su.o.zw (r: foam, g: its edge)
 const ON = ${OC_N}.;
 const OL = array<f32, 3>(${OC_L.join(', ')});
 const REFR = ${AA === 1};
@@ -294,43 +299,32 @@ fn slopes(p: vec2f, damp: f32) -> SL {
   var o: SL; var gs = vec2f(0.); var dxx = 0.; var dzz = 0.; var v = su.sv.w; var acc = 0.;
   for (var c = 0; c < 3; c++) {
     let uv = p / OL[c] + .5 / ON;
-    let a = textureSample(tDer, sR, uv, c);
+    let a = textureSample(tDer, sO, uv, c);
     gs += a.xy * select(1., damp, c == 2); dxx += a.z; dzz += a.w;
     let fp = max(length(dpdx(uv)), length(dpdy(uv))) * ON;
     v += su.sv[c] * ss(.6, 5., fp);
-    if (c < 2) { acc = max(acc, textureSample(tDisp, sR, uv, c).w); }
+    if (c < 2) { acc = max(acc, textureSample(tDisp, sO, uv, c).w); }
   }
   // capillary-gravity detail below the finest cascade: its slope field shrunk 7.3 times (the saturation range is scale invariant, Phillips 1985)
-  gs += textureSample(tDer, sR, p / OL[2] * 7.31 + .37, 2).xy * .45 * damp;
+  gs += textureSample(tDer, sO, p / OL[2] * 7.31 + .37, 2).xy * .45 * damp;
   let jx = max(1. + dxx, .2); let jz = max(1. + dzz, .2);
   o.s = vec2f(gs.x / jx, gs.y / jz); o.J = jx * jz; o.v = v; o.foam = acc;
   return o;
 }
-// foam trail of the hull: the points of the track, each one's width growing and strength fading with its age
-fn wake(p: vec3f, t: f32) -> vec2f {
-  let c0 = wd(vec3f(su.w[0].x, 0., su.w[0].y) - p).xz;
-  if (dot(c0, c0) > 1600. || su.w[0].w <= 0.) { return vec2f(0.); }
-  var acc = 0.; var a = c0; var edge = 0.;
-  for (var k = 1; k < ${SURF_TRAIL}; k++) {
-    let q = su.w[k]; let pv = su.w[k - 1];
-    if (q.w <= 0.) { break; }
-    let b = a + wd(vec3f(q.x - pv.x, 0., q.y - pv.y)).xz;
-    let ab = b - a; let h = clamp(-dot(a, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
-    let dd = length(a + ab * h);
-    let age = t - mix(pv.z, q.z, h);
-    let w = .07 + .07 * age;
-    let s = mix(pv.w, q.w, h) * exp(-age * .45);
-    acc = max(acc, s * ss(w, w * .2, dd));
-    edge = max(edge, s * ss(w * 1.6, w, dd) * ss(w * .5, w, dd));
-    a = b;
-  }
-  return vec2f(acc, edge);
+// foam trail of the hull (the wake texture, drawn by W_WAKE)
+fn wake(p: vec2f) -> vec2f {
+  let uv = wr2v(p - su.o.zw) / ${SURF_WKE}. + .5;
+  if (su.w[0].w <= 0. || any(uv < vec2f(0.)) || any(uv > vec2f(1.))) { return vec2f(0.); }
+  return textureSampleLevel(tWake, sC, uv, 0.).rg;
 }
+fn wr2v(v: vec2f) -> vec2f { return vec2f(wr(v.x), wr(v.y)); }
 @fragment fn fsM(i: VM) -> @location(0) vec4f {
+  if (${SURF_V} == 1) { return vec4f(.1, .3, .5, 1.); }
   let t = g.cam.w; let wp = i.wp; let p = i.lp;
   let v = g.cam.xyz - wp; let d = length(v); let V = v / d;
-  let wk0 = select(vec2f(0.), wake(wp, su.a.z), su.w[0].w > 0.);
+  let wk0 = select(vec2f(0.), wake(wp.xz), ${SURF_V} != 7);
   let S = slopes(p, 1. - .75 * sat(wk0.x * 1.5));
+  if (${SURF_V} == 5) { return vec4f(S.s * .5 + .5, S.foam, 1.); }
   var sl = S.s;
   // how far behind the surface the scene lies along this ray (the hull, kelp, the reef)
   let zw = g.fwd.w / max(i.cp.z, 1e-7); let zo = g.fwd.w / max(textureLoad(tScnD, vec2i(i.cp.xy), 0), 1e-7);
@@ -338,34 +332,40 @@ fn wake(p: vec3f, t: f32) -> vec2f {
   // ---- the hull: waterline, bow wave, wake (a slick behind it: the short waves are damped)
   var foamV = 0.; var slick = 0.;
   let aw = ss(.25, .03, su.a.w);
-  if (aw > 0. || su.w[0].w > 0.) {
+  let ta = wd(g.va.xyz - wp).xz; let nb = wd(g.vb.xyz - wp).xz;
+  let ab = nb - ta; let hh = clamp(-dot(ta, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
+  let dh = length(ta + ab * hh);
+  let hdir = normalize(ab); let rel = -nb; let back = -dot(rel, hdir); let sd = abs(dot(rel, vec2f(-hdir.y, hdir.x)));
+  var lacew = 0.;
+  if (((aw > 0. && dh < 1.5) || wk0.x + wk0.y > 0.) && ${SURF_V} != 8) {
+    let lw = 1. - abs(sD(pu(p, .7) + .5).a * 2. - 1.); let lw2 = 1. - abs(sD(pu(p.yx, .23) + .2).a * 2. - 1.);
+    lacew = lw * .55 + lw2 * .45;
     let wk = wk0;
     slick = sat(wk.x * 1.2);
-    let fz = sD(pu(p, .9)).a * .55 + sD(pu(p.yx, .37) + .2).b * .45;
-    let lw = 1. - abs(sD(pu(p, .7) + .5).a * 2. - 1.); let lw2 = 1. - abs(sD(pu(p.yx, .23) + .2).a * 2. - 1.);
-    let lacew = lw * .55 + lw2 * .45;
     foamV = ss(.86 - .16 * wk.x, .9 - .16 * wk.x, lacew + .05 * wk.y) * sat(wk.x * 1.4 + wk.y * .6) * .8;
-    let ta = wd(g.va.xyz - wp).xz; let nb = wd(g.vb.xyz - wp).xz;
-    let ab = nb - ta; let h = clamp(-dot(ta, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
-    let dh = length(ta + ab * h);
-    // waterline: a thin bright meniscus where the hull pierces the water, a looser skirt of bubbles around it
-    // waterline: a thin film where the hull meets the water (the scene is right behind the surface), a broken skirt of bubbles round it
-    let ring = (ss(.045, .0, dObj) * (.35 + .55 * ss(.45, .75, lacew)) + ss(.24, .1, dh) * ss(.06, .1, dh) * .55 * ss(.68, .78, lacew)) * aw;
+    // a broken skirt of bubbles round the hull
+    let skirt = ss(.2, .1, dh) * ss(.06, .1, dh) * .4 * ss(.72, .8, lacew) * aw;
     // bow wave: a V of foam lines opening behind the nose, stronger with speed
-    let hdir = normalize(ab); let rel = -nb; let back = -dot(rel, hdir); let sd = abs(dot(rel, vec2f(-hdir.y, hdir.x)));
     let vl = ss(.04 + .05 * back, 0., abs(sd - (.10 + .33 * max(back, 0.)))) * ss(-.05, .1, back) * ss(2.5, 0., back);
     let bowK = aw * clamp(su.a.x * .7, 0., 1.);
     let bow = (vl * ss(.66, .74, lacew) * .7 + ss(.3, .0, length(nb)) * ss(.5, .6, lacew)) * bowK;
-    foamV = max(foamV, max(ring, bow));
-    // Kelvin wake: divergent waves along the two arms of the 19.5 degree wedge behind the hull, wavelength 2 pi U^2 / g
-    let u = su.a.x;
-    if (u > .3 && back > 0. && back < 25.) {
-      let kw = 9.81 / (u * u);
-      let arm = sd - back * .354;
-      let env = ss(.35 * back + .4, 0., abs(arm)) * exp(-back * .12) * aw * min(u, 1.5) * .06;
-      let ph = kw * (back * .94 + sd * .34);
-      sl += vec2f(-hdir.y, hdir.x) * sign(dot(rel, vec2f(-hdir.y, hdir.x))) * cos(ph) * env;
-    }
+    foamV = max(foamV, max(skirt, bow));
+  }
+  // waterline: a thin film where the hull pierces the water (the scene is just behind the surface here and in front of it a few pixels away)
+  if (aw > 0. && dh < .4 && dObj < .06) {
+    let q = vec2i(i.cp.xy);
+    let zn = min(min(textureLoad(tScnD, q + vec2i(3, 0), 0), textureLoad(tScnD, q - vec2i(3, 0), 0)), min(textureLoad(tScnD, q + vec2i(0, 3), 0), textureLoad(tScnD, q - vec2i(0, 3), 0)));
+    let zx = max(max(textureLoad(tScnD, q + vec2i(3, 0), 0), textureLoad(tScnD, q - vec2i(3, 0), 0)), max(textureLoad(tScnD, q + vec2i(0, 3), 0), textureLoad(tScnD, q - vec2i(0, 3), 0)));
+    if (zx > i.cp.z) { foamV = max(foamV, ss(.06, .0, dObj) * (.5 + .4 * ss(.4, .7, lacew))); }
+  }
+  // Kelvin wake: divergent waves along the two arms of the 19.5 degree wedge behind the hull, wavelength 2 pi U^2 / g
+  let u = su.a.x;
+  if (aw > 0. && u > .3 && back > 0. && back < 25. && sd < back * .5 + 1.) {
+    let kw = 9.81 / (u * u);
+    let arm = sd - back * .354;
+    let env = ss(.35 * back + .4, 0., abs(arm)) * exp(-back * .12) * aw * min(u, 1.5) * .06;
+    let ph = kw * (back * .94 + sd * .34);
+    sl += vec2f(-hdir.y, hdir.x) * sign(dot(rel, vec2f(-hdir.y, hdir.x))) * cos(ph) * env;
   }
   let n0 = normalize(vec3f(-sl.x, 1., -sl.y));
   var n = n0;
@@ -383,7 +383,7 @@ fn wake(p: vec3f, t: f32) -> vec2f {
   let sss = vec3f(.02, .32, .30) * crest * (1. - ss(60., 200., d));
   // ---- the reef through the water: the scene copied before the water, sampled where the refracted ray lands
   var under = Lbody;
-  if (REFR) {
+  if (REFR && ${SURF_V} != 2) {
     let dep = clamp(dObj * max(V.y, 0.), 0., 4.);
     let t0 = refract(-V, vec3f(0., 1., 0.), 1. / 1.333);
     let dl = (tv.xz / max(-tv.y, .25) - t0.xz / max(-t0.y, .25)) * dep * .6 * d / (d + dep / max(V.y, .1));
@@ -399,18 +399,21 @@ fn wake(p: vec3f, t: f32) -> vec2f {
   }
   // ---- foam: whitecaps where the sea folds (the sum of the cascades) and what they leave behind (accumulated per cascade, in label space)
   let wp2 = vec2f(dot(p, WIND), dot(p, vec2f(-WIND.y, WIND.x)));
-  let l1 = sD(wp2 * vec2f(.05, .09) + .3); let l2 = sD(wp2 * vec2f(.21, .34) + .7); let l3 = sD(wp2 * vec2f(.9, 1.3));
-  let lace = (1. - abs(l1.a * 2. - 1.)) * .35 + (1. - abs(l2.a * 2. - 1.)) * .4 + (1. - abs(l3.a * 2. - 1.)) * .25;
   let fold = ss(su.o.x, su.o.x - .35, S.J);
   let amt = max(fold * 1.1, S.foam * .9) * (1. - ss(300., 900., d));
-  let th = amt * 1.5 - 1.15 * (1. - lace);
-  var foamA = .92 * ss(-.02, .45, th);
+  var foamA = 0.; var l3b = .5;
+  if (amt > .02) {
+    let l1 = sD(wp2 * vec2f(.05, .09) + .3); let l2 = sD(wp2 * vec2f(.21, .34) + .7); let l3 = sD(wp2 * vec2f(.9, 1.3));
+    let lace = (1. - abs(l1.a * 2. - 1.)) * .35 + (1. - abs(l2.a * 2. - 1.)) * .4 + (1. - abs(l3.a * 2. - 1.)) * .25;
+    let th = amt * 1.5 - 1.15 * (1. - lace);
+    foamA = .92 * ss(-.02, .45, th); l3b = l3.b;
+  }
   foamA = max(foamA, foamV);
   let plume = sat(fold * 1.5 + S.foam * .4 + wk0.x * .6);
   under = mix(under, under * 1.4 + vec3f(.06, .14, .16), plume * .5);
   // ---- reflection: the sky along the reflected ray; rough water blurs the clouds; rays turned down see the next wave
   var R = reflect(-V, n); let below = ss(0., -.15, R.y); R.y = abs(R.y) + .002; R = normalize(R);
-  var sky = mix(skyCol(R, t, false), skyBase(R), sat(sqrt(s2) * 2.5)) * SK;
+  var sky = select(mix(skyCol(R, t, false), skyBase(R), sat(sqrt(s2) * 2.5)), skyBase(R), ${SURF_V} == 3) * SK;
   sky = mix(sky, .7 * sky + .3 * Lbody, below);
   let Fs = meanFresnel(NoV, sv);
   var col = Fs * sky + (1. - Fs) * (under + sss);
@@ -426,7 +429,7 @@ fn wake(p: vec3f, t: f32) -> vec2f {
   col += spec * (1. - foamA);
   // ---- foam colour: a bubble layer lit by the sun (wrapped) and the sky
   let EdN = vec3f(2.5, 2.25, 1.9) * max((dot(n, SKYSUN) + .6) / 1.6, 0.) * .9 + vec3f(.55, .75, 1.) * (.55 + .45 * n.y);
-  let foamC = EdN * (.62 + .25 * l3.b) * mix(.8, 1., ss(-.2, .3, i.eta));
+  let foamC = EdN * (.62 + .25 * l3b) * mix(.8, 1., ss(-.2, .3, i.eta));
   col = mix(col, foamC, foamA);
   // ---- aerial perspective: the far sea takes the colour of the horizon haze, the horizon line stays crisp
   let hz = 1. - exp(-d / 14000.);
@@ -536,6 +539,39 @@ fn evolve(u: u32, v: u32, c: u32) -> array<vec4f, 2> {
   }
 }
 `;
+// the hull's foam trail, drawn into a 64 m square texture round its newest point every frame (the water reads one texel
+// instead of walking the whole trail per pixel)
+const W_WAKE = /*wgsl*/`
+struct SU { a: vec4f, o: vec4f, sv: vec4f, bb: vec4f, w: array<vec4f, ${SURF_TRAIL}> }
+@group(0) @binding(0) var<uniform> su: SU;
+@group(0) @binding(1) var oWake: texture_storage_2d<rgba16float, write>;
+const PER = ${PER}.;
+fn wr(a: f32) -> f32 { return a - PER * round(a / PER); }
+fn ss(a: f32, b: f32, x: f32) -> f32 { let t = clamp((x - a) / (b - a), 0., 1.); return t * t * (3. - 2. * t); }
+@compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) id: vec3u) {
+  if (id.x >= ${SURF_WK}u || id.y >= ${SURF_WK}u) { return; }
+  // c0: the newest point seen from this texel
+  let c0 = -((vec2f(id.xy) + .5) / ${SURF_WK}. - .5) * ${SURF_WKE}. - (su.o.zw - su.w[0].xy);
+  var acc = 0.; var edge = 0.;
+  if (su.w[0].w > 0. && all(-c0 >= su.bb.xy) && all(-c0 <= su.bb.zw)) {
+    var a = c0; let t = su.a.z;
+    for (var k = 1; k < ${SURF_TRAIL}; k++) {
+      let q = su.w[k]; let pv = su.w[k - 1];
+      if (q.w <= 0.) { break; }
+      let b = a + vec2f(wr(q.x - pv.x), wr(q.y - pv.y));
+      let ab = b - a; let h = clamp(-dot(a, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
+      let dd = length(a + ab * h);
+      let age = t - mix(pv.z, q.z, h);
+      let w = .07 + .07 * age;
+      let s = mix(pv.w, q.w, h) * exp(-age * .45);
+      acc = max(acc, s * ss(w, w * .2, dd));
+      edge = max(edge, s * ss(w * 1.6, w, dd) * ss(w * .5, w, dd));
+      a = b;
+    }
+  }
+  textureStore(oWake, id.xy, vec4f(acc, edge, 0., 0.));
+}
+`;
 // mips of the displacement and slope textures (2x2 box)
 const W_OCEANMIP = /*wgsl*/`
 @group(0) @binding(0) var sDisp: texture_2d_array<f32>;
@@ -589,8 +625,8 @@ let surfBGL = null, surfBG = [null, null], surfUBO = null, pSurfSky = null, pSur
 let ocU = null, ocUF = null, ocUB = null, ocBG = [null, null], ocMipBG = [[], []], pOcRows = null, pOcCols = null, pOcMip = null, ocDisp = [null, null], ocDer = null, ocK = 0, ocLastT = -1;
 let prU = null, prUB = null, prOut = null, prBG = [null, null], pProbe = null;
 const prRing = [];                  // readback buffers: {b, busy, t, pts}
-let surfScn = null, surfScnD = null, surfPass = null, surfDummy = null, surfTS = null;
-const surfU = new Float32Array(12 + SURF_TRAIL * 4);
+let surfWakeT = null, pWake = null, wakeBG = null, surfSO = null, surfScn = null, surfScnD = null, surfPass = null, surfDummy = null, surfTS = null;
+const surfU = new Float32Array(16 + SURF_TRAIL * 4);
 async function surfInit() {
   const N = OC_N, NC = OC_NC, VFr = SS.VERTEX | SS.FRAGMENT;
   // ---- the FFT ocean
@@ -626,15 +662,25 @@ async function surfInit() {
   for (let k = 0; k < 2; k++) prBG[k] = device.createBindGroup({ layout: bglP, entries: [{ binding: 0, resource: { buffer: prUB } }, { binding: 1, resource: ocDisp[k].createView({ dimension: '2d-array' }) },
     { binding: 2, resource: ocDer.createView({ dimension: '2d-array' }) }, { binding: 3, resource: sLin }, { binding: 4, resource: { buffer: prOut } }] });
   for (let i = 0; i < 3; i++) prRing.push({ b: device.createBuffer({ size: SURF_NP * 16, usage: BU.MAP_READ | BU.COPY_DST }), busy: false, t: 0, pts: new Float64Array(SURF_NP * 2), cpu: new Float64Array(SURF_NP * 3) });
+  // ---- the wake texture
+  surfWakeT = device.createTexture({ size: [SURF_WK, SURF_WK], format: 'rgba16float', usage: TU.STORAGE_BINDING | TU.TEXTURE_BINDING });
   // ---- the render side
   const m = mod(W_SURFA);
   surfBGL = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: VFr, buffer: {} }, { binding: 1, visibility: VFr, buffer: {} }, { binding: 2, visibility: VFr, texture: {} },
     { binding: 3, visibility: VFr, texture: { viewDimension: '2d-array' } }, { binding: 4, visibility: VFr, texture: { viewDimension: '2d-array' } },
-    { binding: 5, visibility: VFr, buffer: { type: 'read-only-storage' } }, { binding: 6, visibility: VFr, texture: { sampleType: 'unfilterable-float' } }, { binding: 7, visibility: VFr, texture: { sampleType: 'depth' } }] });
+    { binding: 5, visibility: VFr, buffer: { type: 'read-only-storage' } }, { binding: 6, visibility: VFr, texture: { sampleType: 'unfilterable-float' } }, { binding: 7, visibility: VFr, texture: { sampleType: 'depth' } },
+    { binding: 8, visibility: VFr, sampler: {} }, { binding: 9, visibility: VFr, texture: {} }] });
+  surfSO = device.createSampler({ addressModeU: 'repeat', addressModeV: 'repeat', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', maxAnisotropy: SURF_V === 6 ? 1 : 4 });
   const pl = device.createPipelineLayout({ bindGroupLayouts: [bgl0, surfBGL] });
   surfFloorTex = device.createTexture({ size: [NX, NZ], format: 'r8unorm', usage: TU.TEXTURE_BINDING | TU.COPY_DST });
   surfDummy = device.createBuffer({ size: 16, usage: BU.UNIFORM });
   surfUBO = device.createBuffer({ size: surfU.byteLength, usage: BU.UNIFORM | BU.COPY_DST });
+  {
+    const mW = mod(W_WAKE);
+    const bglW = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: C, buffer: {} }, { binding: 1, visibility: C, storageTexture: { access: 'write-only', format: 'rgba16float' } }] });
+    pWake = device.createComputePipeline({ layout: device.createPipelineLayout({ bindGroupLayouts: [bglW] }), compute: { module: mW, entryPoint: 'main' } });
+    wakeBG = device.createBindGroup({ layout: bglW, entries: [{ binding: 0, resource: { buffer: surfUBO } }, { binding: 1, resource: surfWakeT.createView() }] });
+  }
   pSurfSky = device.createRenderPipeline({ layout: pl, vertex: { module: m, entryPoint: 'vsSky' }, fragment: { module: m, entryPoint: 'fsSky', targets: [{ format: HDR }] },
     primitive: { topology: 'triangle-strip' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' }, multisample: { count: AA } });
   pSurfLens = device.createRenderPipeline({ layout: pl, vertex: { module: m, entryPoint: 'vsSky' }, fragment: { module: m, entryPoint: 'fsLens', targets: [{ format: HDR }] },
@@ -666,7 +712,7 @@ function surfResize(tRes, tDp) {
   surfScn.src = tRes; surfScnD.src = tDp;
   for (let k = 0; k < 2; k++) surfBG[k] = device.createBindGroup({ layout: surfBGL, entries: [{ binding: 0, resource: { buffer: surfDummy } }, { binding: 1, resource: { buffer: surfUBO } }, { binding: 2, resource: surfFloorTex.createView() },
     { binding: 3, resource: ocDisp[k].createView({ dimension: '2d-array' }) }, { binding: 4, resource: ocDer.createView({ dimension: '2d-array' }) }, { binding: 5, resource: { buffer: prOut } },
-    { binding: 6, resource: surfScn.createView() }, { binding: 7, resource: surfScnD.createView() }] });
+    { binding: 6, resource: surfScn.createView() }, { binding: 7, resource: surfScnD.createView() }, { binding: 8, resource: surfSO }, { binding: 9, resource: surfWakeT.createView() }] });
   surfPass = AA === 1 ? { colorAttachments: [{ view: tRes.createView(), loadOp: 'load', storeOp: 'store' }], depthStencilAttachment: { view: tDp.createView(), depthLoadOp: 'load', depthStoreOp: 'store' } } : null;
 }
 // every frame, after the vehicle has moved: the track of foam it leaves and the uniforms
@@ -674,10 +720,17 @@ function surfUpdate() {
   const t = F[TIME], cy = F[CY];
   surfOn = cy > -1.6;
   surfU[0] = abs(lv.v[0]); surfU[1] = abs(lv.rpm) / 2100; surfU[2] = lv.t; surfU[3] = abs(lv.pos[1] - lv.surfY);
-  surfU[4] = SURF_TUNE.thr; surfU[5] = SURF_TUNE.dbg; surfU[6] = 0; surfU[7] = 0;
+  surfU[4] = SURF_TUNE.thr; surfU[5] = SURF_TUNE.dbg;
+  { const tx = SURF_WKE / SURF_WK, p = surfTrail[0]; surfU[6] = p ? Math.round(p.x / tx) * tx : 0; surfU[7] = p ? Math.round(p.z / tx) * tx : 0; }
   surfU[8] = OC.cas[0].slope; surfU[9] = OC.cas[1].slope; surfU[10] = OC.cas[2].slope; surfU[11] = OC.resid;
+  // the wake's bounding box round its newest point, grown by the widest the trail gets (its oldest point's width)
+  let x0 = 0, z0 = 0, x1 = 0, z1 = 0;
+  const p0 = surfTrail[0];
+  for (let i = 1; i < surfTrail.length; i++) { const dx = wrapD(surfTrail[i].x - p0.x), dz = wrapD(surfTrail[i].z - p0.z); if (dx < x0) x0 = dx; if (dx > x1) x1 = dx; if (dz < z0) z0 = dz; if (dz > z1) z1 = dz; }
+  const mg = p0 ? 1.2 + 0.18 * Math.max(0, lv.t - surfTrail[surfTrail.length - 1].t) : 0;
+  surfU[12] = x0 - mg; surfU[13] = z0 - mg; surfU[14] = x1 + mg; surfU[15] = z1 + mg;
   for (let i = 0; i < SURF_TRAIL; i++) {
-    const p = surfTrail[i], o = 12 + i * 4;
+    const p = surfTrail[i], o = 16 + i * 4;
     if (p) { surfU[o] = p.x; surfU[o + 1] = p.z; surfU[o + 2] = p.t; surfU[o + 3] = p.s; } else { surfU[o] = surfU[o + 1] = surfU[o + 2] = 0; surfU[o + 3] = 0; }
   }
   Q.writeBuffer(surfUBO, 0, surfU);
@@ -704,6 +757,7 @@ function surfCompute(e, tsw) {
     for (let l = 1; l < 6; l++) { c.setBindGroup(0, ocMipBG[ocK][l - 1]); const n = OC_N >> l; c.dispatchWorkgroups(Math.ceil(n / 8), Math.ceil(n / 8), OC_NC); }
   }
   c.setPipeline(pProbe); c.setBindGroup(0, prBG[ocK]); c.dispatchWorkgroups(1);
+  if (surfOn && surfTrail.length) { c.setPipeline(pWake); c.setBindGroup(0, wakeBG); c.dispatchWorkgroups(SURF_WK / 8, SURF_WK / 8); }
   c.end();
   let slot = null; for (let i = 0; i < prRing.length; i++) if (!prRing[i].busy) { slot = prRing[i]; break; }
   if (slot) {
@@ -735,14 +789,16 @@ function surfDrawWater(e, r, ts) {
   const above = F[CY] > pr0H() - 0.05;
   if (above && surfPass) {
     r.end();
-    e.copyTextureToTexture({ texture: surfScn.src }, { texture: surfScn }, [W, H]);
-    e.copyTextureToTexture({ texture: surfScnD.src }, { texture: surfScnD }, [W, H]);
+    if (SURF_V !== 4) {
+      e.copyTextureToTexture({ texture: surfScn.src }, { texture: surfScn }, [W, H]);
+      e.copyTextureToTexture({ texture: surfScnD.src }, { texture: surfScnD }, [W, H]);
+    }
     surfPass.timestampWrites = ts;
     r = e.beginRenderPass(surfPass);
     r.setBindGroup(0, bg0);
   }
   r.setBindGroup(1, surfBG[ocK]); r.setVertexBuffer(0, surfVB); r.setIndexBuffer(surfIB, 'uint32');
-  r.setPipeline(pSurfUnder); r.drawIndexed(surfNI);
+  if (F[CY] < 0.6) { r.setPipeline(pSurfUnder); r.drawIndexed(surfNI); }   // the underside shows only from below or across the lens
   r.setPipeline(pSurfWater); r.drawIndexed(surfNI);
   if (above && surfPass && F[CY] > 0 && F[CY] < 1.5) { r.setPipeline(pSurfLens); r.draw(4); }
   return r;
