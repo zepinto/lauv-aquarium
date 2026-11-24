@@ -39,14 +39,17 @@ const SC_PLAN = [
   { sp: 0, n: 5000, kind: 1, count: 1, R: 1.7, speed: 0.9, fear: 1.2, ymin: -17, ymax: -6, hole: 1 },
   { sp: 0, n: 512, kind: 0, count: 3, R: 3.0, speed: 5, fear: 2.4, ymin: -16, ymax: -5 },
   { sp: 6, n: 160, kind: 0, count: 3, R: 4.0, speed: 4.5, fear: 2.4, ymin: -16, ymax: -4 },
+  { sp: 4, n: 20, kind: 2, count: 12, R: 1.4, speed: 1.4, fear: 1.6, rock: 1, above: 1.3 },
+  { sp: 3, n: 10, kind: 2, count: 8, R: 1.6, speed: 1.2, fear: 1.7, rock: 1, above: 1.5 },
+  { sp: 5, n: 8, kind: 0, count: 10, R: 2.0, speed: 2.0, fear: 2.0, ymin: -18, ymax: -8 },
   { sp: 5, n: 96, kind: 0, count: 5, R: 2.6, speed: 2.5, fear: 2.0, ymin: -18, ymax: -6 },
-  { sp: 2, n: 96, kind: 2, count: 4, R: 2.2, speed: 1.2, fear: 1.8, rock: 1, above: 2.6 },
+  { sp: 2, n: 64, kind: 2, count: 10, R: 2.2, speed: 1.2, fear: 1.8, rock: 1, above: 2.6 },
   { sp: 4, n: 64, kind: 0, count: 4, R: 2.0, speed: 2.0, fear: 1.8, ymin: -18, ymax: -6 },
   { sp: 3, n: 40, kind: 0, count: 4, R: 2.2, speed: 1.6, fear: 1.8, ymin: -18, ymax: -6 },
-  { sp: 7, n: 32, kind: 2, count: 3, R: 1.6, speed: 1.2, fear: 1.6, rock: 1, above: 1.4 },
+  { sp: 7, n: 12, kind: 2, count: 10, R: 1.6, speed: 1.2, fear: 1.6, rock: 1, above: 1.4 },
   { sp: 8, n: 1400, kind: 0, count: 2, R: 3.2, speed: 4, fear: 2.4, ymin: -16, ymax: -5, near: [-6, -24] },
   { sp: 8, n: 480, kind: 2, count: 2, R: 3.0, speed: 1.0, fear: 2.2, rock: 1, above: 2.2 },
-  { sp: 1, n: 48, kind: 2, count: 6, R: 1.1, speed: 1.4, fear: 1.5, rock: 1, above: 1.1 },
+  { sp: 1, n: 24, kind: 2, count: 28, R: 1.1, speed: 1.4, fear: 1.5, rock: 1, above: 1.1 },
 ];
 const SC_SCH = [], SC_RANGE = [];   // schools (JS side) and, per species, [first fish, fish count]
 const scMode = { compute: true, draw: true }; // tests: switch the two halves of the piece off to time them
