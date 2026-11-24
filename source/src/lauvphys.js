@@ -87,7 +87,8 @@ class LauvVehicle {
     this.headRef = 0; this.holdHeading = true; this.rpm = 0; this.rpmCmd = 0; this.propAngle = 0;
     this.fouled = 0; this.thrust = 0; this.rpmPrev = 0; this.ctrlAcc = 0;
     this.ffTable = null; this.buildFF();
-    this.t = 0; this.ydepth = 0; this.depthMin = -0.07;
+    this.t = 0; this.ydepth = 0; this.depthMin = -0.045;
+    this.surfY = 0; this.surfSx = 0; this.surfSz = 0; this.surfVy = 0;   // water surface under the hull (surface.js): height, slope in x and z, vertical speed
     this.contact = 0; this.sy = 0;
   }
   // rpm that gives speed U in calm water: table by bisection (DUNE speed model feed-forward)
@@ -164,6 +165,7 @@ class LauvVehicle {
   // ---- one fixed physics step
   step(dt) {
     const P = this.p, R = this.R, v = this.v, w = this.w, rho = LAUV_RHO;
+    surfWave(this);   // the waves under the hull
     this.ctrlAcc += dt;
     if (this.ctrlAcc >= 1 / 30) { this.control(this.ctrlAcc); this.ctrlAcc = 0; }
     this.servos(dt);
@@ -173,7 +175,7 @@ class LauvVehicle {
     let Fx = 0, Fy = 0, Fz = 0, Tx = 0, Ty = 0, Tz = 0;
     const u = v[0], vy = v[1], vz = v[2], wx = w[0], wy = w[1], wz = w[2];
     // buoyancy (reduced when the hull breaks the surface) and weight, in the body frame
-    const depthTop = -(this.pos[1] + LAUV_R * 0.4), sub = clamp((depthTop + LAUV_R) / (2 * LAUV_R), 0, 1);
+    const depthTop = -(this.pos[1] - this.surfY + LAUV_R * 0.4), sub = clamp((depthTop + LAUV_R) / (2 * LAUV_R), 0, 1);
     this.sub = sub;
     const fw = this.buoy * sub - this.weight;                    // world vertical net force
     Fx += R[1] * fw; Fy += R[4] * fw; Fz += R[7] * fw;
@@ -209,6 +211,14 @@ class LauvVehicle {
       // torque = r x F, r = (rf, py, pz), F = (fa, Fyk, Fzk)
       Tx += py * Fzk - pz * Fyk; Ty += pz * fa - rf * Fzk; Tz += rf * Fyk - py * fa;
     }
+    // at the surface the hull rides the waves: a pitch moment towards the slope of the water along the hull (fades out below 0.3 m)
+    {
+      const dpt = this.surfY - this.pos[1], k = clamp(1 - (dpt - 0.05) / 0.3, 0, 1);
+      if (k > 0) {
+        const hl = hypot(R[0], R[2]) || 1, slope = (this.surfSx * R[0] + this.surfSz * R[2]) / hl, tgt = Math.atan(slope) * (R[0] * R[0] + R[2] * R[2] > 0.1 ? 1 : 0);
+        Tz += k * (90 * (tgt - this.pitch) - 28 * w[2]);
+      }
+    }
     // propeller
     {
       const n = this.rpm / 60, nn = abs(n) + 1e-6, D = P.propD, J = clamp(u * (1 - P.wake) / (nn * D), -1, 1.3);
@@ -236,7 +246,14 @@ class LauvVehicle {
     this.pos[0] += (R[0] * V0 + R[3] * V1 + R[6] * V2) * dt; this.pos[1] += (R[1] * V0 + R[4] * V1 + R[7] * V2) * dt; this.pos[2] += (R[2] * V0 + R[5] * V1 + R[8] * V2) * dt;
     this.rotate(w[0] * dt, w[1] * dt, w[2] * dt);
     // water surface: the hull top stays at the surface
-    if (this.pos[1] > this.depthMin) { this.pos[1] = this.depthMin; const vyw = R[1] * v[0] + R[4] * v[1] + R[7] * v[2]; if (vyw > 0) { v[0] -= vyw * R[1]; v[1] -= vyw * R[4]; v[2] -= vyw * R[7]; } }
+    const lim = this.surfY + this.depthMin;
+    // within 10 cm of the surface (and not told to dive) the hull rides the water: it follows the waves up and down
+    const hug = this.in.pitch > -0.05 && lim - this.pos[1] < 0.1;
+    if (this.pos[1] > lim) this.pos[1] = lim; else if (hug) this.pos[1] += (lim - this.pos[1]) * Math.min(1, 15 * dt);
+    if (hug || this.pos[1] >= lim) {
+      const vyw = R[1] * v[0] + R[4] * v[1] + R[7] * v[2] - this.surfVy;
+      if (hug || vyw > 0) { v[0] -= vyw * R[1]; v[1] -= vyw * R[4]; v[2] -= vyw * R[7]; }
+    }
     this.t += dt;
   }
   // R <- R * Rodrigues(axis angle a = (ax, ay, az) in the body frame), re-orthonormalised

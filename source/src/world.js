@@ -439,7 +439,7 @@ function makeWorld(D, T, POSES) {
     for (let i = 0; i < n; i++) fish.push(x, y, z, R, rnd(), dir * 1.9 / R, spd, ss_);
   }
   const mantas = [];
-  for (let m = 0; m < 5; m++) mantas.push(rr(OX, OX + PER), rr(-12, -8), rr(OZ, OZ + PER), rr(26, 46), rnd() * 6, (rnd() < 0.5 ? 1 : -1) * rr(0.045, 0.085), rr(2.4, 3.4), rnd());
+  for (let m = 0; m < 0; m++) mantas.push(rr(OX, OX + PER), rr(-12, -8), rr(OZ, OZ + PER), rr(26, 46), rnd() * 6, (rnd() < 0.5 ? 1 : -1) * rr(0.045, 0.085), rr(2.4, 3.4), rnd());
 
   // --- drifting particles
   const snow = new Float32Array(9000 * 4);
