@@ -25,6 +25,13 @@ const ARCHES = [
   [-13, -11, -5, 0, 8.5, 2.0, 1.0], // across the canyon
   [-85, -10, 78, 0.5, 5, 1.4, 1.2],
   [124, -9, -48, 1.2, 4.5, 1.3, 1.2],
+  // LOOK: a few big, distinct landmarks over open sand (silhouettes that read at 30-60 m)
+  [-88, -11, -6, 1.4, 8, 2.2, 1.15],
+  [150, -11, -5, 0.2, 7.5, 2.0, 1.2],
+  [-58, -12, -108, 2.0, 9, 2.4, 1.1],
+  [88, -11, -98, 0.8, 7, 1.9, 1.2],
+  [-150, -12, 150, 2.6, 8.5, 2.3, 1.1],
+  [30, -11, 60, 1.9, 7, 2.0, 1.2],
 ];
 // carved tunnels: ax, ay, az, radius, bx, by, bz
 const HOLES = [
@@ -41,7 +48,7 @@ const SHIP = [70, 40]; // x, z of the wreck
   const hp = (i, j, k) => { let h = Math.imul(i * 92837111 ^ j * 689287499 ^ k * 283923481, 2654435761); h ^= h >>> 15; return (h >>> 0) / 4294967296; };
   for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) {
     const x = OX + (i + 0.25 + 0.5 * hp(i, j, 1)) * PER / 5, z = OZ + (j + 0.25 + 0.5 * hp(i, j, 2)) * PER / 5;
-    let ok = hp(i, j, 3) < 0.75;
+    let ok = hp(i, j, 3) < 0.4; // LOOK: fewer pinnacles (was 0.75): negative space between landmarks
     for (const m of MESAS) if (min(hypot(wrapD(x - m[0]), wrapD(z - m[1])), hypot(wrapD(x - m[2]), wrapD(z - m[3]))) < 25) ok = false;
     if (hypot(wrapD(x - SHIP[0]), wrapD(z - SHIP[1])) < 40) ok = false;
     if (ok) MESAS.push([x, z, x + 3 * hp(i, j, 4), z + 3 * hp(i, j, 5), 2.6 + 1.6 * hp(i, j, 6), -1.5 - 3 * hp(i, j, 7), 1.5, 2.5]);
@@ -50,14 +57,14 @@ const SHIP = [70, 40]; // x, z of the wreck
 // extra outcrops on a jittered grid so there is a lit rock mass in the mid-ground wherever one looks
 {
   const hsh = (i, j, k) => { let h = Math.imul(i * 73856093 ^ j * 19349663 ^ k * 83492791, 2654435761); h ^= h >>> 15; return (h >>> 0) / 4294967296; };
-  const SPLIT = 8, CW = PER / SPLIT;
+  const SPLIT = 6, CW = PER / SPLIT; // LOOK: was 8: fewer, larger outcrops
   for (let i = 0; i < SPLIT; i++) for (let j = 0; j < SPLIT; j++) {
     const x = OX + (i + 0.2 + 0.6 * hsh(i, j, 1)) * CW, z = OZ + (j + 0.2 + 0.6 * hsh(i, j, 2)) * CW;
-    let ok = hsh(i, j, 7) < 0.8;
+    let ok = hsh(i, j, 7) < 0.55;
     for (const m of MESAS) { const d = hypot(wrapD(x - m[0]), wrapD(z - m[1])), d2 = hypot(wrapD(x - m[2]), wrapD(z - m[3])); if (min(d, d2) < 22) ok = false; }
     if (hypot(wrapD(x - SHIP[0]), wrapD(z - SHIP[1])) < 36) ok = false;
     if (!ok) continue;
-    const r = 3 + 3 * hsh(i, j, 3), len = hsh(i, j, 4) < 0.4 ? 14 * hsh(i, j, 5) : 0, a = hsh(i, j, 6) * TAU;
+    const r = 4.5 + 4 * hsh(i, j, 3), len = hsh(i, j, 4) < 0.4 ? 16 * hsh(i, j, 5) : 0, a = hsh(i, j, 6) * TAU;
     MESAS.push([x, z, x + cos(a) * len, z + sin(a) * len, r, -5.5 - 6 * hsh(i, j, 8), 2 + 2 * hsh(i, j, 9), 1 + hsh(i, j, 10)]);
   }
 }
@@ -283,7 +290,7 @@ function makeWorld(D, T, POSES) {
   rseed(6);
   for (let i = 0; i < 20000; i++) {
     const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2], ny = T.wn[k + 1];
-    if (y > -4 || ny < -0.15 || T.vs[k / 3] > 0.35 || rnd() > 0.5 * hot(x, z) + 0.12 || nearPose(x, z, 2)) continue;
+    if (y > -4 || ny < -0.15 || T.vs[k / 3] > 0.35 || rnd() > 0.2 * hot(x, z) + 0.04 || nearPose(x, z, 2)) continue; // LOOK: fewer scattered singles
     const n0 = [T.wn[k], ny, T.wn[k + 2]], [t1, t2] = tangent(n0), cnt = 2 + rnd() * 5 | 0, sd = rnd(), kind = rnd() < 0.55 ? 0 : 1;
     for (let j = 0; j < cnt; j++) {
       const a = rr(-1, 1) * (0.5 + cnt * 0.13), b = rr(-1, 1) * (0.5 + cnt * 0.13);
@@ -299,7 +306,7 @@ function makeWorld(D, T, POSES) {
   for (let k = 0; k < T.nv; k++) if (T.vs[k] < 0.3 && T.wn[k * 3 + 1] > -0.1 && T.wp[k * 3 + 1] > -17 && T.wp[k * 3 + 1] < -2.5) gbk[(floor((wrapT(T.wp[k * 3]) - OX) / 8) % GB) + GB * (floor((wrapT(T.wp[k * 3 + 2]) - OZ) / 8) % GB)].push(k * 3);
   rseed(7);
   let gardens = 0;
-  for (let t = 0; t < 4000 && gardens < 64; t++) {
+  for (let t = 0; t < 4000 && gardens < 26; t++) { // LOOK: was 64
     const c = gbk[(rnd() * GB * GB) | 0]; if (c.length < 40) continue;
     const k0 = c[(rnd() * c.length) | 0], cx = T.wp[k0], cz = T.wp[k0 + 2], R = rr(4, 8), kind = rnd() < 0.5 ? 0 : 1, want = floor(R * R * rr(2.5, 4.5));
     if (nearPose(cx, cz, R)) continue;
@@ -320,14 +327,14 @@ function makeWorld(D, T, POSES) {
   // --- mini reefs: boulder heaps crusted with coral and sponge, with grass about them, spread over the sand so every view has a landmark
   rseed(15);
   const MR = [];
-  for (let t = 0; t < 120000 && MR.length < 260; t++) {
+  for (let t = 0; t < 120000 && MR.length < 80; t++) { // LOOK: was 260 heaps 20 m apart: fewer, bigger, with open sand between
     const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2];
     if (T.wn[k + 1] < 0.9 || y > -8 || y < -24 || nearPose(x, z, 8) || dist2(x, z, SHIP[0], SHIP[1]) < 14) continue;
-    if (MR.some((p) => dist2(x, z, p[0], p[1]) < 20)) continue;
+    if (MR.some((p) => dist2(x, z, p[0], p[1]) < 34)) continue;
     MR.push([x, z]);
     const nb = 5 + (rnd() * 5 | 0), top = [];
     for (let b = 0; b < nb; b++) {
-      const a = rnd() * TAU, r = rnd() * 2.2, sc = rr(0.9, 2.3), bx = x + cos(a) * r, bz = z + sin(a) * r, by = gy(bx, bz) + sc * (0.2 + 0.35 * rnd());
+      const a = rnd() * TAU, r = rnd() * 3, sc = rr(1.2, 3.2), bx = x + cos(a) * r, bz = z + sin(a) * r, by = gy(bx, bz) + sc * (0.2 + 0.35 * rnd());
       solid(rnd() * 4 | 0, bx, by, bz, sc, qRand(), 1, rnd(), 1, 0); top.push([bx, by + sc * 0.6, bz, sc]);
     }
     const sd = rnd(), kind = rnd() < 0.6 ? 0 : 1;
@@ -336,7 +343,7 @@ function makeWorld(D, T, POSES) {
       const [mesh, mat, sc] = PIECE(kind), px = q[0] + cos(a) * r, pz = q[2] + sin(a) * r;
       place(null, 1, 0, 0, [px, rnd() < 0.5 ? q[1] + rr(-0.4, 0.1) : gy(px, pz), pz], mesh, mat, sc, fract(sd + rr(-0.05, 0.05)));
     }
-    if (MR.length % 2 === 0) { // hero: big vivid coral heads on the heap
+    if (MR.length % 3 !== 1) { // hero: big vivid coral heads on the heap (LOOK: two heaps in three)
       const nh = 3 + (rnd() * 3 | 0), hs_ = rnd();
       for (let m = 0; m < nh; m++) {
         const q = top[(rnd() * top.length) | 0], id = [7, 8, 10, 26, 7, 10][(rnd() * 6) | 0], a = rnd() * TAU;
@@ -349,13 +356,13 @@ function makeWorld(D, T, POSES) {
   // --- rocks: boulders lying about, then rubble, then pebbles and shells on the sand
   rseed(8);
   for (let i = 0; i < 4000; i++) {
-    const k = pickV(); if (T.wn[k + 1] < 0.6 || T.wp[k + 1] > -2 || nearPose(T.wp[k], T.wp[k + 2], 6) || rnd() > 0.28) continue;
+    const k = pickV(); if (T.wn[k + 1] < 0.6 || T.wp[k + 1] > -2 || nearPose(T.wp[k], T.wp[k + 2], 6) || rnd() > 0.1) continue; // LOOK: was 0.28
     const sc = (rnd() < 0.1 ? rr(1.4, 2.6) : rr(0.3, 1.2)) * (T.vs[k / 3] > 0.5 ? 0.6 : 1), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2], sd = rnd();
     solid(rnd() * 4 | 0, x, y + sc * 0.15, z, sc, qRand(), 1, sd, 1, 0);
     if (sc > 0.9) for (let j = 0; j < 6; j++) solid(rnd() * 4 | 0, x + rr(-1.6, 1.6) * sc, y + sc * 0.1 + rr(0, 0.3), z + rr(-1.6, 1.6) * sc, rr(0.12, 0.4), qRand(), 1, sd, 1, 0);
   }
   rseed(10);
-  for (let i = 0; i < 60000; i++) {
+  for (let i = 0; i < 28000; i++) { // LOOK: was 60000
     const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2], ny = T.wn[k + 1];
     if (y > -3 || (ny > 0.8 && rnd() < 0.7) || T.vs[k / 3] > 0.6 || nearPose(x, z, 3.5)) continue;
     const sc = (0.3 + 1.8 * pow(rnd(), 2.6)) * (ny > 0.8 ? 0.5 : 1), q = qRand();
@@ -363,7 +370,7 @@ function makeWorld(D, T, POSES) {
     chunks[(sc > 1.1 ? 3 : 0) + (rnd() * 3 | 0)][cellOf(x, z)].push(x - T.wn[k] * sc * 0.3, y - ny * sc * 0.3, z - T.wn[k + 2] * sc * 0.3, sc, q[0], q[1], q[2], q[3], 1, rnd(), sc > 1.1 ? 0 : 96, 0);
   }
   rseed(11);
-  for (let i = 0; i < 90000; i++) { // pebbles, shells and rubble
+  for (let i = 0; i < 50000; i++) { // pebbles, shells and rubble (LOOK: was 90000)
     const k = pickV(), x = T.wp[k] + rr(-0.4, 0.4), z = T.wp[k + 2] + rr(-0.4, 0.4), y = T.wp[k + 1];
     if (T.wn[k + 1] < 0.8 || nearPose(x, z, 1.3) || (T.vs[k / 3] > 0.6 && rnd() < 0.85 - 0.8 * sstep(0.5, 0.62, pfbm(x, 14, z, 0.05, 2)))) continue;
     const sc = 0.04 + 0.22 * pow(rnd(), 2.4), q = qRand();
