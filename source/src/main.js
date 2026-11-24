@@ -103,7 +103,7 @@ const scenePipe = (m, vsE, fsE, buffers, o = {}) => device.createRenderPipeline(
   vertex: { module: m, entryPoint: vsE, buffers, constants: o.constants },
   fragment: { module: m, entryPoint: fsE, targets: [{ format: HDR, blend: o.blend }] },
   primitive: { topology: o.strip ? 'triangle-strip' : 'triangle-list', cullMode: o.cull || 'none' },
-  depthStencil: { format: DEPTH, depthWriteEnabled: !o.blend, depthCompare: 'greater' }, multisample: { count: AA } });
+  depthStencil: { format: DEPTH, depthWriteEnabled: !o.blend, depthCompare: o.eq ? 'greater-equal' : 'greater' }, multisample: { count: AA } });
 const shadowPipe = (m, vsE, buffers, o = {}) => device.createRenderPipeline({ layout: pl0,
   vertex: { module: m, entryPoint: vsE, buffers, constants: o.constants },
   primitive: { topology: o.strip ? 'triangle-strip' : 'triangle-list', cullMode: o.cull || 'none' },
@@ -111,8 +111,8 @@ const shadowPipe = (m, vsE, buffers, o = {}) => device.createRenderPipeline({ la
 
 await say('Compiling shaders…', 0.05, 300);
 const mSolid = mod(W_SOLID), mLeaf = mod(W_LEAF), mAnim = mod(W_ANIM), mSurf = mod(W_SURF), mSpr = mod(W_SPR);
-const pTerrain = scenePipe(mSolid, 'vs', 'fs', [vbSolid, ibSolid], { cull: 'back' });
-const pSolid = scenePipe(mSolid, 'vs', 'fs', [vbSolid, ibSolid]);
+const pTerrain = scenePipe(mSolid, 'vs', 'fs', [vbSolid, ibSolid], { cull: 'back', eq: true });
+const pSolid = scenePipe(mSolid, 'vs', 'fs', [vbSolid, ibSolid], { eq: true });
 const pLeaf = scenePipe(mLeaf, 'vs', 'fs', [ibLeaf], { strip: true, constants: { ROWS: 9 } });
 const pLeaf5 = scenePipe(mLeaf, 'vs', 'fs', [ibLeaf], { strip: true, constants: { ROWS: 5 } });
 const pLeafS = scenePipe(mLeaf, 'vs', 'fs', [ibLeaf], { strip: true, constants: { ROWS: 3, FAR: 70 } });
@@ -123,6 +123,10 @@ const pSurf = scenePipe(mSurf, 'vs', 'fs', [], { strip: true }), pBack = scenePi
 const pBub = scenePipe(mSpr, 'vsBub', 'fsBub', [ibBub], { strip: true, blend: { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } });
 const ADD = { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } };
 const pSnow = scenePipe(mSpr, 'vsSnow', 'fsSnow', [ibSnow], { strip: true, blend: ADD });
+const pDTerrain = device.createRenderPipeline({ layout: pl0, vertex: { module: mSolid, entryPoint: 'vs', buffers: [vbSolid, ibSolid] },
+  primitive: { topology: 'triangle-list', cullMode: 'back' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' }, multisample: { count: AA } });
+const pDSolid = device.createRenderPipeline({ layout: pl0, vertex: { module: mSolid, entryPoint: 'vs', buffers: [vbSolid, ibSolid] },
+  primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' }, multisample: { count: AA } });
 const pSolidSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid]), pTerrSh = shadowPipe(mSolid, 'vs', [vbSolid, ibSolid], { cull: 'front' });
 const pLeafSh = shadowPipe(mLeaf, 'vs', [ibLeaf], { strip: true, constants: { ROWS: 3 } });
 await lauvInit(); // the LAUV: model, pipelines (lauv.js)
@@ -135,6 +139,11 @@ const waterViews = [0, 1, 2, 3, 4].map((m) => tWater.createView({ baseMipLevel: 
 const waterBG = waterViews.map((v) => blitBG(v));
 const waterPass = waterViews.map((v) => ({ colorAttachments: [colorAtt(v, true)] }));
 
+const mTaa = mod(W_TAA);
+const pTaa = device.createRenderPipeline({ layout: 'auto', vertex: { module: mTaa, entryPoint: 'vs' }, fragment: { module: mTaa, entryPoint: 'fs', targets: [{ format: HDR }] } });
+const uboT = device.createBuffer({ size: 160, usage: BU.UNIFORM | BU.COPY_DST });
+const TUB = new Float32Array(40), CURVP = new Float32Array(16), PREVVP = new Float32Array(16);
+let taaK = 0, taaReset = 1;
 const mRays = mod(W_RAYS), mPost = mod(W_POST), mRB = mod(W_RBLUR);
 const mAO = mod(W_AO), pAO = device.createRenderPipeline({ layout: 'auto', vertex: { module: mAO, entryPoint: 'vs' }, fragment: { module: mAO, entryPoint: 'fs', targets: [{ format: 'rg16float' }] } }); // LOOK: contact shadows
 const pRB = device.createRenderPipeline({ layout: 'auto', vertex: { module: mRB, entryPoint: 'vs' }, fragment: { module: mRB, entryPoint: 'fs', targets: [{ format: HDR }] } });
@@ -229,7 +238,7 @@ const POSES = [
   [-100, 6, -90, -140, 6, -110],
 ];
 const F = new Float64Array(32), P6 = new Float64Array(6);
-const CX = 0, CY = 1, CZ = 2, YAW = 3, PIT = 4, FX = 5, FY = 6, FZ = 7, RX = 8, RZ = 9, UX = 10, UY = 11, UZ = 12, VX = 13, VY = 14, VZ = 15, TIME = 16, FLT = 17, LAST = 18, GPU = 19, HUDT = 20, SPL = 21, MX = 22, MY = 23, MZ = 24;
+const CX = 0, CY = 1, CZ = 2, YAW = 3, PIT = 4, FX = 5, FY = 6, FZ = 7, RX = 8, RZ = 9, UX = 10, UY = 11, UZ = 12, VX = 13, VY = 14, VZ = 15, TIME = 16, FLT = 17, LAST = 18, GPU = 19, HUDT = 20, SPL = 21, MX = 22, MY = 23, MZ = 24, FRAME = 25;
 // aim the camera from P6 = position + look-at point
 function aim() {
   const dx = P6[3] - P6[0], dy = P6[4] - P6[1], dz = P6[5] - P6[2];
@@ -305,10 +314,14 @@ Wd.volD = Wd.gm = T.vb = T.ib = T.wp = T.wn = 0;
 // ---------------------------------------------------------------- render targets (rebuilt on resize)
 // The scene is drawn at `pix` pixels and scaled up to the window. frame() tunes it and the draw distance scale `det`
 // for 60 fps; both start where the last visit left them.
-const PIXMAX = 2560 * 1440, PIXMIN = mob ? 25e4 : 5e5, DETMIN = 0.4;
+const PIXMAX = 2560 * 1440, PIXMIN = mob ? 25e4 : LV > 1 ? 5e5 : 1920 * 1080, DETMIN = 0.4;
 const QS = new URLSearchParams(location.search), RES1 = QS.get('res') === '1', FIXT = QS.has('t') ? +QS.get('t') : -1; // res=1: no dynamic resolution; t=: fixed animation time
-let W = 0, H = 0, DW = 0, DH = 0, pix = RES1 ? PIXMAX : +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
-let passScene, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [], passAO, bgAO;
+// ?sync=1 starts the next frame only when the GPU has finished this one (like a display with back-pressure): the GPU timings
+// and the frame rate measured in headless Chrome, which has none, are then true
+const SYNC = QS.get('sync') === '1';
+let W = 0, H = 0, DW = 0, DH = 0, pix = RES1 ? PIXMAX : +SV[1] || (LV > 1 ? 41e4 : mob ? 1280 * 720 : PIXMAX), det = RES1 ? 1 : +SV[2] || 1, dynN = 0, dynT = 0, dynG = 0, dynGN = 0, dynBad = 0, dynOk = 0, dynWait = 3;
+let passScene, passDepth, passRays, passBlur, bgBlur, passPost, bgRays, bgPost, bloomPass = [], bloomBG = [], targets = [], passTaa = [], bgTaa = [], bgPostK = [], bloomBG0 = [];
+let passAO, bgAO; // LOOK: contact shadows
 const NB = 6;
 function resize() {
   DW = max(2, round(canvas.clientWidth * devicePixelRatio)); DH = max(2, round(canvas.clientHeight * devicePixelRatio));
@@ -321,16 +334,21 @@ function resize() {
   for (const t of targets) t.destroy();
   const tMS = tex(AA > 1 ? W : 1, H, HDR, TU.RENDER_ATTACHMENT, { samples: AA }), tDp = tex(W, H, DEPTH, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING, { samples: AA });
   const tRes = tex(W, H, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay2 = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING);
-  const tAO = tex(W / 2, H / 2, 'rg16float', TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING); // LOOK: contact shadows
-  targets = [tMS, tDp, tRes, tRay, tRay2, tAO];
+  targets = [tMS, tDp, tRes, tRay, tRay2];
+  const tAO = tex(W / 2, H / 2, 'rg16float', TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING); targets.push(tAO); // LOOK: contact shadows
   passAO = { colorAttachments: [{ ...colorAtt(tAO.createView(), true), clearValue: [1, 6e4, 0, 0] }] };
   bgAO = device.createBindGroup({ layout: pAO.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: tDp.createView() }] });
+  // TAA: two history textures (ping-pong); everything after the scene reads the one just written instead of tRes
+  const tHis = [0, 1].map(() => tex(TAA ? W : 1, TAA ? H : 1, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING)); targets.push(...tHis);
+  const vHis = tHis.map((t) => t.createView());
+  taaReset = 1;
   const bl = [];
   for (let i = 0; i < NB; i++) { const t = tex(max(1, W >> (i + 1)), max(1, H >> (i + 1)), HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING); bl.push(t); targets.push(t); }
   const vDp = tDp.createView(), vRes = tRes.createView(), vRay = tRay.createView(), vRay2 = tRay2.createView(), vBl = bl.map((t) => t.createView());
   // without anti-aliasing (Low) the scene goes straight into the resolve target, and tMS is one unused column
   passScene = { colorAttachments: [{ view: AA > 1 ? tMS.createView() : vRes, resolveTarget: AA > 1 ? vRes : undefined, loadOp: 'clear', storeOp: AA > 1 ? 'discard' : 'store', clearValue: [0, 0, 0, 1] }],
-    depthStencilAttachment: { view: vDp, depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'store' } };
+    depthStencilAttachment: { view: vDp, depthClearValue: 0, depthLoadOp: 'load', depthStoreOp: 'store' } };
+  passDepth = { colorAttachments: [], depthStencilAttachment: { view: vDp, depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'store' } };
   passRays = { colorAttachments: [colorAtt(vRay, true)] };
   passBlur = { colorAttachments: [colorAtt(vRay2, true)] };
   bgBlur = device.createBindGroup({ layout: pRB.getBindGroupLayout(0), entries: [{ binding: 0, resource: vRay }] });
@@ -339,6 +357,12 @@ function resize() {
     { binding: 3, resource: tShadow.createView() }, { binding: 4, resource: tWater.createView() }, { binding: 5, resource: vDp }, { binding: 6, resource: tVol.createView() }, { binding: 7, resource: sVol }] });
   bgPost = device.createBindGroup({ layout: pPost.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sClamp }, { binding: 2, resource: vRes },
     { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }, { binding: 6, resource: tAO.createView() }] });
+  bgPostK = [0, 1].map((k) => device.createBindGroup({ layout: pPost.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: sClamp }, { binding: 2, resource: TAA ? vHis[k] : vRes },
+    { binding: 3, resource: vRay2 }, { binding: 4, resource: vBl[0] }, { binding: 5, resource: vDp }, { binding: 6, resource: tAO.createView() }] })); // 6: LOOK AO
+  bloomBG0 = [0, 1].map((k) => blitBG(TAA ? vHis[k] : vRes));
+  passTaa = [0, 1].map((k) => ({ colorAttachments: [colorAtt(vHis[k], false)] }));
+  bgTaa = TAA ? [0, 1].map((k) => device.createBindGroup({ layout: pTaa.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: uboT } }, { binding: 1, resource: sClamp },
+    { binding: 2, resource: vRes }, { binding: 3, resource: vHis[1 - k] }, { binding: 4, resource: vDp }] })) : [];
   bloomPass = []; bloomBG = [];
   // down: res -> b0 -> ... -> b5 ; up: b5 -> b4 (additive) ... -> b0
   for (let i = 0; i < NB; i++) { bloomPass.push({ colorAttachments: [colorAtt(vBl[i], true)] }); bloomBG.push(blitBG(i ? vBl[i - 1] : vRes)); }
@@ -349,28 +373,42 @@ resize();
 addEventListener('resize', resize);
 
 // ---------------------------------------------------------------- timing (GPU timestamp queries)
-let qs, qResolve, qRead = [], tsBegin, tsEnd;
+// per-pass GPU time (ms, smoothed over ~10 frames): water texture, scene, light shafts, shaft blur, bloom, composite.
+// window.__perf.ms gives it to the test tools, dev.js shows it
+const PASSES = ['water', 'scene', 'taa', 'rays', 'blur', 'bloom', 'ao', 'post'], NPASS = PASSES.length, PASSMS = new Float64Array(NPASS), PASSRAW = new Float64Array(NPASS + 1);
+const PERF = window.__perf = { cpu: 0, names: PASSES, ms: PASSMS, raw: PASSRAW, n: 0, get gpu() { return F[GPU]; } };
+let qs, qResolve, qRead = [];
+const tsw = (p, begin, end) => ({ querySet: qs, beginningOfPassWriteIndex: begin ? 2 * p : undefined, endOfPassWriteIndex: end ? 2 * p + 1 : undefined });
+let tsWater0, tsWater4, tsScene0, tsScene1, tsTaa, tsRays, tsBlur, tsBloom0, tsBloomN, tsPost, tsAO;
 if (hasTS) {
-  qs = device.createQuerySet({ type: 'timestamp', count: 2 });
-  qResolve = device.createBuffer({ size: 16, usage: BU.QUERY_RESOLVE | BU.COPY_SRC });
+  qs = device.createQuerySet({ type: 'timestamp', count: 2 * NPASS });
+  qResolve = device.createBuffer({ size: 16 * NPASS, usage: BU.QUERY_RESOLVE | BU.COPY_SRC });
   for (let i = 0; i < 6; i++) {
-    const b = device.createBuffer({ size: 16, usage: BU.MAP_READ | BU.COPY_DST });
+    const b = device.createBuffer({ size: 16 * NPASS, usage: BU.MAP_READ | BU.COPY_DST });
     const o = { b, busy: false, done: null };
     o.done = () => {
       const a = new BigInt64Array(b.getMappedRange());
-      const ms = Number(a[1] - a[0]) / 1e6; F[GPU] = ms; b.unmap(); o.busy = false;
+      const ms = Number(a[2 * NPASS - 1] - a[0]) / 1e6; F[GPU] = ms;
+      for (let p = 0; p < NPASS; p++) { const v = Number(a[2 * p + 1] - a[2 * p]) / 1e6; if (v >= 0 && v < 1e3) { PASSRAW[p] = v; PASSMS[p] += (v - PASSMS[p]) * 0.1; } }
+      PASSRAW[NPASS] = ms; PERF.n++;
+      b.unmap(); o.busy = false;
       if (dynT > 0 && ms > 0 && ms < 1e3) { dynG += ms; dynGN++; }
     };
     qRead.push(o);
   }
-  tsBegin = { querySet: qs, beginningOfPassWriteIndex: 0 }; tsEnd = { querySet: qs, endOfPassWriteIndex: 1 };
+  tsWater0 = tsw(0, 1, 0); tsWater4 = tsw(0, 0, 1); tsScene0 = tsw(1, 1, 0); tsScene1 = tsw(1, 0, 1); tsTaa = tsw(2, 1, 1); tsRays = tsw(3, 1, 1); tsBlur = tsw(4, 1, 1);
+  tsBloom0 = tsw(5, 1, 0); tsBloomN = tsw(5, 0, 1); tsAO = tsw(6, 1, 1); tsPost = tsw(7, 1, 1); // 6: LOOK AO
 }
 
 // ---------------------------------------------------------------- frame
 let hud = false;
-const SKIP = {}; // debugging: SKIP.terrain / chunks / props / big / small = true leaves that set out of the frame
+const SKIP = {}; for (const k of (QS.get('off') || '').split(',')) SKIP[k] = true; // ?off=terrain,chunks,props,big,small // debugging: SKIP.terrain / chunks / props / big / small = true leaves that set out of the frame
 let drive = null; // scripted drive of the LAUV (see __world.drive)
-let mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0, hN = 0, hMax = 0, hMin = 1e9, hPer = 1e9, hLate = 0, hTot = 0, tId = -1, tN = 0, tx0 = 0, ty0 = 0, tx = 0, ty = 0;
+let mdx = 0, mdy = 0, lkx = 0, lky = 0, l2x = 0, l2y = 0, hN = 0, hMax = 0, hMin = 1e9, hPer = 1e9, hLate = 0, hTot = 0;
+// draw distance of rocks and props: past ~100 m the haze has taken nearly all of their colour (kelp keeps its own distances)
+const DLOD = QS.has('dlod') ? +QS.get('dlod') : 0.75;
+const JITS = 0.5; // jitter spread (pixels): less than 1 trades some edge smoothing for sharper detail
+const JIT = [...Array(8)].map((_, i) => { const h = (n, b) => { let f = 1, r = 0; for (n++; n > 0; n = floor(n / b)) { f /= b; r += f * (n % b); } return r - 0.5; }; return [h(i, 2), h(i, 3)]; });
 const TANH = 0.6, NEAR = 0.1, EXPO = 0.46, RAYS = 0.45;
 const submitList = [null];
 const rowOrds = Array.from({ length: 9 }, () => new Uint8Array(CELLS));
@@ -440,6 +478,29 @@ function shadowEdge(r, start, indexed, verts) {
   }
   useTile(r, 4);
 }
+// the opaque rock: terrain, the wreck, rock chunks and props. dp: depth only (pre-pass, see render()), so the expensive rock shader
+// then runs only for the pixels that stay visible
+function drawSolids(r, dp) {
+  r.setBindGroup(0, bg0); curTile = -1; useTile(r, 4);
+  r.setPipeline(dp ? pDTerrain : pTerrain); r.setVertexBuffer(0, vbTerrain); r.setVertexBuffer(1, ibSolids); r.setIndexBuffer(ibTerrain, 'uint32');
+  if (!SKIP.terrain) drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
+  r.setPipeline(dp ? pDSolid : pSolid); r.setVertexBuffer(0, vbMesh); r.setIndexBuffer(ibMesh, 'uint32');
+  { // the wreck: the copies of it that are near
+    const g = Wd.solids.ranges[11];
+    if (g[1]) for (let k = 0; k < 9; k++) if (hypot(F[CX] - (k % 3 - 1) * PER - Wd.shipPos[0], F[CZ] - (floor(k / 3) - 1) * PER - Wd.shipPos[2]) < 260) { useTile(r, k); r.drawIndexed(meshes[11].ib.length, g[1], meshes[11].i0, meshes[11].v0, g[0]); }
+  }
+  if (!SKIP.chunks) for (let i = 0; i < NCHUNK; i++) {
+    const c = Wd.chunks[i], big = i > 2 && i < 6; r.setVertexBuffer(1, ibChunk[i]);
+    drawCells(r, c.start, c.lo, c.hi, 3, meshes[14 + i], 0, 0, i > 5 ? 30 : big ? 40 : 96 * DLOD);
+    if (big) drawCells(r, c.start, c.lo, c.hi, 3, meshes[20 + i], 0, 40, 150 * DLOD);
+  }
+  if (!SKIP.props) for (let i = 0; i < PROP_IDS.length; i++) {
+    const id = PROP_IDS[i], lod = id === 7 || id === 8; r.setVertexBuffer(1, ibProp[i]);
+    drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[id], 0, 0, lod ? 6 : (id < 4 ? 150 : 110) * DLOD);
+    if (lod) drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[14 + id], 0, 6, 110 * DLOD);
+  }
+  useTile(r, 4);
+}
 function render() {
   // camera basis (right vector is horizontal)
   const cx = F[CX], cy = F[CY], cz = F[CZ], pitch = F[PIT], yaw = F[YAW];
@@ -459,6 +520,15 @@ function render() {
   let ek = (-cy - 8) / 26; ek = ek < 0 ? 0 : ek > 1 ? 1 : ek;
   m[56] = EXPO * (0.6 + 0.4 * ek); m[57] = RAYS * LOOKDBG.rays; m[58] = det;
   lauvUpdate();
+  if (TAA) {
+    // sub-pixel jitter (Halton 2,3) added to the clip position; the unjittered matrix is kept for the next frame's reprojection
+    CURVP.set(UB.subarray(0, 16));
+    const hj = JIT[F[FRAME] & 7], jx = hj[0] * JITS * 2 / W, jy = hj[1] * JITS * 2 / H;
+    for (let c = 0; c < 4; c++) { UB[c * 4] += jx * UB[c * 4 + 3]; UB[c * 4 + 1] += jy * UB[c * 4 + 3]; }
+    F[FRAME]++;
+    TUB.set(PREVVP, 0); TUB.set(UB.subarray(32, 48), 16); TUB[32] = W; TUB[33] = H; TUB[34] = 1 / W; TUB[35] = 1 / H; TUB[36] = 0.12; TUB[37] = taaReset;
+    Q.writeBuffer(uboT, 0, TUB);
+  }
   Q.writeBuffer(ubo, 0, UB);
   WT[0] = F[TIME]; Q.writeBuffer(uboW, 0, WT);
 
@@ -469,32 +539,20 @@ function render() {
   const e = device.createCommandEncoder();
   let slot = null;
   if (hasTS) { for (let i = 0; i < qRead.length; i++) if (!qRead[i].busy) { slot = qRead[i]; break; } }
-  waterPass[0].timestampWrites = slot ? tsBegin : undefined;
-  passPost.timestampWrites = slot ? tsEnd : undefined;
+  waterPass[0].timestampWrites = slot ? tsWater0 : undefined; waterPass[4].timestampWrites = slot ? tsWater4 : undefined;
+  passRays.timestampWrites = slot ? tsRays : undefined; passBlur.timestampWrites = slot ? tsBlur : undefined;
+  bloomPass[0].timestampWrites = slot ? tsBloom0 : undefined; bloomPass[bloomPass.length - 1].timestampWrites = slot ? tsBloomN : undefined;
+  passPost.timestampWrites = slot ? tsPost : undefined;
   // animated water texture + mips
   let r = e.beginRenderPass(waterPass[0]); r.setPipeline(pWater); r.setBindGroup(0, bgWater); r.draw(3); r.end();
   for (let i = 1; i < 5; i++) { r = e.beginRenderPass(waterPass[i]); r.setPipeline(pMip16); r.setBindGroup(0, waterBG[i - 1]); r.draw(3); r.end(); }
-  // scene
+  // scene: a depth-only pass over the rock first, so the rock shader runs once per pixel however much rock overlaps
+  passDepth.timestampWrites = slot ? tsScene0 : undefined; passScene.timestampWrites = slot ? tsScene1 : undefined;
+  r = e.beginRenderPass(passDepth);
+  drawSolids(r, true);
+  r.end();
   r = e.beginRenderPass(passScene);
-  r.setBindGroup(0, bg0); curTile = -1; useTile(r, 4);
-  r.setPipeline(pTerrain); r.setVertexBuffer(0, vbTerrain); r.setVertexBuffer(1, ibSolids); r.setIndexBuffer(ibTerrain, 'uint32');
-  if (!SKIP.terrain) drawCells(r, T.start, T.lo, T.hi, 1.5, 1, 0, 0, 240);
-  r.setPipeline(pSolid); r.setVertexBuffer(0, vbMesh); r.setIndexBuffer(ibMesh, 'uint32');
-  { // the wreck: the copies of it that are near
-    const g = Wd.solids.ranges[11];
-    if (g[1]) for (let k = 0; k < 9; k++) if (hypot(F[CX] - (k % 3 - 1) * PER - Wd.shipPos[0], F[CZ] - (floor(k / 3) - 1) * PER - Wd.shipPos[2]) < 260) { useTile(r, k); r.drawIndexed(meshes[11].ib.length, g[1], meshes[11].i0, meshes[11].v0, g[0]); }
-  }
-  if (!SKIP.chunks) for (let i = 0; i < NCHUNK; i++) {
-    const c = Wd.chunks[i], big = i > 2 && i < 6; r.setVertexBuffer(1, ibChunk[i]);
-    drawCells(r, c.start, c.lo, c.hi, 3, meshes[14 + i], 0, 0, i > 5 ? 30 : big ? 40 : 96);
-    if (big) drawCells(r, c.start, c.lo, c.hi, 3, meshes[20 + i], 0, 40, 150);
-  }
-  if (!SKIP.props) for (let i = 0; i < PROP_IDS.length; i++) {
-    const id = PROP_IDS[i], lod = id === 7 || id === 8; r.setVertexBuffer(1, ibProp[i]);
-    drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[id], 0, 0, lod ? 6 : id < 4 ? 150 : 110);
-    if (lod) drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[14 + id], 0, 6, 110);
-  }
-  useTile(r, 4);
+  drawSolids(r, false);
   r.setPipeline(pManta); r.setVertexBuffer(1, ibManta); r.drawIndexed(MANTA.ib.length, nManta, MANTA.i0, MANTA.v0, 0);
   r.setPipeline(pFish); r.setVertexBuffer(1, ibFish); r.drawIndexed(FISH.ib.length, nFish, FISH.i0, FISH.v0, 0);
   lauvDraw(r);
@@ -513,18 +571,24 @@ function render() {
   r.setPipeline(pSnow); r.setVertexBuffer(0, ibSnowB); r.draw(4, nSnow);
   lauvDrawParticles(r);
   r.end();
-  r = e.beginRenderPass(passAO); if (LOOKDBG.ao) { r.setPipeline(pAO); r.setBindGroup(0, bgAO); r.draw(3); } r.end(); // LOOK: contact shadows (off: cleared to 1)
+  passAO.timestampWrites = slot ? tsAO : undefined; // LOOK: contact shadows (off: cleared to 1)
+  r = e.beginRenderPass(passAO); if (LOOKDBG.ao) { r.setPipeline(pAO); r.setBindGroup(0, bgAO); r.draw(3); } r.end();
+  if (TAA) {
+    taaK ^= 1; passTaa[taaK].timestampWrites = slot ? tsTaa : undefined;
+    r = e.beginRenderPass(passTaa[taaK]); r.setPipeline(pTaa); r.setBindGroup(0, bgTaa[taaK]); r.draw(3); r.end();
+    PREVVP.set(CURVP); taaReset = 0;
+  }
   // light shafts
   r = e.beginRenderPass(passRays); r.setPipeline(pRays); r.setBindGroup(0, bgRays); r.draw(3); r.end();
   r = e.beginRenderPass(passBlur); r.setPipeline(pRB); r.setBindGroup(0, bgBlur); r.draw(3); r.end();
   // bloom
   for (let i = 0; i < bloomPass.length; i++) {
-    r = e.beginRenderPass(bloomPass[i]); r.setPipeline(i === 0 ? pDown0 : i < NB ? pDown : pUp); r.setBindGroup(0, bloomBG[i]); r.draw(3); r.end();
+    r = e.beginRenderPass(bloomPass[i]); r.setPipeline(i === 0 ? pDown0 : i < NB ? pDown : pUp); r.setBindGroup(0, i === 0 ? bloomBG0[taaK] : bloomBG[i]); r.draw(3); r.end();
   }
   // composite
   passPost.colorAttachments[0].view = ctx.getCurrentTexture().createView();
-  r = e.beginRenderPass(passPost); r.setPipeline(pPost); r.setBindGroup(0, bgPost); r.draw(3); r.end();
-  if (slot) { e.resolveQuerySet(qs, 0, 2, qResolve, 0); e.copyBufferToBuffer(qResolve, 0, slot.b, 0, 16); }
+  r = e.beginRenderPass(passPost); r.setPipeline(pPost); r.setBindGroup(0, bgPostK[taaK]); r.draw(3); r.end();
+  if (slot) { e.resolveQuerySet(qs, 0, 2 * NPASS, qResolve, 0); e.copyBufferToBuffer(qResolve, 0, slot.b, 0, 16 * NPASS); }
   submitList[0] = e.finish();
   Q.submit(submitList);
   if (slot) { slot.busy = true; slot.b.mapAsync(GPUMapMode.READ).then(slot.done); }
@@ -541,22 +605,23 @@ function sdAt(wx, wy, wz) {
 
 let gPaused = false, gStep = 0;
 function frame(now) {
-  requestAnimationFrame(frame);
+  if (!SYNC) requestAnimationFrame(frame);
   const dtr = now - F[LAST]; F[LAST] = now;
   let dt = dtr / 1000; if (dt > 0.1) dt = 0.1;
-  // Dynamic resolution for 60 fps: every second (0.4 s behind the menu) scale the load by k
+  // Dynamic resolution for 30+ fps: every second (0.4 s behind the menu) scale the load by k. Desktop High and Medium never
+  // go below 1920x1080 pixels (PIXMIN): past that only the draw distance shrinks
   if (!RES1 && dtr < 1e3 && (dynT += dtr) > 0 && (dynN++, dynT > (menu ? 400 : 1000))) {
     const a = dynT / dynN, g = dynGN ? dynG / dynGN : 0; let k = 1;
-    // with GPU timing: keep it between 9.8 and 13.6 ms
-    if (g) { if (g > 13.6 || g < 9.8) k = 11.7 / g; }
-    // without: slow for two periods in a row means fewer pixels, and twice as long before trying to go back up
-    else if (a > 17.6) { dynOk = 0; if (++dynBad > 1) { k = 15 / a; dynBad = 0; dynWait = min(dynWait * 2, 60); } }
-    // at the display's rate there is no telling if there is room, so try a little more now and then
-    else { dynBad = 0; if (a < 12.5) k = 15 / a; else if (++dynOk > dynWait) { k = 1.17; dynOk = 0; } }
-    k = k < 0.5 ? 0.5 : k > 1.7 ? 1.7 : k; const top = min(PIXMAX, DW * DH), mid = max(top / 2, PIXMIN), was = pix + det;
+    // with GPU timing: keep it between 20 and 28 ms (the 25 ms budget)
+    if (g) { if (g > 28 || g < 20) k = 24 / g; }
+    // without: slow (over 34 ms) for two periods in a row means less load, and twice as long before trying to go back up
+    else if (a > 34) { dynOk = 0; if (++dynBad > 1) { k = 28 / a; dynBad = 0; dynWait = min(dynWait * 2, 60); } }
+    // faster than 22 ms there is room; at the display's rate there is no telling how much, so try a little more now and then
+    else { dynBad = 0; if (a < 22 && a < 15) k = 20 / a; else if (++dynOk > dynWait) { k = 1.17; dynOk = 0; } }
+    k = k < 0.5 ? 0.5 : k > 1.7 ? 1.7 : k; const top = min(PIXMAX, DW * DH), lo = min(PIXMIN, top), mid = max(top / 2, lo), was = pix + det;
     // too slow: pixels down to `mid` first, then draw distance, then the remaining pixels; faster goes back the same way
     if (k < 1 ? pix > mid || det <= DETMIN : pix < mid || det >= 1) {
-      const end = k < 1 ? (det > DETMIN ? mid : PIXMIN) : det < 1 ? mid : top;
+      const end = k < 1 ? (det > DETMIN ? mid : lo) : det < 1 ? mid : top;
       pix *= k; if (k < 1 ? pix < end : pix > end) pix = end;
     } else { det *= sqrt(k); det = det < DETMIN ? DETMIN : det > 1 ? 1 : det; }
     if (was !== pix + det) keep('abyssal', [LV, pix < top ? pix | 0 : '', det]); // nothing kept at full resolution
@@ -568,12 +633,13 @@ function frame(now) {
   lauvFrame(dt, !menu, drive && !drive.done ? drive : null);
   for (const f of FAUNA) if (f.update) f.update(dt);
   if (drive && !drive.done) { drive.log.push(dtr); drive.xs.push(lv.pos[0]); drive.dist += drive.speed * dt; if (drive.dist >= drive.len) drive.done = true; }
-  render();
+  const c0 = performance.now(); render(); PERF.cpu = performance.now() - c0; // JS time of render(): draw-call encoding and submit
   if (hud) {
     hN++; if (dtr > hMax) hMax = dtr; if (dtr < hMin) hMin = dtr; if (dtr > hPer * 1.5) { hLate++; hTot++; }
     F[HUDT] += dtr / 1000;
     if (F[HUDT] > 0.5) { info.textContent = `${(hN / F[HUDT]).toFixed(0)} fps  ·  worst frame ${hMax.toFixed(1)} ms  ·  late frames ${hLate} (total ${hTot})  ·  GPU ${F[GPU].toFixed(2)} ms  ·  ${W}x${H} (${W * 100 / DW | 0}%)`; F[HUDT] = 0; hPer = hMin; hN = 0; hMax = 0; hMin = 1e9; hLate = 0; }
   }
+  if (SYNC) Q.onSubmittedWorkDone().then(() => requestAnimationFrame(frame));
 }
 
 // ---------------------------------------------------------------- input
@@ -592,23 +658,12 @@ const key = (e, v) => {
 // behind the menu only the stats and mute keys work
 addEventListener('keydown', (e) => { if (menu && e.code !== 'KeyH' && e.code !== 'KeyM') return; sound(); key(e, 1); });
 addEventListener('keyup', (e) => key(e, 0));
-const release = () => { lauvReleaseKeys(); tId = -1; tN = 0; };
+const release = () => { lauvReleaseKeys(); touchReset(); };
 const capture = () => { sound(); const p = canvas.requestPointerLock({ unadjustedMovement: true }); if (p && p.catch) p.catch(() => canvas.requestPointerLock()).catch(() => 0); };
 canvas.addEventListener('click', capture);
 addEventListener('mousemove', (e) => { if (document.pointerLockElement === canvas) { mdx += e.movementX; mdy += e.movementY; } });
 addEventListener('blur', release);
-const touch = (e) => {
-  e.preventDefault(); sound(); tN = e.touches.length;
-  let f = null, first = false; for (let i = 0; i < tN; i++) if (e.touches[i].identifier === tId) f = e.touches[i];
-  if (!f) { tId = -1; if (tN) { f = e.touches[0]; tId = f.identifier; first = true; } }
-  if (f) {
-    // the touch axes turn with the page when it lies on its side
-    const x = rot.matches ? f.clientY : f.clientX, y = rot.matches ? -f.clientX : f.clientY, s = 1100 / min(innerWidth, innerHeight);
-    if (first) { tx0 = x; ty0 = y; } else { mdx += (x - tx) * s; mdy += (y - ty) * s; } // the view follows the finger at once
-    tx = x; ty = y;
-  }
-};
-for (const n of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) canvas.addEventListener(n, touch, { passive: false });
+// touch controls: touch.js (throttle slider, 4-way stick, camera and menu buttons)
 
 // ---------------------------------------------------------------- menu
 // The scene keeps rendering (blurred by CSS) behind the menu. Esc, losing the mouse or the corner button open it.

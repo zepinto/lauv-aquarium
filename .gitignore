@@ -3,3 +3,4 @@ shots/
 refs/
 .gpu.lock
 *.log
+site/
