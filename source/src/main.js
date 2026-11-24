@@ -333,9 +333,10 @@ function resize() {
   W = w; H = h; canvas.width = W; canvas.height = H;
   ctx.configure({ device, format: FMT, alphaMode: 'opaque' });
   for (const t of targets) t.destroy();
-  const tMS = tex(AA > 1 ? W : 1, H, HDR, TU.RENDER_ATTACHMENT, { samples: AA }), tDp = tex(W, H, DEPTH, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING, { samples: AA });
-  const tRes = tex(W, H, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay2 = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING);
+  const tMS = tex(AA > 1 ? W : 1, H, HDR, TU.RENDER_ATTACHMENT, { samples: AA }), tDp = tex(W, H, DEPTH, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING | TU.COPY_SRC, { samples: AA });
+  const tRes = tex(W, H, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING | TU.COPY_SRC), tRay = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING), tRay2 = tex(W / 2, H / 2, HDR, TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING);
   targets = [tMS, tDp, tRes, tRay, tRay2];
+  surfResize(tRes, tDp); // SURFACE: the copy of the scene the water refracts
   const tAO = tex(W / 2, H / 2, 'rg16float', TU.RENDER_ATTACHMENT | TU.TEXTURE_BINDING); targets.push(tAO); // LOOK: contact shadows
   passAO = { colorAttachments: [{ ...colorAtt(tAO.createView(), true), clearValue: [1, 6e4, 0, 0] }] };
   bgAO = device.createBindGroup({ layout: pAO.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubo } }, { binding: 1, resource: tDp.createView() }] });
@@ -376,11 +377,11 @@ addEventListener('resize', resize);
 // ---------------------------------------------------------------- timing (GPU timestamp queries)
 // per-pass GPU time (ms, smoothed over ~10 frames): water texture, scene, light shafts, shaft blur, bloom, composite.
 // window.__perf.ms gives it to the test tools, dev.js shows it
-const PASSES = ['water', 'scene', 'taa', 'rays', 'blur', 'bloom', 'ao', 'post'], NPASS = PASSES.length, PASSMS = new Float64Array(NPASS), PASSRAW = new Float64Array(NPASS + 1);
+const PASSES = ['water', 'scene', 'taa', 'rays', 'blur', 'bloom', 'ao', 'ocean', 'surf', 'post'], NPASS = PASSES.length, PASSMS = new Float64Array(NPASS), PASSRAW = new Float64Array(NPASS + 1);
 const PERF = window.__perf = { cpu: 0, names: PASSES, ms: PASSMS, raw: PASSRAW, n: 0, get gpu() { return F[GPU]; } };
 let qs, qResolve, qRead = [];
 const tsw = (p, begin, end) => ({ querySet: qs, beginningOfPassWriteIndex: begin ? 2 * p : undefined, endOfPassWriteIndex: end ? 2 * p + 1 : undefined });
-let tsWater0, tsWater4, tsScene0, tsScene1, tsTaa, tsRays, tsBlur, tsBloom0, tsBloomN, tsPost, tsAO;
+let tsWater0, tsWater4, tsScene0, tsScene1, tsTaa, tsRays, tsBlur, tsBloom0, tsBloomN, tsPost, tsAO, tsOcean, tsSurf;
 if (hasTS) {
   qs = device.createQuerySet({ type: 'timestamp', count: 2 * NPASS });
   qResolve = device.createBuffer({ size: 16 * NPASS, usage: BU.QUERY_RESOLVE | BU.COPY_SRC });
@@ -398,7 +399,7 @@ if (hasTS) {
     qRead.push(o);
   }
   tsWater0 = tsw(0, 1, 0); tsWater4 = tsw(0, 0, 1); tsScene0 = tsw(1, 1, 0); tsScene1 = tsw(1, 0, 1); tsTaa = tsw(2, 1, 1); tsRays = tsw(3, 1, 1); tsBlur = tsw(4, 1, 1);
-  tsBloom0 = tsw(5, 1, 0); tsBloomN = tsw(5, 0, 1); tsAO = tsw(6, 1, 1); tsPost = tsw(7, 1, 1); // 6: LOOK AO
+  tsBloom0 = tsw(5, 1, 0); tsBloomN = tsw(5, 0, 1); tsAO = tsw(6, 1, 1); tsOcean = tsw(7, 1, 1); tsSurf = tsw(8, 1, 1); tsPost = tsw(9, 1, 1); // 6: LOOK AO
 }
 
 // ---------------------------------------------------------------- frame
@@ -549,6 +550,8 @@ function render() {
   // animated water texture + mips
   let r = e.beginRenderPass(waterPass[0]); r.setPipeline(pWater); r.setBindGroup(0, bgWater); r.draw(3); r.end();
   for (let i = 1; i < 5; i++) { r = e.beginRenderPass(waterPass[i]); r.setPipeline(pMip16); r.setBindGroup(0, waterBG[i - 1]); r.draw(3); r.end(); }
+  // SURFACE: the FFT ocean and its probe (surface.js), while the camera or the vehicle is near the surface
+  const pslot = surfOn || lv.pos[1] > -4 ? surfCompute(e, slot ? tsOcean : undefined) : null;
   // scene: a depth-only pass over the rock first, so the rock shader runs once per pixel however much rock overlaps
   passDepth.timestampWrites = slot ? tsScene0 : undefined; passScene.timestampWrites = slot ? tsScene1 : undefined;
   r = e.beginRenderPass(passDepth);
@@ -570,11 +573,11 @@ function render() {
   }
   if (!SKIP.small) { r.setPipeline(pLeafS); r.setVertexBuffer(0, ibSmall); drawCells(r, Wd.small.start, Wd.small.lo, Wd.small.hi, 1.5, false, 6, 0, 70); }
   useTile(r, 4);
-  if (surfOn) { surfDrawWater(r); curTile = -1; useTile(r, 4); }
-  else { r.setPipeline(pSurf); r.draw(4); r.setPipeline(pBack); r.draw(4); }
+  if (!surfOn) { r.setPipeline(pSurf); r.draw(4); r.setPipeline(pBack); r.draw(4); }
   r.setPipeline(pBub); r.setVertexBuffer(0, ibBubbles); r.draw(4, nBub);
   r.setPipeline(pSnow); r.setVertexBuffer(0, ibSnowB); r.draw(4, nSnow);
   lauvDrawParticles(r);
+  if (surfOn) { r = surfDrawWater(e, r, slot ? tsSurf : undefined); curTile = -1; } // SURFACE: the sea over what lies under it
   r.end();
   passAO.timestampWrites = slot ? tsAO : undefined; // LOOK: contact shadows (off: cleared to 1)
   r = e.beginRenderPass(passAO); if (LOOKDBG.ao) { r.setPipeline(pAO); r.setBindGroup(0, bgAO); r.draw(3); } r.end();
@@ -596,6 +599,7 @@ function render() {
   if (slot) { e.resolveQuerySet(qs, 0, 2 * NPASS, qResolve, 0); e.copyBufferToBuffer(qResolve, 0, slot.b, 0, 16 * NPASS); }
   submitList[0] = e.finish();
   Q.submit(submitList);
+  surfProbeRead(pslot);
   if (slot) { slot.busy = true; slot.b.mapAsync(GPUMapMode.READ).then(slot.done); }
 }
 
