@@ -70,8 +70,12 @@ fn seg3(p: vec3f, a: vec3f, b: vec3f) -> f32 {
 fn warp(p: vec3f) -> vec3f { return vec3f(fbp(p, .04, 3, 11.), fbp(p, .04, 3, 47.), fbp(p, .04, 3, 83.)) - .5; }
 // sea floor height under the warped position q
 fn floorY(q: vec3f) -> f32 {
-  return GB + 14. * (fbp(vec3f(q.x, 0., q.z), .009, 4, 3.) - .5) + 2.6 * (fbp(vec3f(q.x, 0., q.z), .035, 3, 9.) - .5);
+  // LOOK: + sand dunes (~11 m crests, a whole number of waves per tile) in fields that come and go
+  let dph = TAUW * (28. * q.x + 19. * q.z) / PER + 5. * fbp(vec3f(q.x, 0., q.z), .02, 2, 31.);
+  let dune = (sin(dph) + .35 * sin(2. * dph + 1.3)) * .42 * ss(.42, .62, fbp(vec3f(q.x, 0., q.z), .012, 2, 37.));
+  return GB + 14. * (fbp(vec3f(q.x, 0., q.z), .009, 4, 3.) - .5) + 2.6 * (fbp(vec3f(q.x, 0., q.z), .035, 3, 9.) - .5) + dune;
 }
+const TAUW = 6.2831853;
 // how sandy the ground is at q.xz: 1 on the flats, 0 where reef rock comes through
 fn sandAmt(q: vec3f) -> f32 { return 1. - ss(.44, .58, fbp(vec3f(q.x, 0., q.z), .02, 3, 21.)); }
 fn dens(p: vec3f) -> f32 {
@@ -112,8 +116,13 @@ fn dens(p: vec3f) -> f32 {
   // sand flats stay smooth, reef rock craggy
   let rock = 1. - sandAmt(q) * ss(1., 6., de) * ss(3., .4, plat * 6.);
   let rk = mix(mix(.05, .25, rock), 1., ss(.5, 5., hg) * mix(.35, 1., rock));
-  d += rk * ((.5 - worp(npos(p, .17) + w * 2., nper(.17))) * 3.4 + (.5 - worp(npos(p, .41) + 7., nper(.41))) * 1.3 + (fbp(p, .3, 3, 0.) - .5) * 2.2);
+  // LOOK: rock at several scales: big forms (~20 m), fewer same-size lumps, beds and thin ledges (strata), vertical cracks
+  d += rk * ((.5 - worp(npos(p, .17) + w * 2., nper(.17))) * 1.9 + (.5 - worp(npos(p, .41) + 7., nper(.41))) * .8 + (fbp(p, .3, 3, 0.) - .5) * 1.8);
+  d += rk * (fbp(p, .05, 2, 13.) - .5) * 4.;
   d += rk * 2.2 * (abs(fract(p.y * .21 + w.y * 2.2) - .5) - .25) * rock;
+  d += rk * .9 * (abs(fract(p.y * .62 + w.y * 3.1 + fbp(p, .08, 2, 41.) * .8) - .5) - .25) * rock * ss(1., 3., hg);
+  let ck = ss(.035, 0., abs(fbp(vec3f(p.x, p.y * .12, p.z), .045, 3, 21.) - .5));
+  d -= rk * 1.7 * ck * rock * ss(1., 4., hg);
   for (var i = 0u; i < u.c.z; i++) {
     let a = P[k]; let b = P[k + 1u]; k += 2u;
     d = smin(d, seg3(p + w * 2., a.xyz, b.xyz) - a.w, 2.);
@@ -282,9 +291,9 @@ const KDF = vec3f(.043, .045, .042);
 // infinitely long ray (the water colour) by direction: bright under the surface, mid blue level, dark below,
 // with a forward-scattering glow round the sun; it dims with depth (WKD). Every ray (terrain, surface, background,
 // sprites) is fogged with the same wFog, so the horizon has no seam.
-const WEXT = vec3f(.052, .031, .026);
-const WHOR = vec3f(.025, .15, .48);
-const WUPC = vec3f(.30, .95, 2.4);
+const WEXT = vec3f(.11, .045, .034); // LOOK round 5: red goes first (warm and saturated near, blue-green with distance)
+const WHOR = vec3f(.018, .115, .40);
+const WUPC = vec3f(.26, .85, 2.2);
 const WDNC = vec3f(.006, .045, .17);
 const WKD = vec3f(.06, .03, .022);
 fn wInf(y: f32, rd: vec3f, sun: vec3f) -> vec3f {
@@ -296,7 +305,8 @@ fn wInf(y: f32, rd: vec3f, sun: vec3f) -> vec3f {
   c += vec3f(.55, .85, .80) * (m4 * m4 * .9 + m4 * .25);
   return c * exp(WKD * min(y, 0.));
 }
-fn wT(d: f32) -> vec3f { return exp(-WEXT * d); }
+// LOOK round 4: the first ~10 m of water stay clear, the fade builds beyond (effective distance d^2 / (d + 12))
+fn wT(d: f32) -> vec3f { return exp(-WEXT * (d * d / (d + 12.))); }
 // the depth the in-scattered light of a ray is taken at: a few attenuation lengths along it (continuous at the horizon)
 fn wY(ro: vec3f, rd: vec3f, d: f32) -> f32 { return min(ro.y + rd.y * min(d, 22.) * .5, 0.); }
 fn wFog(c: vec3f, ro: vec3f, rd: vec3f, d: f32, sun: vec3f) -> vec3f {
@@ -394,10 +404,10 @@ fn sunE(y: f32, z: f32) -> vec3f { return SUNC * exp(kd(z) * (min(y, 0.) / g.sun
 fn vol(p: vec3f) -> vec4f { return textureSampleLevel(tV, sC, (p - vec3f(${OX}., ${OY}., ${OZ}.)) / vec3f(PER, ${NY * VS}, PER), 0.); }
 fn amb(p: vec3f, n: vec3f, sky: f32, z: f32) -> vec3f {
   let up = n.y * .5 + .5;
-  return mix(vec3f(.24, .48, .54), vec3f(.34, .56, .82), z) * exp(kd(z) * min(p.y, 0.) * 1.2) * (.35 + .65 * sky) * (.32 + .68 * up * up) * (.55 + .45 * sat(-p.y / 30.)) + vec3f(.003, .010, .016);
+  return mix(vec3f(.24, .48, .54), vec3f(.34, .56, .82), z) * exp(kd(z) * min(p.y, 0.) * 1.2) * (.5 + .5 * sky) * (.32 + .68 * up * up) * (.55 + .45 * sat(-p.y / 30.)) + vec3f(.003, .010, .016);
 }
 fn zone(p: vec3f) -> f32 { return g.sun.w; }
-fn side(p: vec3f, n: vec3f, open: f32, z: f32) -> vec3f { return mix(WCOL, PCOL, z) * exp(kd(z) * min(p.y, 0.)) * open * (1. - abs(n.y)) * .7; }
+fn side(p: vec3f, n: vec3f, open: f32, z: f32) -> vec3f { return mix(WCOL, PCOL, z) * exp(kd(z) * min(p.y, 0.)) * (.25 + .75 * open) * (1. - abs(n.y)) * .8; } // LOOK: more side fill (dark walls)
 // skylight at most 150 m along the ray: past that, terrain and the background behind it (vsB) get the same haze
 // LOOK: one water column for everything (wFog); in-scatter a little dimmer where the ray ends under overhangs
 fn fog(c: vec3f, wp: vec3f, z: f32) -> vec3f {
@@ -456,6 +466,13 @@ struct VO { @invariant @builtin(position) cp: vec4f, @location(0) wp: vec3f, @lo
   if (i.c.x < 1.5 && i.c.z > 1.5 && g.res.x > 0.) { sc *= 1. - ss(i.c.z * .7, i.c.z, distance(base, g.cam.xyz) / g.mis.z); }
   var w = base + qrot(i.b, i.p * sc);
   w.y += sin(g.cam.w * .3 + i.c.y * 40.) * i.c.w;
+  if (i.c.x > 6.5) { // LOOK round 5: reef life sways in the surge (fans as a whole, anemone tentacles each on its own)
+    let t = g.cam.w; let hh = max(i.p.y, 0.) * sc; let ph = i.c.y * 40.;
+    let ten = f32(i.c.x > 9.5 && i.c.x < 10.5 && i.n.w > 0.);
+    let amp = mix(select(.03, .045, i.c.x > 7.5 && i.c.x < 8.5) * hh * hh, .06 * sc * i.n.w, ten);
+    let k = 2. + 28. * ten;
+    w += vec3f(sin(t * .9 + ph + i.p.x * k), .25 * sin(t * 1.3 + ph + i.p.z * 9.), cos(t * .75 + ph * 1.3 + i.p.z * k)) * amp;
+  }
   o.cp = proj(w); o.wp = w; o.n = qrot(i.b, i.n.xyz); o.op = i.p * i.a.w + i.c.y * 37.; o.on = i.n.xyz;
   o.m = i.c; o.q = i.b; o.ao = i.n.w;
   return o;
@@ -492,6 +509,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let ca = caus(i.wp, dist);
   let hgt = A.h * .5 + B.h * .35 + C.h * .15;
   var bump = 1.7; var gloss = .1; var alb = vec3f(0.); var emi = vec3f(0.); var vao = 1.; var flu = 0.;
+  var trn = 0.; var irid = 0.; // LOOK round 5: light through thin tissue, iridescence (reef life)
   let flt = ss(.72, .93, n0.y);
   var sK = 0.; var rdir = vec2f(0.);
   // LOOK: scanned-texture normals (object space) and how strongly they count; derivatives for textureSampleGrad
@@ -525,11 +543,15 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
       alb *= mix(.75, 1.25, vh) * (.8 + .4 * big);
       let gl = dot(alb, vec3f(.3, .59, .11));
       alb = mix(vec3f(gl), alb, .5) * mix(vec3f(1.), vec3f(.86, .97, .84), big2);
+      // LOOK: colour bands with height (strata): warm ochre, grey and dark beds
+      let bnd = hs(floor(i.wp.y * .45 + big * 2.5) + sd * 3.);
+      alb *= mix(mix(vec3f(1.12, .98, .80), vec3f(.86, .9, .95), ss(.3, .45, bnd)), vec3f(.62, .62, .64), ss(.82, .9, bnd));
       // reef growth on top
       let upf = ss(.05, .8, n0.y);
       if (upf > .01) {
         let cg = tpl(i.op + 5.1, gdx, gdy, tw, pk(.7) * ts, 6);
-        let gw = ss(.05, .3, upf * (.5 + .9 * big2) - th * .5 + cg.h * .35 - .25);
+        // (broken up: bare rock in large patches, more growth in hollows than on ridges)
+      let gw = ss(.05, .3, upf * (.5 + .9 * big2) - th * .5 + cg.h * .35 - .25) * ss(.3, .55, big2 * .7 + reg.b * .5 + (1. - hgt) * .3);
         alb = mix(alb, cg.alb * LG[6] * vec3f(.85, .95, .78), gw);
         tn = mix(tn, cg.n, gw);
       }
@@ -563,6 +585,10 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
         let grit = hs(dot(floor(i.wp * 55.), vec3f(1., 57., 113.))); sand *= 1. + (grit - .5) * .12 * ss(5., 1., dist);
         sand = mix(sand, vec3f(.20, .22, .11), gm.a * .3 * ss(.2, .8, A.c));
         sand *= mix(vec3f(1.), vec3f(1.08, 1.0, .85), ss(.35, .65, big2));
+        // LOOK: large-scale cover: silty grey-green patches and clean pale sand (tens of metres)
+        let lp = sD(i.wp.xz * pk(.011)).a; let lp2 = sD(i.wp.zx * pk(.023) + .5).a;
+        sand = mix(sand, sand * vec3f(.74, .80, .70), ss(.48, .66, lp) * .8);
+        sand = mix(sand, sand * vec3f(1.12, 1.1, 1.05), ss(.55, .7, lp2) * .6);
         alb = mix(alb, sand, sK);
         let s1n = sn1.xy * 2. - 1.; let g1n = gn.xy * 2. - 1.;
         tn = mix(tn, vec3f(mix(s1n.x, g1n.x, rw), 0., mix(s1n.y, g1n.y, rw)), sK);
@@ -577,6 +603,43 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     alb *= .35 + .65 * ss(0., .12, min(pk_, 1. - pk_));
     alb = mix(alb, vec3f(.08, .22, .16), ss(.5, .7, A.c) * .6);
     gloss = .2; bump = .7;
+  } else if (mat >= 7) {
+    // ---- LOOK round 5: reef life: 7 soft coral, 8 sea fan, 9 giant clam, 10 anemone, 11 barrel / tube sponge
+    let hu = fract(sd * 7.13); let tip = sat(i.ao);
+    let P = tri(i.op, on, 7.); // fine pores and polyps
+    gloss = .12; bump = .9; flu = .05;
+    if (mat == 7) {
+      var cc = vec3f(.80, .30, .07);
+      if (hu > .3) { cc = vec3f(.42, .10, .46); } if (hu > .55) { cc = vec3f(.64, .07, .10); } if (hu > .75) { cc = vec3f(.82, .38, .50); } if (hu > .9) { cc = vec3f(.80, .62, .16); }
+      alb = mix(cc * .7, cc * 1.2 + vec3f(.07), tip) * (.7 + .55 * P.h);
+      trn = .25 + .75 * tip; vao = .5 + .5 * tip; bump = 1.5;
+    } else if (mat == 8) {
+      var cc = vec3f(.42, .10, .48);
+      if (hu > .45) { cc = vec3f(.82, .62, .10); } if (hu > .8) { cc = vec3f(.72, .20, .08); }
+      alb = cc * (.75 + .35 * tip); trn = .55; bump = .3;
+    } else if (mat == 9) {
+      if (i.ao < 0.) {
+        let sp = sD(i.op.xz * 5.).a; let sp2 = sD(i.op.xz * 13. + .3).b;
+        alb = mix(vec3f(.04, .28, .52), vec3f(.08, .52, .40), ss(.4, .6, sp)) * (.7 + .5 * ss(.55, .7, sp2));
+        alb = mix(alb, vec3f(.45, .75, .85), ss(.72, .8, sp2) * .6);
+        irid = 1.; gloss = .45; bump = .5;
+      } else {
+        alb = vec3f(.62, .60, .52) * (.55 + .5 * P.h) * (.6 + .4 * tip);
+        alb = mix(alb, vec3f(.25, .30, .18), ss(.5, .7, B.c) * .4); bump = 1.8;
+      }
+    } else if (mat == 10) {
+      if (i.ao < 0.) { alb = vec3f(.50, .22, .18) * (.7 + .4 * P.h); }
+      else {
+        var tc = vec3f(.66, .20, .56);
+        if (hu > .4) { tc = vec3f(.36, .62, .28); } if (hu > .75) { tc = vec3f(.86, .45, .55); }
+        alb = mix(vec3f(.72, .60, .45), tc, ss(.3, .95, tip)); trn = .8; bump = .2;
+      }
+    } else {
+      var cc = vec3f(.75, .32, .08);
+      if (hu > .3) { cc = vec3f(.55, .10, .08); } if (hu > .5) { cc = vec3f(.78, .62, .14); } if (hu > .7) { cc = vec3f(.36, .16, .40); } if (hu > .85) { cc = vec3f(.45, .28, .15); }
+      let pr = ss(.18, .45, P.h); // pores
+      alb = cc * (.4 + .7 * pr) * (.6 + .4 * sat(i.ao)); vao = .5 + .5 * pr; bump = 2.2; flu = .08;
+    }
   } else if (mat == 4) {
     // sponges: brown, tan, rust and a muted violet
     let hue = fract(sd * 7.31);
@@ -602,7 +665,12 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     if (mat == 6) {
       let hh = fract(sd * 3.77);
       alb = mix(mix(vec3f(.85, .30, .10), vec3f(.85, .12, .35), ss(.25, .35, hh)), mix(vec3f(.90, .70, .12), vec3f(.35, .25, .75), ss(.75, .85, hh)), ss(.5, .6, hh)) * (.55 + .7 * B.h) * (.6 + .6 * i.ao);
-      alb = mix(vec3f(dot(alb, vec3f(.3, .59, .11))), alb, .6) * .75; // LOOK: hero corals less candy-coloured
+      // LOOK round 4: the colours of a real reef: orange and purple soft coral, yellow, red encrusting sponge, pink, tan
+      let pi = i32(hh * 6.99);
+      var hc = vec3f(.80, .34, .10);
+      if (pi == 1) { hc = vec3f(.34, .16, .36); } if (pi == 2) { hc = vec3f(.78, .64, .14); } if (pi == 3) { hc = vec3f(.58, .12, .08); }
+      if (pi == 4) { hc = vec3f(.72, .28, .42); } if (pi == 5) { hc = vec3f(.55, .44, .26); } if (pi == 6) { hc = vec3f(.38, .44, .16); }
+      alb = hc * .85 * (.6 + .6 * B.h) * (.55 + .6 * i.ao);
       gloss = .3;
     }
     flu = .1; gloss = .2; bump = 1.5;
@@ -618,16 +686,24 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let L = g.sun.xyz; let V = normalize(g.cam.xyz - i.wp);
   let v1 = vol(i.wp + n0 * 1.5); let v2 = vol(i.wp + n0 * 4.5);
   // LOOK: the procedural cavity term (hgt) only darkens rock a little now, and never sand: it made dark blotches
-  let ao = (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45) * vao * mix(mix(.6, 1., ss(.12, .6, hgt)), 1., sK);
+  let ao = (.3 + .7 * (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45)) * vao * mix(mix(.6, 1., ss(.12, .6, hgt)), 1., sK); // LOOK: never fully black under overhangs
   let z = zone(i.wp);
   let E = sunE(i.wp.y, z) * shadowS(i.wp + n0 * .25, i.cp.xy, dist) * vehSh(i.wp); // LOOK: soft shadows (PCSS near, cheaper far)
   let ndl = sat(dot(N, L));
   // LOOK: + light bounced up from the sunlit sand onto faces that look down (rock detail stays readable in shadow)
-  let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z) + sunE(i.wp.y, z) * vec3f(.16, .15, .11) * sat(-N.y * .8 + .25)) * ao;
+  // LOOK round 3: + the glow of the surrounding water itself (light scattered in from every side), so faces in shadow
+  // and under overhangs keep their detail instead of going black
+  let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z) + sunE(i.wp.y, z) * vec3f(.16, .15, .11) * sat(-N.y * .8 + .25)) * ao
+    + wInf(i.wp.y, normalize(vec3f(N.x, N.y * .5 + .2, N.z)), g.sun.xyz) * vec3f(1.6, 1.2, 1.0) * (.35 + .65 * ao) * .3;
   // LOOK: caustics as bright lines over an even base (no dark blotches between them)
   // LOOK: caustics as thin bright lines over an even base: the dark cells between them read as blotches when strong
   let dl = E * ndl * (2.1 + mix(vec3f(.4), ca, ss(.05, .35, dot(n0, L))) * .85);
   var c = alb * (dl + am) + emi + alb * flu * dot(dl + am, vec3f(.1, .5, .5));
+  if (mat >= 7) { // LOOK round 5: sunlight through thin tissue (tips glow against the light), the clam mantle's iridescence
+    c += alb * trn * E * (.15 + 1.6 * pow(sat(dot(-V, L)), 3.)) * (.6 + .4 * (1. - ndl)) * vec3f(1., .9, .75);
+    let ndv = sat(dot(N, V));
+    c += irid * (.5 + .5 * cos(TAU * (vec3f(0., .33, .67) + ndv * 1.6 + .2))) * (am * .5 + E * .15) * (.3 + .7 * pow(1. - ndv, 1.5));
+  }
   let H = normalize(V + L);
   c += E * (.25 + ca) * pow(sat(dot(N, H)), mix(10., 70., gloss)) * gloss * ndl * 1.8;
   c += (amb(i.wp, reflect(-V, N), v1.g, z) + side(i.wp, reflect(-V, N), sat((v2.r - .5) * 2.7), z)) * ao * (.08 + gloss) * .6 * pow(1. - sat(dot(N, V)), 2.5);
@@ -1018,7 +1094,8 @@ const W_RAYS = S_G + W_FS + /*wgsl*/`
     let pat = ss(.3, .7, textureSampleLevel(tW, sR, pu(q, 27.), 2.5).r) * ss(.15, .6, textureSampleLevel(tW, sR, pu(q.yx, 11.) + .3, 2.).r);
     let o = textureSampleLevel(tV, sC, (p - vec3f(${OX}., ${OY}., ${OZ}.)) / vec3f(PER, ${NY * VS}, PER), 0.).r;
     let mist = sat(1. - (o - .5) * 3.4);
-    acc += exp(-sgz * (t - t0) + k * (p.y / sx.y)) * (vis * (.012 + pat * 11.) * (1. + 1.2 * mist * mist));
+    // LOOK: the shadow of rock in the water is lighter (light scattered in from the sides): no black volumes
+    acc += exp(-sgz * (t - t0) + k * (p.y / sx.y)) * ((.4 + .6 * vis) * .012 + vis * pat * 11.) * (1. + 1.2 * mist * mist);
   }
   let mu = max(dot(rd, sx), 0.);
   let ph = mix(.2 + 2.0 * mu * mu * mu, .8, g.sun.w);
@@ -1135,10 +1212,10 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
   c *= 1. - dot(q, q) * .55;
   c = tmap(c);
   let l0 = dot(c, vec3f(.2126, .7152, .0722));
-  let l = mix(l0, l0 * l0 * (3. - 2. * l0), .62); // LOOK: gentler S-curve and saturation (no bleached highlights)
+  let l = mix(l0, l0 * l0 * (3. - 2. * l0), .78); // LOOK: gentler S-curve and saturation (no bleached highlights)
   c *= l / max(l0, 1e-4);
   c = mix(c, vec3f(l), ss(.6, 1., l) * .15);
-  c = mix(vec3f(l), c, 1.18) + vec3f(.004, .002, 0.);
+  c = mix(vec3f(l), c, 1.3) + vec3f(.004, .002, 0.);
   c = pow(max(c, vec3f(0.)), vec3f(1. / 2.2));
   let n = ign(fc.xy) + ign(fc.xy + 37.) - 1.;
   return vec4f(c + n / 255., 1.);
