@@ -217,12 +217,19 @@ fn skyCol(rd: vec3f, t: f32, full: bool) -> vec3f {
   return c;
 }
 // the water height where the ray of direction rd meets the lens (the near plane), and that point's height: the waterline across the lens follows the waves
-fn lensH(rd: vec3f) -> vec2f {
+fn dispAt(p: vec2f, c: i32, exact: bool) -> vec4f {
+  if (!exact) { return textureSampleLevel(tDisp, sR, p / OL[c] + .5 / ON, c, 0.); }
+  // bilinear in full float (the hardware's 8-bit weights make steps across a texel when one texel spans 150 pixels of the lens)
+  let x = p / OL[c] * ON; let i0 = floor(x); let f = x - i0; let n = i32(ON);
+  let a = vec2i(i0) & vec2i(n - 1); let b = (a + 1) & vec2i(n - 1);
+  return mix(mix(textureLoad(tDisp, a, c, 0), textureLoad(tDisp, vec2i(b.x, a.y), c, 0), f.x), mix(textureLoad(tDisp, vec2i(a.x, b.y), c, 0), textureLoad(tDisp, b, c, 0), f.x), f.y);
+}
+fn lensH(rd: vec3f, exact: bool) -> vec2f {
   let t = g.fwd.w / dot(rd, g.fwd.xyz);
   let np = g.cam.xz + rd.xz * t;
   var lh = 0.; var lx = np;
-  for (var c = 0; c < 3; c++) { lx -= textureSampleLevel(tDisp, sR, np / OL[c] + .5 / ON, c, 0.).xz; }
-  for (var c = 0; c < 3; c++) { lh += textureSampleLevel(tDisp, sR, lx / OL[c] + .5 / ON, c, 0.).y; }
+  for (var c = 0; c < 3; c++) { lx -= dispAt(np, c, exact).xz; }
+  for (var c = 0; c < 3; c++) { lh += dispAt(lx, c, exact).y; }
   return vec2f(lh * ss(-1.6, -.6, g.cam.y), g.cam.y + rd.y * t);
 }
 struct VS2 { @builtin(position) cp: vec4f, @location(0) dir: vec3f };
@@ -236,7 +243,7 @@ struct VS2 { @builtin(position) cp: vec4f, @location(0) dir: vec3f };
 // behind everything: sky where the pixel's ray has left the water (judged at the near plane: that is the waterline across the lens), the deep water haze elsewhere
 @fragment fn fsSky(i: VS2) -> @location(0) vec4f {
   let rd = normalize(i.dir);
-  let lh = lensH(rd); let z = g.sun.w;
+  let lh = lensH(rd, false); let z = g.sun.w;
   if (lh.y > lh.x) {
     var c = skyCol(rd, g.cam.w, true) * SK;
     if (rd.y < 0.) { c = mix(c, fogIn(vec3f(0.), rd, 240., z, g.sun.xyz) * .62, sat(-rd.y * 28.)); }
@@ -250,17 +257,17 @@ struct VS2 { @builtin(position) cp: vec4f, @location(0) dir: vec3f };
 // and the water film on the lens makes a bright, wavering meniscus along the line
 @fragment fn fsLens(i: VS2) -> @location(0) vec4f {
   let rd = normalize(i.dir);
-  let lh = lensH(rd);
+  let lh = lensH(rd, true);
   let e = lh.y - lh.x;
-  if (g.cam.y <= 0. || e > .003) { discard; }
+  if (g.cam.y <= 0. || e > .0006) { discard; }
   let px = vec2i(i.cp.xy);
   let dims = vec2i(textureDimensions(tScn));
-  let wob = vec2i(i32(sin(i.cp.x * .031 + g.cam.w * 3.) * 3. * ss(.003, -.004, e)), i32(ss(.003, -.002, e) * 8.));
+  let wob = vec2i(i32(sin(i.cp.x * .011 + g.cam.w * 3.) * 3. * ss(-.0007, -.003, e)), 0);
   let sc = textureLoad(tScn, clamp(px + wob, vec2i(0), dims - 1), 0).rgb;
   let d = min(g.fwd.w / max(textureLoad(tScnD, px, 0), 1e-7) / max(dot(rd, g.fwd.xyz), .05), 60.);
   var c = wFog(sc, vec3f(g.cam.x, -.01, g.cam.z), rd, d * .6, g.sun.xyz) * vec3f(.8, .95, 1.);
-  let rim = ss(.003, .0008, e) * ss(-.0025, -.0004, e);
-  c = mix(c, vec3f(.8, 1.05, 1.15) * 1.3 + sc * .3, rim * .7);
+  let rim = ss(.0006, .0001, e) * ss(-.0007, -.0001, e);
+  c = mix(c, vec3f(.8, 1.05, 1.15) * 1.2 + sc * .3, rim * .6);
   return vec4f(c, 1.);
 }
 
