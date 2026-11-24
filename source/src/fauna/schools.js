@@ -292,7 +292,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
 const scBuf = { A: null, B: null, sch: null, k: null, spt: null, vb: null, ib: null }, scMeshes = [];
 let scQS = null, scQB, scQR, scQBusy = false, scMs = 0; // timestamps round the compute pass
 let scBoids, scBGC = [], scBGR = [], scPipe, scFrame = 0, scT = 0;
-const scSchData = new ArrayBuffer(96 * 64), scSchF = new Float32Array(scSchData), scSchU = new Uint32Array(scSchData);
+const scSchData = new ArrayBuffer(96 * 256), scSchF = new Float32Array(scSchData), scSchU = new Uint32Array(scSchData);
 const scK = new ArrayBuffer(80), scKF = new Float32Array(scK), scKU = new Uint32Array(scK);
 const scCell = (i) => ((i % SC_GN) + SC_GN) % SC_GN;
 function scFloorAt(x, z) { // y of the highest rock or sand under (x, z)
@@ -434,7 +434,7 @@ FAUNA.push({
     scBuf.spt = buf(spt, GPUBufferUsage.STORAGE);
     const maxFish = 40000;
     scBuf.A = device.createBuffer({ size: maxFish * 48, usage: GA }); scBuf.B = device.createBuffer({ size: maxFish * 48, usage: GA });
-    scBuf.sch = device.createBuffer({ size: 96 * 64, usage: GA });
+    scBuf.sch = device.createBuffer({ size: 96 * 256, usage: GA });
     scBuf.k = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     if (hasTS) { scQS = device.createQuerySet({ type: 'timestamp', count: 2 }); scQB = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }); scQR = device.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }); }
     // compute
