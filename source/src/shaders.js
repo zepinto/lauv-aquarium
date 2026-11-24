@@ -70,8 +70,12 @@ fn seg3(p: vec3f, a: vec3f, b: vec3f) -> f32 {
 fn warp(p: vec3f) -> vec3f { return vec3f(fbp(p, .04, 3, 11.), fbp(p, .04, 3, 47.), fbp(p, .04, 3, 83.)) - .5; }
 // sea floor height under the warped position q
 fn floorY(q: vec3f) -> f32 {
-  return GB + 14. * (fbp(vec3f(q.x, 0., q.z), .009, 4, 3.) - .5) + 2.6 * (fbp(vec3f(q.x, 0., q.z), .035, 3, 9.) - .5);
+  // LOOK: + sand dunes (~11 m crests, a whole number of waves per tile) in fields that come and go
+  let dph = TAUW * (28. * q.x + 19. * q.z) / PER + 5. * fbp(vec3f(q.x, 0., q.z), .02, 2, 31.);
+  let dune = (sin(dph) + .35 * sin(2. * dph + 1.3)) * .42 * ss(.42, .62, fbp(vec3f(q.x, 0., q.z), .012, 2, 37.));
+  return GB + 14. * (fbp(vec3f(q.x, 0., q.z), .009, 4, 3.) - .5) + 2.6 * (fbp(vec3f(q.x, 0., q.z), .035, 3, 9.) - .5) + dune;
 }
+const TAUW = 6.2831853;
 // how sandy the ground is at q.xz: 1 on the flats, 0 where reef rock comes through
 fn sandAmt(q: vec3f) -> f32 { return 1. - ss(.44, .58, fbp(vec3f(q.x, 0., q.z), .02, 3, 21.)); }
 fn dens(p: vec3f) -> f32 {
@@ -112,8 +116,13 @@ fn dens(p: vec3f) -> f32 {
   // sand flats stay smooth, reef rock craggy
   let rock = 1. - sandAmt(q) * ss(1., 6., de) * ss(3., .4, plat * 6.);
   let rk = mix(mix(.05, .25, rock), 1., ss(.5, 5., hg) * mix(.35, 1., rock));
-  d += rk * ((.5 - worp(npos(p, .17) + w * 2., nper(.17))) * 3.4 + (.5 - worp(npos(p, .41) + 7., nper(.41))) * 1.3 + (fbp(p, .3, 3, 0.) - .5) * 2.2);
+  // LOOK: rock at several scales: big forms (~20 m), fewer same-size lumps, beds and thin ledges (strata), vertical cracks
+  d += rk * ((.5 - worp(npos(p, .17) + w * 2., nper(.17))) * 1.9 + (.5 - worp(npos(p, .41) + 7., nper(.41))) * .8 + (fbp(p, .3, 3, 0.) - .5) * 1.8);
+  d += rk * (fbp(p, .05, 2, 13.) - .5) * 4.;
   d += rk * 2.2 * (abs(fract(p.y * .21 + w.y * 2.2) - .5) - .25) * rock;
+  d += rk * .9 * (abs(fract(p.y * .62 + w.y * 3.1 + fbp(p, .08, 2, 41.) * .8) - .5) - .25) * rock * ss(1., 3., hg);
+  let ck = ss(.035, 0., abs(fbp(vec3f(p.x, p.y * .12, p.z), .045, 3, 21.) - .5));
+  d -= rk * 1.7 * ck * rock * ss(1., 4., hg);
   for (var i = 0u; i < u.c.z; i++) {
     let a = P[k]; let b = P[k + 1u]; k += 2u;
     d = smin(d, seg3(p + w * 2., a.xyz, b.xyz) - a.w, 2.);
@@ -282,9 +291,9 @@ const KDF = vec3f(.043, .045, .042);
 // infinitely long ray (the water colour) by direction: bright under the surface, mid blue level, dark below,
 // with a forward-scattering glow round the sun; it dims with depth (WKD). Every ray (terrain, surface, background,
 // sprites) is fogged with the same wFog, so the horizon has no seam.
-const WEXT = vec3f(.052, .031, .026);
-const WHOR = vec3f(.025, .15, .48);
-const WUPC = vec3f(.30, .95, 2.4);
+const WEXT = vec3f(.066, .041, .034); // LOOK round 3: more falloff with distance
+const WHOR = vec3f(.018, .115, .40);
+const WUPC = vec3f(.26, .85, 2.2);
 const WDNC = vec3f(.006, .045, .17);
 const WKD = vec3f(.06, .03, .022);
 fn wInf(y: f32, rd: vec3f, sun: vec3f) -> vec3f {
@@ -397,7 +406,7 @@ fn amb(p: vec3f, n: vec3f, sky: f32, z: f32) -> vec3f {
   return mix(vec3f(.24, .48, .54), vec3f(.34, .56, .82), z) * exp(kd(z) * min(p.y, 0.) * 1.2) * (.35 + .65 * sky) * (.32 + .68 * up * up) * (.55 + .45 * sat(-p.y / 30.)) + vec3f(.003, .010, .016);
 }
 fn zone(p: vec3f) -> f32 { return g.sun.w; }
-fn side(p: vec3f, n: vec3f, open: f32, z: f32) -> vec3f { return mix(WCOL, PCOL, z) * exp(kd(z) * min(p.y, 0.)) * open * (1. - abs(n.y)) * .7; }
+fn side(p: vec3f, n: vec3f, open: f32, z: f32) -> vec3f { return mix(WCOL, PCOL, z) * exp(kd(z) * min(p.y, 0.)) * (.25 + .75 * open) * (1. - abs(n.y)) * 1.0; } // LOOK: more side fill (dark walls)
 // skylight at most 150 m along the ray: past that, terrain and the background behind it (vsB) get the same haze
 // LOOK: one water column for everything (wFog); in-scatter a little dimmer where the ray ends under overhangs
 fn fog(c: vec3f, wp: vec3f, z: f32) -> vec3f {
@@ -525,11 +534,15 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
       alb *= mix(.75, 1.25, vh) * (.8 + .4 * big);
       let gl = dot(alb, vec3f(.3, .59, .11));
       alb = mix(vec3f(gl), alb, .5) * mix(vec3f(1.), vec3f(.86, .97, .84), big2);
+      // LOOK: colour bands with height (strata): warm ochre, grey and dark beds
+      let bnd = hs(floor(i.wp.y * .45 + big * 2.5) + sd * 3.);
+      alb *= mix(mix(vec3f(1.12, .98, .80), vec3f(.86, .9, .95), ss(.3, .45, bnd)), vec3f(.62, .62, .64), ss(.82, .9, bnd));
       // reef growth on top
       let upf = ss(.05, .8, n0.y);
       if (upf > .01) {
         let cg = tpl(i.op + 5.1, gdx, gdy, tw, pk(.7) * ts, 6);
-        let gw = ss(.05, .3, upf * (.5 + .9 * big2) - th * .5 + cg.h * .35 - .25);
+        // (broken up: bare rock in large patches, more growth in hollows than on ridges)
+      let gw = ss(.05, .3, upf * (.5 + .9 * big2) - th * .5 + cg.h * .35 - .25) * ss(.3, .55, big2 * .7 + reg.b * .5 + (1. - hgt) * .3);
         alb = mix(alb, cg.alb * LG[6] * vec3f(.85, .95, .78), gw);
         tn = mix(tn, cg.n, gw);
       }
@@ -563,6 +576,10 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
         let grit = hs(dot(floor(i.wp * 55.), vec3f(1., 57., 113.))); sand *= 1. + (grit - .5) * .12 * ss(5., 1., dist);
         sand = mix(sand, vec3f(.20, .22, .11), gm.a * .3 * ss(.2, .8, A.c));
         sand *= mix(vec3f(1.), vec3f(1.08, 1.0, .85), ss(.35, .65, big2));
+        // LOOK: large-scale cover: silty grey-green patches and clean pale sand (tens of metres)
+        let lp = sD(i.wp.xz * pk(.011)).a; let lp2 = sD(i.wp.zx * pk(.023) + .5).a;
+        sand = mix(sand, sand * vec3f(.74, .80, .70), ss(.48, .66, lp) * .8);
+        sand = mix(sand, sand * vec3f(1.12, 1.1, 1.05), ss(.55, .7, lp2) * .6);
         alb = mix(alb, sand, sK);
         let s1n = sn1.xy * 2. - 1.; let g1n = gn.xy * 2. - 1.;
         tn = mix(tn, vec3f(mix(s1n.x, g1n.x, rw), 0., mix(s1n.y, g1n.y, rw)), sK);
@@ -618,12 +635,15 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let L = g.sun.xyz; let V = normalize(g.cam.xyz - i.wp);
   let v1 = vol(i.wp + n0 * 1.5); let v2 = vol(i.wp + n0 * 4.5);
   // LOOK: the procedural cavity term (hgt) only darkens rock a little now, and never sand: it made dark blotches
-  let ao = (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45) * vao * mix(mix(.6, 1., ss(.12, .6, hgt)), 1., sK);
+  let ao = (.3 + .7 * (sat((v1.r - .5) * 8.) * .55 + sat((v2.r - .5) * 2.7) * .45)) * vao * mix(mix(.6, 1., ss(.12, .6, hgt)), 1., sK); // LOOK: never fully black under overhangs
   let z = zone(i.wp);
   let E = sunE(i.wp.y, z) * shadowS(i.wp + n0 * .25, i.cp.xy, dist) * vehSh(i.wp); // LOOK: soft shadows (PCSS near, cheaper far)
   let ndl = sat(dot(N, L));
   // LOOK: + light bounced up from the sunlit sand onto faces that look down (rock detail stays readable in shadow)
-  let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z) + sunE(i.wp.y, z) * vec3f(.16, .15, .11) * sat(-N.y * .8 + .25)) * ao;
+  // LOOK round 3: + the glow of the surrounding water itself (light scattered in from every side), so faces in shadow
+  // and under overhangs keep their detail instead of going black
+  let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z) + sunE(i.wp.y, z) * vec3f(.16, .15, .11) * sat(-N.y * .8 + .25)) * ao
+    + wInf(i.wp.y, normalize(vec3f(N.x, N.y * .5 + .2, N.z)), g.sun.xyz) * vec3f(1.6, 1.2, 1.0) * (.35 + .65 * ao) * .55;
   // LOOK: caustics as bright lines over an even base (no dark blotches between them)
   // LOOK: caustics as thin bright lines over an even base: the dark cells between them read as blotches when strong
   let dl = E * ndl * (2.1 + mix(vec3f(.4), ca, ss(.05, .35, dot(n0, L))) * .85);
@@ -1018,7 +1038,8 @@ const W_RAYS = S_G + W_FS + /*wgsl*/`
     let pat = ss(.3, .7, textureSampleLevel(tW, sR, pu(q, 27.), 2.5).r) * ss(.15, .6, textureSampleLevel(tW, sR, pu(q.yx, 11.) + .3, 2.).r);
     let o = textureSampleLevel(tV, sC, (p - vec3f(${OX}., ${OY}., ${OZ}.)) / vec3f(PER, ${NY * VS}, PER), 0.).r;
     let mist = sat(1. - (o - .5) * 3.4);
-    acc += exp(-sgz * (t - t0) + k * (p.y / sx.y)) * (vis * (.012 + pat * 11.) * (1. + 1.2 * mist * mist));
+    // LOOK: the shadow of rock in the water is lighter (light scattered in from the sides): no black volumes
+    acc += exp(-sgz * (t - t0) + k * (p.y / sx.y)) * ((.4 + .6 * vis) * .012 + vis * pat * 11.) * (1. + 1.2 * mist * mist);
   }
   let mu = max(dot(rd, sx), 0.);
   let ph = mix(.2 + 2.0 * mu * mu * mu, .8, g.sun.w);

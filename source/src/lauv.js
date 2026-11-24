@@ -526,8 +526,8 @@ function lauvCamera(dt) {
   const hy = lv.yaw; let yawRef = S.snap ? hy : S.camYaw; if (S.snap) S.camYaw = hy;
   if (mode === 'chase' || mode === 'free') { yawRef += lauvWrapA(hy - yawRef) * (1 - exp(-dt * 2.6)); S.camYaw = yawRef; } else yawRef = S.camYaw = hy;
   let az = S.camAz, el = S.camEl, dist = S.camDist, baseEl = 0.2 + lv.pitch * 0.35;
-  if (mode === 'chase') { dist = (2.5 + 0.35 * abs(lv.v[0])) * (1 - S.surfK) + 7.5 * S.surfK; baseEl += 0.1 * S.surfK; }   // floating: the camera pulls back to 7.5 m so the hull reads against the sea
-  else if (mode === 'side') { az = 0; el = 0; baseEl = 0.06; dist = 1.9; }
+  if (mode === 'chase') { dist = (3.3 + 0.35 * abs(lv.v[0])) * (1 - S.surfK) + 7.5 * S.surfK; baseEl += 0.1 * S.surfK; }   // floating: the camera pulls back to 7.5 m so the hull reads against the sea
+  else if (mode === 'side') { az = 0; el = 0; baseEl = 0.06; dist = 2.5; } // LOOK: chase 2.5 -> 3.3 m, side 1.9 -> 2.5 m (vehicle smaller in frame)
   else if (mode === 'front') { az = 0; el = 0; baseEl = 0.1; dist = 2.1; }
   else if (mode === 'top') { az = 0; el = 0; baseEl = 1.45; dist = 3.2; }
   else if (mode === 'surface') { dist = 8; baseEl = 0.3; }

@@ -265,12 +265,12 @@ function makeWorld(D, T, POSES) {
     const x = T.wp[k] + rr(-0.7, 0.7), z = T.wp[k + 2] + rr(-0.7, 0.7), y = T.wp[k + 1], sa = T.vs[k / 3];
     if (y > -2 || nearPose(x, z, 1.5)) continue;
     const pa = pfbm(x, 17, z, 0.07, 3), u = rnd();
-    if (u < 0.05 * sstep(0.42, 0.55, pa)) { // algae tufts
+    if (u < 0.035 * sstep(0.5, 0.6, pa)) { // algae tufts (LOOK: fewer, in clumps)
       const n = 5 + (rnd() * 6 | 0), ty = rnd() < 0.5 ? 5 : 7, ln = rr(0.12, 0.5);
       for (let j = 0; j < n; j++) leaf(small, x + rr(-0.12, 0.12), y - 0.04, z + rr(-0.12, 0.12), ln * rr(0.6, 1.3), rnd() * TAU, rr(0.1, 0.9), rr(0.03, 0.06), 0, ty, rnd(), rnd(), rr(0.3, 0.8));
-    } else if (u < 0.075) { // odd blades
+    } else if (u < 0.045 && pa > 0.55) { // odd blades (LOOK: only in the clumps)
       for (let j = 0; j < 4; j++) leaf(small, x + rr(-0.1, 0.1), y - 0.04, z + rr(-0.1, 0.1), rr(0.25, 0.7), rnd() * TAU, rr(0.05, 0.5), rr(0.025, 0.045), 0, 2, rnd(), rnd(), rr(0.3, 0.7));
-    } else if (u < 0.1 && sa > 0.3) { // rubble and shells
+    } else if (u < 0.065 && sa > 0.3 && pa < 0.4) { // rubble and shells (LOOK: in their own patches)
       const n = 3 + (rnd() * 4 | 0);
       for (let j = 0; j < n; j++) { const sc = 0.05 + 0.18 * pow(rnd(), 2), q = qRand(), shell = rnd() < 0.3; nth++ % THIN || chunks[6][cellOf(x, z)].push(wrapT(x + rr(-0.3, 0.3)), y - sc * 0.3, wrapT(z + rr(-0.3, 0.3)), sc, q[0], q[1], q[2], q[3], shell ? 5 : 1, rnd(), 44, 0); }
     }
@@ -370,7 +370,7 @@ function makeWorld(D, T, POSES) {
     chunks[(sc > 1.1 ? 3 : 0) + (rnd() * 3 | 0)][cellOf(x, z)].push(x - T.wn[k] * sc * 0.3, y - ny * sc * 0.3, z - T.wn[k + 2] * sc * 0.3, sc, q[0], q[1], q[2], q[3], 1, rnd(), sc > 1.1 ? 0 : 96, 0);
   }
   rseed(11);
-  for (let i = 0; i < 50000; i++) { // pebbles, shells and rubble (LOOK: was 90000)
+  for (let i = 0; i < 36000; i++) { // pebbles, shells and rubble (LOOK: was 90000)
     const k = pickV(), x = T.wp[k] + rr(-0.4, 0.4), z = T.wp[k + 2] + rr(-0.4, 0.4), y = T.wp[k + 1];
     if (T.wn[k + 1] < 0.8 || nearPose(x, z, 1.3) || (T.vs[k / 3] > 0.6 && rnd() < 0.85 - 0.8 * sstep(0.5, 0.62, pfbm(x, 14, z, 0.05, 2)))) continue;
     const sc = 0.04 + 0.22 * pow(rnd(), 2.4), q = qRand();
