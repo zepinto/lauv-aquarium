@@ -18,7 +18,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   let w = clamp((.2 - l.x) / .7, 0., 1.);
   let wt = w * w; let k = 5.2;
   let arg = ph - l.x * k;
-  let ym = .125 * amp;
+  let ym = .17 * amp;
   let dy = ym * wt * sin(arg) - ym * .22 * (1. - w) * sin(arg + .5);
   let slope = ym * (-k * wt * cos(arg) - 2. * w / .7 * sin(arg));
   let dz = i.d.x * w * w * .22 + .03 * amp * w * sin(arg + 1.3);
@@ -50,9 +50,9 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   // countershading: dark slate cape, grey flank, pale pinkish belly; the cape line wanders (lighter streak behind the eye, dip at the dorsal fin)
   let wob = .16 * sin(s * 11. + 1.3) * ss(.08, .3, s) + .1 * sin(s * 27.) * ss(.15, .4, s) + (tx.a - .5) * .18;
   let tt = t + wob * (1. - abs(t));
-  let back = vec3f(.030, .036, .046); let flank = vec3f(.115, .125, .138); let belly = vec3f(.42, .39, .37);
+  let back = vec3f(.030, .036, .046); let flank = vec3f(.20, .215, .235); let belly = vec3f(.64, .62, .59);
   var alb = mix(flank, back, ss(-.05, .5, tt));
-  alb = mix(alb, belly, ss(-.12, -.62, tt));
+  alb = mix(alb, belly, ss(-.04, -.42, tt));
   alb = mix(alb, vec3f(.40, .27, .26), ss(-.7, -1., tt) * .35 * ss(.15, .7, s));
   // fins and flukes: dark, paler underneath
   let finc = mix(vec3f(.025, .03, .04), vec3f(.07, .08, .095), ss(.2, .9, tx.b)) * (.8 + .4 * tx.a);
@@ -88,7 +88,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   let H = normalize(V + L); let nv = sat(dot(n, V));
   c += E * (pow(sat(dot(n, H)), 60.) * .4 + pow(sat(dot(n, H)), 10.) * .1) * (.4 + ca * .6) * (1. - mouth) * (1. - .8 * f32(isfin));
   let sky = amb(i.wp, vec3f(0., 1., 0.), vv.g, z);
-  c += sky * pow(1. - nv, 4.) * .55 + alb * sky * ca * .25 * sat(-n.y);
+  c += sky * pow(1. - nv, 2.5) * 1.2 * (.4 + .6 * sat(n.y * .6 + .5)) + alb * sky * ca * .25 * sat(-n.y);
   return fin(fog(c, i.wp, z));
 }
 `
@@ -279,7 +279,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
       const fl = hypot(d.f[0], d.f[1], d.f[2]); d.f[0] /= fl; d.f[1] /= fl; d.f[2] /= fl;
     }
     if (dt > 1e-5) { const a = atan2(d.f[0], -d.f[2]); d.yawRate += (wrapA(a - d.ang) / dt - d.yawRate) * min(1, 4 * dt); d.ang = a; }
-    let rollT = bfClamp(d.yawRate * 0.7, -0.5, 0.5);
+    let rollT = bfClamp(d.yawRate * 1.1, -0.75, 0.75);
     if (escort) {   // roll onto the side to look at the vehicle when beside it
       const vxr = wrapD(bfV.x - d.p[0]), vzr = wrapD(bfV.z - d.p[2]), rgt = vxr * cos(d.ang) + vzr * sin(d.ang), dd = hypot(vxr, vzr);
       d.lookSide += ((dd < 7 ? bfClamp(rgt / 3, -1, 1) * 0.55 : 0) - d.lookSide) * min(1, 2 * dt);
@@ -292,7 +292,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
     const rl = d.roll + (d.barrel >= 0 ? d.barrel * TAU : 0);
     // --- swimming: beat frequency follows speed, amplitude follows effort (gliding in the bow wave, hard when climbing / catching up)
     const catchUp = escort ? bfClamp(hypot(dx, dz) / 2.5, 0, 1) : 0;
-    let ampT = 0.3 + 0.12 * sp + 0.4 * bfClamp(d.v[1] * 0.5, 0, 1) + 0.45 * catchUp;
+    let ampT = 0.5 + 0.12 * sp + 0.4 * bfClamp(d.v[1] * 0.5, 0, 1) + 0.45 * catchUp;
     if (escort && catchUp < 0.25 && pod.mode === 'escort') ampT = 0.5 + 0.3 * bfClamp(abs(d.v[1]), 0, 1);   // riding the pressure wave: almost no beat
     d.amp += (bfClamp(ampT, 0.08, 1) - d.amp) * min(1, 2.5 * dt);
     d.phase += TAU * (0.9 + 0.45 * sp) * dt;
@@ -374,7 +374,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
     // the pod cruising and breathing at x, z (default: 25 m ahead of the vehicle)
     cruiseAt(x, z, h) { bfVehicle(); pod.mode = 'cruise'; pod.cool = 1e9; place(x ?? bfV.x + bfV.fx * 25, z ?? bfV.z + bfV.fz * 25, h ?? atan2(bfV.rx, -bfV.rz), 2.3); },
     // the pod arrives from dist metres away (default 40) in a direction 60 degrees off the vehicle's heading and comes to look
-    call(dist = 40, side = 1) { bfVehicle(); const a = atan2(bfV.fx, -bfV.fz) + side * 1.05, x = bfV.x + sin(a) * dist, z = bfV.z - cos(a) * dist; place(x, z, atan2(bfV.x - x, -(bfV.z - z)), 3.5); pod.mode = 'approach'; pod.t = 0; pod.still = 0; pod.cool = 0; },
+    call(dist = 40, side = 1) { bfVehicle(); const a = atan2(bfV.fx, -bfV.fz) + side * 1.05, x = bfV.x + sin(a) * dist, z = bfV.z - cos(a) * dist; place(x, z, atan2(bfV.x - x, -(bfV.z - z)) + side * 1.25, 3.5); pod.mode = 'approach'; pod.t = 0; pod.still = 0; pod.cool = 0; },
     leave() { pod.mode = 'leave'; pod.t = 0; },
   };
   return { name: 'dolphins', init: dolInit, update, draw };

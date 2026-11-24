@@ -12,7 +12,7 @@ struct VI { @location(0) p: vec3f, @location(1) n: vec4f, @location(2) a: vec4f,
 struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n: vec3f, @location(2) op: vec3f, @location(3) @interpolate(flat) sd: f32, @location(4) lt: f32, @location(5) on: vec3f, @location(6) @interpolate(flat) ty: f32, @location(7) au: f32 };
 // wing displacement (in half spans) at span fraction au, along z; type 0 stingray (an undulation along the chord), 1 eagle ray, 2 manta (flaps, tips lag)
 fn wv(ty: f32, au: f32, z: f32, ph: f32, amp: f32) -> f32 {
-  if (ty < .5) { return amp * .3 * ss(.08, .95, au) * sin(ph + z * 3.6 - au * 0.8); }
+  if (ty < .5) { return amp * .46 * ss(.06, .9, au) * sin(ph + z * 3.6 - au * 0.8); }
   if (ty < 1.5) { return amp * (.5 * pow(au, 1.5) * sin(ph - au * 1.1) - .05 * sin(ph)); }
   return amp * (.45 * pow(au, 1.5) * sin(ph - au * 1.0) - .1 * sin(ph));
 }
@@ -61,7 +61,7 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
     let mot = tx.b * .6 + tx.a * .4;
     back = mix(vec3f(.085, .07, .048), vec3f(.03, .025, .018), ss(.3, .7, mot)) * (.8 + .4 * tx.a);
     back += vec3f(.22, .19, .14) * ss(.78, .9, tx.a);
-    back = mix(back, vec3f(.012), spots(i.op.xz, 11., .26, 5.) * .85 * ss(.1, .5, au));
+    back = mix(back, vec3f(.012), spots(i.op.xz, 9., .3, 5.) * .9 * ss(.1, .5, au));
     back = mix(back, vec3f(.3, .26, .19), spots(i.op.xz + 3., 8., .2, 8.) * .8);
     back = mix(back, back * 1.35, ss(.6, 1., au) * .6);
     let eye = ss(.05, .025, length(vec2f(abs(i.op.x) - .14, zz - .5)));
@@ -98,7 +98,7 @@ fn spots(p: vec2f, sc: f32, rad: f32, seed: f32) -> f32 {
   var c = alb * (E * sat(dot(n, L)) * (.3 + ca) + amb(i.wp, fillN, vv.g, z) * 1.1 + side(i.wp, n, 1., z) * .8);
   c += E * pow(sat(dot(n, normalize(V + L))), 30.) * gl * (.3 + ca) * .7;
   let sky = amb(i.wp, vec3f(0., 1., 0.), vv.g, z);
-  c += alb * sky * ca * .45 * (1. - top) + sky * pow(1. - ndv, 3.) * .3;
+  c += alb * sky * ca * .45 * (1. - top) + sky * pow(1. - ndv, 2.5) * 1.0 * (.4 + .6 * sat(n.y * .6 + .5));
   return fin(fog(c, i.wp, z));
 }
 `;
@@ -219,7 +219,7 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) w
     }
   }
   const nearestSite = (x, z, minD, exclude) => { let b = -1, bd = 1e9; for (let k = 0; k < sites.length; k++) { const s = sites[k]; if (s.used >= 0 && s.used !== exclude) continue; const d = hypot(wrapD(s.x - x), wrapD(s.z - z)); if (d < bd && d >= minD) { bd = d; b = k; } } return b; };
-  function settle(r, k, yaw, cool = 0) { const s = sites[k]; if (r.site >= 0) sites[r.site].used = -1; r.site = k; s.used = r.i; r.p[0] = s.x; r.p[2] = s.z; r.p[1] = s.y - 0.005 * r.scale + 0.01; r.v.fill(0); r.yaw = yaw; r.pitch = 0; r.roll = 0; r.state = REST; r.amp = r.ampT = 0.14; r.freq = 0.6; r.cool = cool; }
+  function settle(r, k, yaw, cool = 0) { const s = sites[k]; if (r.site >= 0) sites[r.site].used = -1; r.site = k; s.used = r.i; r.p[0] = s.x; r.p[2] = s.z; r.p[1] = s.y - 0.005 * r.scale + 0.01; r.v.fill(0); r.yaw = yaw; r.pitch = 0; r.roll = 0; r.state = REST; r.amp = r.ampT = 0.3; r.freq = 0.6; r.cool = cool; }
   function place() {
     bfVehicle(); findSites(); placed = true;
     // stingrays: the first three on the sites nearest the vehicle (so some are always close), the rest spread out
@@ -250,6 +250,16 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) w
       pv[(np - 1) * 3] = cos(a) * s; pv[(np - 1) * 3 + 1] = up * rf(0.3, 1); pv[(np - 1) * 3 + 2] = sin(a) * s; pl[np - 1] = rf(5, 9);
     }
   }
+  // sand streaming from the wing tips, left behind along the path
+  function puffTips(r, n) {
+    const fx = sin(r.yaw), fz = -cos(r.yaw), rx = cos(r.yaw), rz = sin(r.yaw);
+    for (const sd of [-1, 1]) for (let k = 0; k < n && np < NP; k++) {
+      const o = np * 8; np++;
+      pp[o] = r.p[0] + rx * sd * r.scale * rf(0.7, 1) - fx * rf(0, 0.3); pp[o + 1] = r.p[1] - 0.15 + rf(0, 0.2); pp[o + 2] = r.p[2] + rz * sd * r.scale * rf(0.7, 1) - fz * rf(0, 0.3);
+      pp[o + 3] = 0.35 * (0.6 + r.scale) * rf(0.7, 1.3); pp[o + 4] = 0; pp[o + 5] = rf(0.35, 0.65); pp[o + 6] = rng() * 10; pp[o + 7] = 0;
+      pv[(np - 1) * 3] = -fx * 0.3 + rx * sd * 0.25 + rf(-0.1, 0.1); pv[(np - 1) * 3 + 1] = rf(0.1, 0.35); pv[(np - 1) * 3 + 2] = -fz * 0.3 + rz * sd * 0.25 + rf(-0.1, 0.1); pl[np - 1] = rf(4, 7);
+    }
+  }
   function puffUpdate(dt) {
     for (let k = 0; k < np; k++) {
       const o = k * 8; pp[o + 4] += dt / pl[k];
@@ -278,21 +288,21 @@ struct PO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) w
     let speed = 0, yawDes = r.yaw, vyT = 0;
     r.cool -= dt;
     if (r.state === REST) {
-      r.ampT = 0.14; r.freq = 0.55; speed = 0;
+      r.ampT = 0.3; r.freq = 0.55; speed = 0;
       if (r.cool <= 0 && ((d3 < 5.5 && moving) || d3 < 2.8)) { r.state = STARTLE; r.t = 0; r.react = rf(0.1, 0.3); }
     } else if (r.state === STARTLE) {
       r.t += dt; r.ampT = 0.5; r.freq = 1.6;
       if (r.t > r.react) {
         r.state = LIFT; r.t = 0; r.yaw = atan2(away[0], -away[2]) + rf(-0.5, 0.5);
-        puff(r.p[0], r.p[1], r.p[2], 1.1 * r.scale, 110, 0.9, 0.5 * (0.6 + r.scale)); if (r.site >= 0) pitLift(r); if (r.site >= 0) { sites[r.site].used = -1; r.site = -1; }
+        puff(r.p[0], r.p[1], r.p[2], 0.9 * r.scale, 50, 0.9, 0.5 * (0.6 + r.scale)); if (r.site >= 0) pitLift(r); if (r.site >= 0) { sites[r.site].used = -1; r.site = -1; }
       }
     } else if (r.state === LIFT) {
       r.t += dt; r.ampT = 1; r.freq = 3.0; yawDes = r.yaw;
-      speed = 0.45 + 0.85 * bfSS(0, 1.3, r.t); vyT = 0.6 * (1 - bfSS(0.5, 1.8, r.t)) + 0.08;
-      r.puffT -= dt; if (r.puffT < 0 && r.t < 1.5) { r.puffT = 0.07; puff(r.p[0] - sin(r.yaw) * 0.4 * r.scale, r.p[1] - 0.1, r.p[2] + cos(r.yaw) * 0.4 * r.scale, 0.8 * r.scale, 6, 0.5, 0.6 * (0.6 + r.scale)); }
-      if (r.t > 2.2) { r.state = GLIDE; r.t = 0; r.glideT = rf(16, 26); }
+      speed = 0.45 + 0.85 * bfSS(0, 1.3, r.t); vyT = 1.15 * (1 - bfSS(0.7, 2.0, r.t)) + 0.1;
+      r.puffT -= dt; if (r.puffT < 0) { r.puffT = 0.05; puffTips(r, 3); if (r.t < 1.2) puff(r.p[0], r.p[1] - 0.1, r.p[2], 0.6 * r.scale, 3, 0.5, 0.5 * (0.6 + r.scale)); }
+      if (r.t > 2.4) { r.state = GLIDE; r.t = 0; r.glideT = rf(16, 26); }
     } else if (r.state === GLIDE) {
-      r.t += dt; r.glideT -= dt;
+      r.t += dt; r.glideT -= dt; if (r.t < 3.5) { r.puffT -= dt; if (r.puffT < 0) { r.puffT = 0.07; puffTips(r, 2); } }
       speed = 1.15; r.freq = 0.95; r.ampT = r.t < 5 ? 0.7 : 0.5 + 0.2 * sin(t * 0.9 + r.i);
       if (r.t < dt * 1.5) r.hd = r.yaw;
       r.wanderT -= dt; if (r.wanderT < 0) { r.wanderT = rf(3, 6); if (r.t > 8) r.hd = r.yaw + rf(-0.7, 0.7); }   // keep going the way it was thrown for the first 8 s
