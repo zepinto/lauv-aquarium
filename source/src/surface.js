@@ -157,7 +157,7 @@ const SURF_WK = 512, SURF_WKE = 64;   // the wake texture: texels, metres across
 const SURF_M = 128, SURF_LV = 12, SURF_SP0 = 0.08, SURF_TRAIL = 48, SURF_NP = 4;
 const W_SURFA = S_B + /*wgsl*/`
 struct SU { a: vec4f, o: vec4f, sv: vec4f, bb: vec4f, w: array<vec4f, ${SURF_TRAIL}> }   // bb: the wake's bounding box (min x, min z, max x, max z, relative to its newest point)
-   // a: speed, rpm/2100, the vehicle's clock (wake ages), hull height above the water; o: foam threshold, 0, 0, 0; sv: slope variance per cascade, unresolved; w: wake points (x, z, birth time, strength), newest first
+   // a: speed, 1 with the camera under the water, the vehicle's clock (wake ages), hull height above the water; o: foam threshold, 0, 0, 0; sv: slope variance per cascade, unresolved; w: wake points (x, z, birth time, strength), newest first
 @group(1) @binding(1) var<uniform> su: SU;
 @group(1) @binding(2) var tFl: texture_2d<f32>;          // height of the sea floor (r: (h + 40) / 40), from the world's ground map
 @group(1) @binding(3) var tDisp: texture_2d_array<f32>;  // per cascade: Dx, h, Dz, accumulated foam (label space)
@@ -230,7 +230,7 @@ fn lensH(rd: vec3f, exact: bool) -> vec2f {
   var lh = 0.; var lx = np;
   for (var c = 0; c < 3; c++) { lx -= dispAt(np, c, exact).xz; }
   for (var c = 0; c < 3; c++) { lh += dispAt(lx, c, exact).y; }
-  return vec2f(lh * ss(-1.6, -.6, g.cam.y), g.cam.y + rd.y * t);
+  return vec2f(lh * ss(-.4, -.15, g.cam.y), g.cam.y + rd.y * t);
 }
 struct VS2 { @builtin(position) cp: vec4f, @location(0) dir: vec3f };
 @vertex fn vsSky(@builtin(vertex_index) i: u32) -> VS2 {
@@ -289,7 +289,7 @@ struct VM { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) l
     let lod = max(0., log2(sc * ON / OL[c]));
     d += textureSampleLevel(tDisp, sR, p / OL[c] + .5 / ON, c, lod).xyz * (1. - ss(4.5, 6.5, lod));
   }
-  d *= (1. - ss(3000., 8000., dist)) * ss(-1.6, -.6, g.cam.y);
+  d *= (1. - ss(3000., 8000., dist)) * ss(-.4, -.15, g.cam.y) * select(1., 1. - ss(12., 45., dist), g.cam.y < 0.);
   var w = vec3f(p.x + d.x, d.y, p.y + d.z);
   // the curvature of the Earth (with refraction): the far sea drops below the horizon
   let rel = w.xz - g.cam.xz;
@@ -326,11 +326,12 @@ fn wake(p: vec2f) -> vec2f {
 }
 fn wr2v(v: vec2f) -> vec2f { return vec2f(wr(v.x), wr(v.y)); }
 @fragment fn fsM(i: VM) -> @location(0) vec4f {
+  if (su.a.y > .5) { return underside(i); }   // the camera is under the water: the far wave faces turned towards it are seen from below too
   if (${SURF_V} == 1) { return vec4f(.1, .3, .5, 1.); }
   let t = g.cam.w; let wp = i.wp; let p = i.lp;
   let v = g.cam.xyz - wp; let d = length(v); let V = v / d;
   let wk0 = select(vec2f(0.), wake(wp.xz), ${SURF_V} != 7);
-  let S = slopes(p, 1. - .75 * sat(wk0.x * 1.5));
+  let S = slopes(p, 1. - select(.3, 0., ${SURF_V} == 10) * sat(wk0.y * 1.3));
   if (${SURF_V} == 5) { return vec4f(S.s * .5 + .5, S.foam, 1.); }
   var sl = S.s;
   // how far behind the surface the scene lies along this ray (the hull, kelp, the reef)
@@ -348,14 +349,14 @@ fn wr2v(v: vec2f) -> vec2f { return vec2f(wr(v.x), wr(v.y)); }
     let lw = 1. - abs(sD(pu(p, .7) + .5).a * 2. - 1.); let lw2 = 1. - abs(sD(pu(p.yx, .23) + .2).a * 2. - 1.);
     lacew = lw * .55 + lw2 * .45;
     let wk = wk0;
-    slick = sat(wk.x * 1.2);
-    foamV = ss(.86 - .16 * wk.x, .9 - .16 * wk.x, lacew + .05 * wk.y) * sat(wk.x * 1.4 + wk.y * .6) * .8;
+    slick = sat(wk.y * 1.2);
+    foamV = ss(.8 - .3 * wk.x, .9 - .3 * wk.x, lacew) * sat(wk.x * 1.6) * .85;
     // a broken skirt of bubbles round the hull
     let skirt = ss(.2, .1, dh) * ss(.06, .1, dh) * .4 * ss(.72, .8, lacew) * aw;
     // bow wave: a V of foam lines opening behind the nose, stronger with speed
-    let vl = ss(.04 + .05 * back, 0., abs(sd - (.10 + .33 * max(back, 0.)))) * ss(-.05, .1, back) * ss(2.5, 0., back);
+    let vl = ss(.04 + .04 * back, 0., abs(sd - (.10 + .33 * max(back, 0.)))) * ss(-.05, .1, back) * ss(1.3, 0., back);
     let bowK = aw * clamp(su.a.x * .7, 0., 1.);
-    let bow = (vl * ss(.66, .74, lacew) * .7 + ss(.3, .0, length(nb)) * ss(.5, .6, lacew)) * bowK;
+    let bow = (vl * ss(.68, .8, lacew) * .65 + ss(.3, .0, length(nb)) * ss(.5, .65, lacew)) * bowK;
     foamV = max(foamV, max(skirt, bow));
   }
   // waterline: a thin film where the hull pierces the water (the scene is just behind the surface here and in front of it a few pixels away)
@@ -367,7 +368,7 @@ fn wr2v(v: vec2f) -> vec2f { return vec2f(wr(v.x), wr(v.y)); }
   }
   // Kelvin wake: divergent waves along the two arms of the 19.5 degree wedge behind the hull, wavelength 2 pi U^2 / g
   let u = su.a.x;
-  if (aw > 0. && u > .3 && back > 0. && back < 25. && sd < back * .5 + 1.) {
+  if (aw > 0. && u > .3 && back > 0. && back < 25. && sd < back * .5 + 1. && ${SURF_V} != 9) {
     let kw = 9.81 / (u * u);
     let arm = sd - back * .354;
     let env = ss(.35 * back + .4, 0., abs(arm)) * exp(-back * .12) * aw * min(u, 1.5) * .06;
@@ -378,7 +379,7 @@ fn wr2v(v: vec2f) -> vec2f { return vec2f(wr(v.x), wr(v.y)); }
   var n = n0;
   if (dot(n, V) < .02) { n = normalize(n + V * (.02 - dot(n, V))); }
   let NoV = clamp(dot(n, V), 1e-3, 1.);
-  let s2 = S.v * (1. - .7 * slick);
+  let s2 = S.v * (1. - select(.3, 0., ${SURF_V} == 10) * slick);
   let sv = sqrt(s2 * .5);
   // ---- the water body: deep-water reflectance under the sun and the sky, brighter where the view runs flat through a wave face
   let tv = refract(-V, n, 1. / 1.333);
@@ -416,7 +417,7 @@ fn wr2v(v: vec2f) -> vec2f { return vec2f(wr(v.x), wr(v.y)); }
     foamA = .92 * ss(-.02, .45, th); l3b = l3.b;
   }
   foamA = max(foamA, foamV);
-  let plume = sat(fold * 1.5 + S.foam * .4 + wk0.x * .6);
+  let plume = sat(fold * 1.5 + S.foam * .4 + wk0.x * .8);
   under = mix(under, under * 1.4 + vec3f(.06, .14, .16), plume * .5);
   // ---- reflection: the sky along the reflected ray; rough water blurs the clouds; rays turned down see the next wave
   var R = reflect(-V, n); let below = ss(0., -.15, R.y); R.y = abs(R.y) + .002; R = normalize(R);
@@ -441,12 +442,14 @@ fn wr2v(v: vec2f) -> vec2f { return vec2f(wr(v.x), wr(v.y)); }
   // ---- aerial perspective: the far sea takes the colour of the horizon haze, the horizon line stays crisp
   let hz = 1. - exp(-d / 14000.);
   col = mix(col, skyBase(normalize(vec3f(-V.x, .02, -V.z))) * SK * .85, hz);
-  if (su.o.y > .5) { col = select(select(vec3f(fold, S.foam, 0.), vec3f(S.J * .5), su.o.y > 1.5), vec3f(foamA, foamV, 0.), su.o.y > 2.5) * 3.; }   // debug views (__surf.TUNE.dbg)
+  if (su.o.y > 3.5) { col = vec3f(wk0.x, wk0.y, lacew) * 3.; }
+  else if (su.o.y > .5) { col = select(select(vec3f(fold, S.foam, 0.), vec3f(S.J * .5), su.o.y > 1.5), vec3f(foamA, foamV, 0.), su.o.y > 2.5) * 3.; }   // debug views (__surf.TUNE.dbg)
   return vec4f(min(col, vec3f(40.)), 1.);
 }
 // the water seen from below (camera under the surface, the crossing): Snell's window, total internal reflection, foam from below
 ${wgslFn(W_SURF, 'surfBelow')}
-@fragment fn fsU(i: VM) -> @location(0) vec4f {
+@fragment fn fsU(i: VM) -> @location(0) vec4f { return underside(i); }
+fn underside(i: VM) -> vec4f {
   let wp = i.wp; let v = wp - g.cam.xyz; let d = length(v);
   let S = slopes(i.lp, 1.);
   var c = surfBelow(wp);
@@ -569,10 +572,12 @@ fn ss(a: f32, b: f32, x: f32) -> f32 { let t = clamp((x - a) / (b - a), 0., 1.);
       let ab = b - a; let h = clamp(-dot(a, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
       let dd = length(a + ab * h);
       let age = t - mix(pv.z, q.z, h);
-      let w = .07 + .07 * age;
-      let s = mix(pv.w, q.w, h) * exp(-age * .45);
-      acc = max(acc, s * ss(w, w * .2, dd));
-      edge = max(edge, s * ss(w * 1.6, w, dd) * ss(w * .5, w, dd));
+      let s = mix(pv.w, q.w, h);
+      // the white wash: narrow, gone in a couple of seconds; the slick it leaves: wider, smoother water that lasts
+      let w = .07 + .04 * age;
+      acc = max(acc, s * exp(-age * 1.8) * ss(w, w * .25, dd));
+      let ws = .12 + .12 * age;
+      edge = max(edge, s * exp(-age * .22) * ss(ws, ws * .4, dd));
       a = b;
     }
   }
@@ -725,8 +730,8 @@ function surfResize(tRes, tDp) {
 // every frame, after the vehicle has moved: the track of foam it leaves and the uniforms
 function surfUpdate() {
   const t = F[TIME], cy = F[CY];
-  surfOn = cy > -1.6;
-  surfU[0] = abs(lv.v[0]); surfU[1] = abs(lv.rpm) / 2100; surfU[2] = lv.t; surfU[3] = abs(lv.pos[1] - lv.surfY);
+  surfOn = cy > -0.4;   // deeper, the look piece's own surface (shaders.js W_SURF) takes over
+  surfU[0] = abs(lv.v[0]); surfU[1] = cy < pr0H() ? 1 : 0; surfU[2] = lv.t; surfU[3] = abs(lv.pos[1] - lv.surfY);
   surfU[4] = SURF_TUNE.thr; surfU[5] = SURF_TUNE.dbg;
   { const tx = SURF_WKE / SURF_WK, p = surfTrail[0]; surfU[6] = p ? Math.round(p.x / tx) * tx : 0; surfU[7] = p ? Math.round(p.z / tx) * tx : 0; }
   surfU[8] = OC.cas[0].slope; surfU[9] = OC.cas[1].slope; surfU[10] = OC.cas[2].slope; surfU[11] = OC.resid;
@@ -734,7 +739,7 @@ function surfUpdate() {
   let x0 = 0, z0 = 0, x1 = 0, z1 = 0;
   const p0 = surfTrail[0];
   for (let i = 1; i < surfTrail.length; i++) { const dx = wrapD(surfTrail[i].x - p0.x), dz = wrapD(surfTrail[i].z - p0.z); if (dx < x0) x0 = dx; if (dx > x1) x1 = dx; if (dz < z0) z0 = dz; if (dz > z1) z1 = dz; }
-  const mg = p0 ? 1.2 + 0.18 * Math.max(0, lv.t - surfTrail[surfTrail.length - 1].t) : 0;
+  const mg = p0 ? 1.2 + 0.25 * Math.max(0, lv.t - surfTrail[surfTrail.length - 1].t) : 0;
   surfU[12] = x0 - mg; surfU[13] = z0 - mg; surfU[14] = x1 + mg; surfU[15] = z1 + mg;
   for (let i = 0; i < SURF_TRAIL; i++) {
     const p = surfTrail[i], o = 16 + i * 4;
@@ -812,4 +817,4 @@ function surfDrawWater(e, r, ts) {
 }
 // the height of the sea at the camera (CPU sea with the probe's correction)
 function pr0H() { return surfWaveAt(F[CX], F[CZ], F[TIME], surfS).h; }
-window.__surf = { OC, TUNE: SURF_TUNE, cor: surfCor, eval: (x, z) => surfEval(x, z, F[TIME], {}) };
+window.__surf = { OC, TUNE: SURF_TUNE, cor: surfCor, trail: surfTrail, U: surfU, eval: (x, z) => surfEval(x, z, F[TIME], {}) };
