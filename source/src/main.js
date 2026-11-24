@@ -640,6 +640,7 @@ window.__app = {
     if (o.scratches !== undefined) lauvS.scratches = o.scratches;
     lauvS.acc = 0;
   },
+  camOrbit(dist, az, el) { lauvS.camDist = dist; lauvS.camAz = az; lauvS.camEl = el; lauvS.camIdle = 0; },   // free-look orbit (tests: hold the camera at a distance, e.g. to keep a whole bait ball in frame)
   cam(mode) { lauvS.camMode = mode; lauvS.snap = 1; if (mode === 'chase') { lauvS.camAz = lauvS.camEl = 0; lauvS.camIdle = 9; } },
   state() {
     const hd = ((lv.yaw * 180 / PI) % 360 + 360) % 360;
