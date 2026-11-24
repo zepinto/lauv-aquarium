@@ -6,17 +6,17 @@
 // surfWaveAt() here and wave() in the shader are the same function: the water, the hull and the camera agree.
 // Sea state: a Pierson-Moskowitz spectrum for a fetch-limited wind sea (lauv-ocean-3d uses JONSWAP with U10 6-8 m/s), as 20 waves
 // from 57 m swell to 1.5 m chop, directions spread round the wind, wave vectors whole numbers of 2*PI/PER.
-const SURF_U10 = 7, SURF_SEA = 0.75, SURF_CHOP = 0.8, SURF_WIND = 0.35, SURF_NW = 20;
+const SURF_U10 = 7, SURF_SEA = 0.9, SURF_CHOP = 0.8, SURF_WIND = 0.35, SURF_NW = 20;
 const SURF_W = (() => {
-  const g = 9.81, kp = 0.769 * g / (SURF_U10 * SURF_U10), kmin = 0.11, r = Math.pow(4.2 / kmin, 1 / (SURF_NW - 1)), out = [];
+  const g = 9.81, kp = 0.769 * g / (SURF_U10 * SURF_U10), kmin = 0.07, r = Math.pow(4.2 / kmin, 1 / (SURF_NW - 1)), out = [];
   for (let i = 0; i < SURF_NW; i++) {
     const k0 = kmin * Math.pow(r, i), dk = k0 * (Math.sqrt(r) - 1 / Math.sqrt(r));
     const S = 0.00405 * Math.pow(k0, -3) * Math.exp(-1.25 * (kp / k0) * (kp / k0));
-    const fr = (i * 0.618034) % 1, th = SURF_WIND + (fr - 0.5) * 2 * (0.5 + 0.7 * i / SURF_NW);
+    const fr = (i * 0.618034) % 1, th = SURF_WIND + (fr - 0.5) * 2 * (0.12 + 1.1 * i / SURF_NW);
     let nx = Math.round(k0 * Math.cos(th) * PER / TAU), nz = Math.round(k0 * Math.sin(th) * PER / TAU);
     if (!nx && !nz) nx = 1;
     const kx = TAU * nx / PER, kz = TAU * nz / PER, k = Math.hypot(kx, kz);
-    out.push({ kx, kz, a: SURF_SEA * Math.sqrt(2 * S * dk), w: 0.85 * Math.sqrt(g * k), ph: ((i * 2.399963) % 1) * TAU });
+    out.push({ kx, kz, a: SURF_SEA * Math.sqrt(2 * S * dk) * (1 + 1.6 * Math.exp(-k0 / 0.18)), w: 0.85 * Math.sqrt(g * k), ph: ((i * 2.399963) % 1) * TAU });
   }
   return out;
 })();
@@ -179,13 +179,20 @@ fn wake(p: vec3f, t: f32) -> f32 {
     let ab = b - a; let h = clamp(-dot(a, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
     let dd = length(a + ab * h);
     let age = t - mix(pv.z, q.z, h);
-    let w = .07 + .10 * age;
-    acc = max(acc, mix(pv.w, q.w, h) * exp(-age * .7) * ss(w, w * .35, dd));
+    let w = .12 + .16 * age;
+    acc = max(acc, mix(pv.w, q.w, h) * exp(-age * .45) * ss(w, w * .3, dd));
     a = b;
   }
   return acc;
 }
-@fragment fn fsU(i: VM) -> @location(0) vec4f { return below(i.wp); }
+@fragment fn fsU(i: VM) -> @location(0) vec4f {
+  let c = below(i.wp);
+  // the meniscus: close to the lens the water film is bright and its edge wavers, so the cut is not a straight seam
+  let d = length(i.wp - g.cam.xyz);
+  let nz = textureSample(tD, sR, pu(i.wp.xz * 2.3, 1.1)).b + textureSample(tD, sR, pu(i.wp.zx * 5., .7)).a * .5;
+  let rim = ss(.9 + .6 * (nz - .7), .1, d);
+  return vec4f(mix(c.rgb, vec3f(.55, .95, 1.1) * 1.4 + vec3f(.4, .4, .4) * ss(.35, .1, d), rim * .8), 1.);
+}
 @fragment fn fsM(i: VM) -> @location(0) vec4f {
   let t = g.cam.w; let wp = i.wp;
   let v = g.cam.xyz - wp; let d = length(v); let V = v / d;
@@ -193,26 +200,34 @@ fn wake(p: vec3f, t: f32) -> f32 {
   // ripples on top of the swell: the world's animated slope texture at four scales, drifting with the wind, each gone before it can alias
   let fl = ss(130., 20., d);
   let q = wp.xz + WIND * t * .5;
-  let s = textureSample(tW, sR, pu(q, 1.5)).ba * 1.0 * ss(110., 18., d) + textureSample(tW, sR, pu(q.yx, .62) + .3).ba * 1.1 * ss(55., 8., d) + textureSample(tW, sR, pu(q * .7, 3.4) + .6).ba * .7 * fl + textureSample(tW, sR, pu(q.yx * 1.3, .29) + .1).ba * .9 * ss(24., 4., d);
+  // patches of rougher and calmer water (gusts), and every ripple layer sampled at its own angle and scale so nothing visibly repeats
+  let pm = .45 + 1.1 * fbm(wp.xz / 38. + vec2f(t * .01, 4.), 3);
+  let qa = vec2f(q.x * .8 - q.y * .6, q.x * .6 + q.y * .8); let qb = vec2f(q.x * .5 + q.y * .87, q.x * .87 - q.y * .5) * (1. + .13 * sin(wp.x * .021 + wp.z * .017));
+  let s = (textureSample(tW, sR, pu(qa, 1.5)).ba * 1.0 * ss(110., 18., d) + textureSample(tW, sR, pu(qb, .62) + .3).ba * 1.1 * ss(55., 8., d) + textureSample(tW, sR, pu(qa * .7, 3.4) + .6).ba * .7 * fl + textureSample(tW, sR, pu(qb * 1.3, .29) + .1).ba * .9 * ss(24., 4., d)) * pm;
   let n = normalize(vec3f(-wv.y - s.x * .9, 1., -wv.z - s.y * .9));
+  let mic = (textureSample(tW, sR, pu(qb * 2.1, .17) + .4).ba + textureSample(tW, sR, pu(qa * 1.7, .23) + .8).ba) * ss(40., 6., d) * pm;
   let nv = sat(dot(n, V));
   let F = .02 + .98 * pow(1. - nv, 5.);
   var R = reflect(-V, n); R.y = abs(R.y) + .01; R = normalize(R);
   let L = SKYSUN;
   let refl = skyCol(R, t, false);
   let sd = sat(dot(R, L));
-  var glint = pow(sd, 700.) * 30. + pow(sd, 90.) * .9 + pow(sd, 12.) * .05;
-  glint = glint / (1. + glint * .12) * ss(0., .15, R.y);   // soft clip: bright, never a white blob
+  let Rm = normalize(reflect(-V, normalize(n + vec3f(-mic.x * 2.2, 0., -mic.y * 2.2))));
+  let sdm = sat(dot(Rm, L));
+  var glint = pow(sdm, 4000.) * 160. + pow(sd, 400.) * 3. + pow(sd, 40.) * .08;   // sharp view-dependent sparkles on micro-ripples
+  glint = glint / (1. + glint * .08) * ss(0., .15, R.y);   // soft clip: bright, never a white blob
   // foam: breaking crests where the choppy surface folds over itself, bubbles round the hull, bow wave and wake
   let nz = textureSample(tD, sR, pu(q, 1.6)).b * .55 + textureSample(tD, sR, pu(q.yx, .45) + .3).a * .45;
-  let fold = ss(.80, .50, wv.w + (nz - .5) * .22);
-  var foam = fold * ss(.35, .6, nz + fold * .3) * ss(260., 60., d) * .9;
-  foam += ss(.22, .34, wv.x + (nz - .5) * .1) * ss(.3, .6, nz) * fl * .25;   // thin streaks on the highest crests
+  let wdir = normalize(WIND); let sq = vec2f(dot(q, wdir) * .22, dot(q, vec2f(-wdir.y, wdir.x)));
+  let streak = textureSample(tD, sR, pu(sq * 2., .5) * 1.).a * .6 + textureSample(tD, sR, pu(sq * 5., .3) + .3).b * .4;   // foam streaks stretched along the wind
+  let fold = ss(.90, .55, wv.w + (nz - .5) * .25 - (pm - .8) * .12);
+  var foam = fold * ss(.30, .55, nz + fold * .3) * ss(500., 80., d) * .95;
+  foam += ss(.14, .30, wv.x + (nz - .5) * .1 + (pm - .8) * .06) * ss(.45, .7, streak) * ss(500., 60., d) * .5;   // thin streaks on the highest crests
   let aw = ss(.16, .03, su.a.w);
   if (aw > 0. || su.w[0].w > 0.) {
     let wk = wake(wp, t);
     let fz = textureSample(tD, sR, pu(q * 1.1, .33)).a * .5 + textureSample(tD, sR, pu(q.yx, .8) + .2).b * .5;
-    foam = max(foam, ss(.50 - .16 * wk, .70 - .08 * wk, fz) * sat(wk * 1.6) * .75);
+    foam = max(foam, ss(.50 - .16 * wk, .70 - .08 * wk, fz) * sat(wk * 2.) * .9);
     let ta = wd(g.va.xyz - wp).xz; let nb = wd(g.vb.xyz - wp).xz;
     let ab = nb - ta; let h = clamp(-dot(ta, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
     let dh = length(ta + ab * h);
@@ -220,9 +235,9 @@ fn wake(p: vec3f, t: f32) -> f32 {
     let ring = (ss(.115, .08, dh) * ss(.07, .085, dh) * .95 + ss(.2, .09, dh) * .45 * ss(.25, .55, nz)) * aw;
     // bow wave: a V of foam lines opening behind the nose, stronger with speed
     let hdir = normalize(ab); let rel = -nb; let back = -dot(rel, hdir); let side = abs(dot(rel, vec2f(-hdir.y, hdir.x)));
-    let vl = ss(.05 + .06 * back, 0., abs(side - (.09 + .24 * max(back, 0.)))) * ss(-.05, .1, back) * ss(5., 0., back);
+    let vl = ss(.08 + .1 * back, 0., abs(side - (.12 + .3 * max(back, 0.)))) * ss(-.05, .1, back) * ss(9., 0., back);
     let bowK = aw * clamp(su.a.x * .8, 0., 1.);
-    let bow = (vl * ss(.3, .6, nz) * .8 + ss(.35, .0, length(nb)) * .7 * ss(.2, .5, nz)) * bowK;
+    let bow = (vl * ss(.2, .5, nz) * .95 + ss(.6, .0, length(nb)) * .85 * ss(.15, .4, nz)) * bowK;
     foam = max(foam, max(ring, bow));
   }
   foam = sat(foam);
@@ -231,7 +246,8 @@ fn wake(p: vec3f, t: f32) -> f32 {
   // what the water itself does to the view down into it: it absorbs red first and scatters blue-green, more the longer the path (about 8 m of water, seen along V)
   let path = min(8. / max(V.y, .08), 70.);
   let body = (1. - exp(-.10 * path)) * (1. - F);
-  let bodyC = vec3f(.02, .17, .29) * (.55 + .45 * sat(dot(n, L))) ;
+  let deep = .75 + .6 * fbm(wp.xz / 90. + 7., 2);   // patches of deeper, bluer water
+  let bodyC = vec3f(.02, .15, .28) * deep * (.55 + .45 * sat(dot(n, L)));
   var src = refl * F * (1. - foam) + foamC * foam + SUNC * glint * F * (1. - foam) * .5 + bodyC * body * (1. - foam);
   var al = F * (1. - foam) + foam + body * (1. - foam);
   // far away the sea becomes the haze of the horizon
@@ -282,7 +298,7 @@ function surfUpdate() {
     const l = surfTrail[0];
     if (l && hypot(wrapD(lauvTmp[0] - l.x), wrapD(lauvTmp[2] - l.z)) > 5) surfTrail.length = 0;
     if (!surfTrail.length || hypot(wrapD(lauvTmp[0] - surfTrail[0].x), wrapD(lauvTmp[2] - surfTrail[0].z)) > 0.18) {
-      surfTrail.unshift({ x: lauvTmp[0], z: lauvTmp[2], t, s: clamp(0.2 + 0.35 * abs(lv.v[0]) / 1.5 + abs(lv.rpm) / 5000, 0, 0.9) });
+      surfTrail.unshift({ x: lauvTmp[0], z: lauvTmp[2], t, s: clamp(0.4 + 0.45 * abs(lv.v[0]) / 1.5 + abs(lv.rpm) / 4000, 0, 1.2) });
       if (surfTrail.length > SURF_TRAIL) surfTrail.pop();
     }
   }

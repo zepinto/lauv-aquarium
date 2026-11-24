@@ -573,6 +573,7 @@ fn pal(h: f32) -> vec3f {
   p += N2 * ruf;
   let sw = sway(i.a.xz, hA + (p.y - i.a.y), t);
   p.x += sw.x; p.z += sw.y;
+  p.y = min(p.y, -.32);   // kelp stops at the surface and lies along it (surface.js)
   o.cp = proj(p); o.wp = p; o.n = normalize(N2 + S * u * .55 - T0 * cos(v * 10. + s2 * 30. + t * .6) * u * .7 * nearK); o.uv = vec2f(u, v);
   o.col = col; o.pr = pr; o.sd = vec2f(s1, s2); o.spc = spc;
   return o;
