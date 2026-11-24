@@ -526,7 +526,7 @@ function lauvCamera(dt) {
   const hy = lv.yaw; let yawRef = S.snap ? hy : S.camYaw; if (S.snap) S.camYaw = hy;
   if (mode === 'chase' || mode === 'free') { yawRef += lauvWrapA(hy - yawRef) * (1 - exp(-dt * 2.6)); S.camYaw = yawRef; } else yawRef = S.camYaw = hy;
   let az = S.camAz, el = S.camEl, dist = S.camDist, baseEl = 0.2 + lv.pitch * 0.35;
-  if (mode === 'chase') { dist = (3.3 + 0.35 * abs(lv.v[0])) * (1 - S.surfK) + 7.5 * S.surfK; baseEl += 0.1 * S.surfK; }   // floating: the camera pulls back to 7.5 m so the hull reads against the sea
+  if (mode === 'chase') { dist = (3.3 + 0.35 * abs(lv.v[0])) * (1 - S.surfK) + 7.5 * S.surfK; baseEl += 0.1 * S.surfK + 0.14 * (1 - S.surfK); } // LOOK: a little higher (and to the side, below)   // floating: the camera pulls back to 7.5 m so the hull reads against the sea
   else if (mode === 'side') { az = 0; el = 0; baseEl = 0.06; dist = 2.5; } // LOOK: chase 2.5 -> 3.3 m, side 1.9 -> 2.5 m (vehicle smaller in frame)
   else if (mode === 'front') { az = 0; el = 0; baseEl = 0.1; dist = 2.1; }
   else if (mode === 'top') { az = 0; el = 0; baseEl = 1.45; dist = 3.2; }
@@ -536,7 +536,7 @@ function lauvCamera(dt) {
   else if (mode === 'free') { baseEl = 0.25; dist = 3.6; }
   if (mode === 'chase' && S.camIdle > 1.8) { const k = exp(-dt * 1.4); S.camAz *= k; S.camEl *= k; az = S.camAz; el = S.camEl; }
   S.camIdle += dt;
-  const a = yawRef + az, e = clamp(baseEl + el, -1.3, 1.5);
+  const a = yawRef + az + (mode === 'chase' ? 0.32 * (1 - S.surfK) : 0), e = clamp(baseEl + el, -1.3, 1.5); // LOOK: chase a little to the side
   // behind the vehicle for az = 0 (forward is (sin, ., -cos))
   let dx = -sin(a) * cos(e), dy = sin(e), dz = cos(a) * cos(e);
   if (mode === 'side') { const sl = hypot(R[6], R[8]) || 1; dx = R[6] / sl * cos(e); dz = R[8] / sl * cos(e); }

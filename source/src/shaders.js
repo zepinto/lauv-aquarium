@@ -305,7 +305,8 @@ fn wInf(y: f32, rd: vec3f, sun: vec3f) -> vec3f {
   c += vec3f(.55, .85, .80) * (m4 * m4 * .9 + m4 * .25);
   return c * exp(WKD * min(y, 0.));
 }
-fn wT(d: f32) -> vec3f { return exp(-WEXT * d); }
+// LOOK round 4: the first ~10 m of water stay clear, the fade builds beyond (effective distance d^2 / (d + 12))
+fn wT(d: f32) -> vec3f { return exp(-WEXT * (d * d / (d + 12.))); }
 // the depth the in-scattered light of a ray is taken at: a few attenuation lengths along it (continuous at the horizon)
 fn wY(ro: vec3f, rd: vec3f, d: f32) -> f32 { return min(ro.y + rd.y * min(d, 22.) * .5, 0.); }
 fn wFog(c: vec3f, ro: vec3f, rd: vec3f, d: f32, sun: vec3f) -> vec3f {
@@ -403,10 +404,10 @@ fn sunE(y: f32, z: f32) -> vec3f { return SUNC * exp(kd(z) * (min(y, 0.) / g.sun
 fn vol(p: vec3f) -> vec4f { return textureSampleLevel(tV, sC, (p - vec3f(${OX}., ${OY}., ${OZ}.)) / vec3f(PER, ${NY * VS}, PER), 0.); }
 fn amb(p: vec3f, n: vec3f, sky: f32, z: f32) -> vec3f {
   let up = n.y * .5 + .5;
-  return mix(vec3f(.24, .48, .54), vec3f(.34, .56, .82), z) * exp(kd(z) * min(p.y, 0.) * 1.2) * (.35 + .65 * sky) * (.32 + .68 * up * up) * (.55 + .45 * sat(-p.y / 30.)) + vec3f(.003, .010, .016);
+  return mix(vec3f(.24, .48, .54), vec3f(.34, .56, .82), z) * exp(kd(z) * min(p.y, 0.) * 1.2) * (.5 + .5 * sky) * (.32 + .68 * up * up) * (.55 + .45 * sat(-p.y / 30.)) + vec3f(.003, .010, .016);
 }
 fn zone(p: vec3f) -> f32 { return g.sun.w; }
-fn side(p: vec3f, n: vec3f, open: f32, z: f32) -> vec3f { return mix(WCOL, PCOL, z) * exp(kd(z) * min(p.y, 0.)) * (.25 + .75 * open) * (1. - abs(n.y)) * 1.0; } // LOOK: more side fill (dark walls)
+fn side(p: vec3f, n: vec3f, open: f32, z: f32) -> vec3f { return mix(WCOL, PCOL, z) * exp(kd(z) * min(p.y, 0.)) * (.25 + .75 * open) * (1. - abs(n.y)) * .8; } // LOOK: more side fill (dark walls)
 // skylight at most 150 m along the ray: past that, terrain and the background behind it (vsB) get the same haze
 // LOOK: one water column for everything (wFog); in-scatter a little dimmer where the ray ends under overhangs
 fn fog(c: vec3f, wp: vec3f, z: f32) -> vec3f {
@@ -619,7 +620,12 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     if (mat == 6) {
       let hh = fract(sd * 3.77);
       alb = mix(mix(vec3f(.85, .30, .10), vec3f(.85, .12, .35), ss(.25, .35, hh)), mix(vec3f(.90, .70, .12), vec3f(.35, .25, .75), ss(.75, .85, hh)), ss(.5, .6, hh)) * (.55 + .7 * B.h) * (.6 + .6 * i.ao);
-      alb = mix(vec3f(dot(alb, vec3f(.3, .59, .11))), alb, .6) * .75; // LOOK: hero corals less candy-coloured
+      // LOOK round 4: the colours of a real reef: orange and purple soft coral, yellow, red encrusting sponge, pink, tan
+      let pi = i32(hh * 6.99);
+      var hc = vec3f(.80, .34, .10);
+      if (pi == 1) { hc = vec3f(.34, .16, .36); } if (pi == 2) { hc = vec3f(.78, .64, .14); } if (pi == 3) { hc = vec3f(.58, .12, .08); }
+      if (pi == 4) { hc = vec3f(.72, .28, .42); } if (pi == 5) { hc = vec3f(.55, .44, .26); } if (pi == 6) { hc = vec3f(.38, .44, .16); }
+      alb = hc * .85 * (.6 + .6 * B.h) * (.55 + .6 * i.ao);
       gloss = .3;
     }
     flu = .1; gloss = .2; bump = 1.5;
@@ -643,7 +649,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   // LOOK round 3: + the glow of the surrounding water itself (light scattered in from every side), so faces in shadow
   // and under overhangs keep their detail instead of going black
   let am = (amb(i.wp, N, v1.g, z) + side(i.wp, N, sat((v2.r - .5) * 2.7), z) + sunE(i.wp.y, z) * vec3f(.16, .15, .11) * sat(-N.y * .8 + .25)) * ao
-    + wInf(i.wp.y, normalize(vec3f(N.x, N.y * .5 + .2, N.z)), g.sun.xyz) * vec3f(1.6, 1.2, 1.0) * (.35 + .65 * ao) * .55;
+    + wInf(i.wp.y, normalize(vec3f(N.x, N.y * .5 + .2, N.z)), g.sun.xyz) * vec3f(1.6, 1.2, 1.0) * (.35 + .65 * ao) * .3;
   // LOOK: caustics as bright lines over an even base (no dark blotches between them)
   // LOOK: caustics as thin bright lines over an even base: the dark cells between them read as blotches when strong
   let dl = E * ndl * (2.1 + mix(vec3f(.4), ca, ss(.05, .35, dot(n0, L))) * .85);
@@ -1156,10 +1162,10 @@ fn sat3(x: vec3f) -> vec3f { return clamp(x, vec3f(0.), vec3f(1.)); }
   c *= 1. - dot(q, q) * .55;
   c = tmap(c);
   let l0 = dot(c, vec3f(.2126, .7152, .0722));
-  let l = mix(l0, l0 * l0 * (3. - 2. * l0), .62); // LOOK: gentler S-curve and saturation (no bleached highlights)
+  let l = mix(l0, l0 * l0 * (3. - 2. * l0), .78); // LOOK: gentler S-curve and saturation (no bleached highlights)
   c *= l / max(l0, 1e-4);
   c = mix(c, vec3f(l), ss(.6, 1., l) * .15);
-  c = mix(vec3f(l), c, 1.18) + vec3f(.004, .002, 0.);
+  c = mix(vec3f(l), c, 1.3) + vec3f(.004, .002, 0.);
   c = pow(max(c, vec3f(0.)), vec3f(1. / 2.2));
   let n = ign(fc.xy) + ign(fc.xy + 37.) - 1.;
   return vec4f(c + n / 255., 1.);

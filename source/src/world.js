@@ -234,9 +234,9 @@ function makeWorld(D, T, POSES) {
     if (y > -3 || sa > 0.5 || nearPose(x, z, 6)) continue;
     const h = hot(x, z), u = rnd();
     if (ny > 0.6 && u < 0.10 * h) cluster(x, y, z, 6 + rnd() * 10 | 0, rnd() < 0.7 ? 3 : 4, 0.8, 2.2, 0.12, 0.22, 0.8, 1.5);
-    else if (ny < -0.35 && u < 0.35) { // red algae hanging from overhangs
+    else if (ny < -0.35 && u < 0.1) { // red algae hanging from overhangs (LOOK: fewer and shorter: long pale strands read as streaks)
       const n = 10 + rnd() * 16 | 0;
-      for (let j = 0; j < n; j++) leaf(big, x + rr(-0.6, 0.6), y + 0.2, z + rr(-0.6, 0.6), rr(0.5, 2.0), rnd() * TAU, PI - rr(0, 0.4), rr(0.06, 0.14), 0, 6, rnd(), rnd(), rr(0.3, 0.6));
+      for (let j = 0; j < n; j++) leaf(big, x + rr(-0.6, 0.6), y + 0.2, z + rr(-0.6, 0.6), rr(0.25, 0.8), rnd() * TAU, PI - rr(0, 0.4), rr(0.06, 0.14), 0, 6, rnd(), rnd(), rr(0.3, 0.6));
     } else if (ny > -0.2 && ny < 0.8 && u < 0.05) { // tufts on rock walls
       const yaw = atan2(T.wn[k + 2], T.wn[k]), n = 4 + rnd() * 6 | 0;
       for (let j = 0; j < n; j++) leaf(big, x, y, z, rr(0.4, 1.1), yaw + rr(-0.9, 0.9), rr(0.3, 1.1), rr(0.05, 0.1), 0.5, rnd() < 0.5 ? 3 : 7, rnd(), rnd(), rr(0.2, 0.6));
@@ -280,7 +280,7 @@ function makeWorld(D, T, POSES) {
   const PIECE = (kind) => { // mesh, mat, scale for a coral garden (0) or a sponge garden (1)
     const u = rnd();
     const s = 0.35 + 1.3 * pow(rnd(), 1.7); // sizes from small to big, mostly small
-    if (kind === 0) return u < 0.4 ? [7, 5, s * 1.1] : u < 0.46 ? [10, 5, s * 0.9] : u < 0.6 ? [26, 5, s] : u < 0.82 ? [8, 5, s * 1.05] : u < 0.9 ? [9, 4, s * 0.8] : [27, 5, s * 1.1];
+    if (kind === 0) return u < 0.4 ? [7, 5, s * 1.1] : u < 0.46 ? [26, 5, s * 0.9] /* LOOK: no flat table corals */ : u < 0.6 ? [26, 5, s] : u < 0.82 ? [8, 5, s * 1.05] : u < 0.9 ? [9, 4, s * 0.8] : [27, 5, s * 1.1];
     return u < 0.18 ? [4, 4, s * 0.8] : u < 0.3 ? [5, 4, s * 0.7] : u < 0.4 ? [6, 4, s * 0.8] : u < 0.55 ? [9, 4, s * 0.9] : u < 0.8 ? [27, 4, s * 1.2] : [8, 5, s];
   };
   const place = (n0, ny, nz, nx, p, mesh, mat, sc, sd) => {
@@ -321,16 +321,18 @@ function makeWorld(D, T, POSES) {
     for (let m = 0; m < want; m++) {
       const k = near[(rnd() * near.length) | 0], x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2];
       const [mesh, mat, sc] = PIECE(kind);
-      place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [x + rr(-0.3, 0.3), y, z + rr(-0.3, 0.3)], mesh, mat, sc, fract(sd + rr(-0.05, 0.05)));
+      // LOOK round 4: a third of a garden in reef colours
+      const vivid = rnd() < 0.35 && mesh !== 10;
+      place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [x + rr(-0.3, 0.3), y, z + rr(-0.3, 0.3)], mesh, vivid ? 6 : mat, sc, vivid ? rnd() : fract(sd + rr(-0.05, 0.05)));
     }
   }
   // --- mini reefs: boulder heaps crusted with coral and sponge, with grass about them, spread over the sand so every view has a landmark
   rseed(15);
   const MR = [];
-  for (let t = 0; t < 120000 && MR.length < 80; t++) { // LOOK: was 260 heaps 20 m apart: fewer, bigger, with open sand between
+  for (let t = 0; t < 160000 && MR.length < 130; t++) { // LOOK: was 260 heaps 20 m apart: fewer, bigger, with open sand between
     const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2];
     if (T.wn[k + 1] < 0.9 || y > -8 || y < -24 || nearPose(x, z, 8) || dist2(x, z, SHIP[0], SHIP[1]) < 14) continue;
-    if (MR.some((p) => dist2(x, z, p[0], p[1]) < 34)) continue;
+    if (MR.some((p) => dist2(x, z, p[0], p[1]) < 27)) continue;
     MR.push([x, z]);
     const nb = 5 + (rnd() * 5 | 0), top = [];
     for (let b = 0; b < nb; b++) {
@@ -343,15 +345,38 @@ function makeWorld(D, T, POSES) {
       const [mesh, mat, sc] = PIECE(kind), px = q[0] + cos(a) * r, pz = q[2] + sin(a) * r;
       place(null, 1, 0, 0, [px, rnd() < 0.5 ? q[1] + rr(-0.4, 0.1) : gy(px, pz), pz], mesh, mat, sc, fract(sd + rr(-0.05, 0.05)));
     }
-    if (MR.length % 3 !== 1) { // hero: big vivid coral heads on the heap (LOOK: two heaps in three)
-      const nh = 3 + (rnd() * 3 | 0), hs_ = rnd();
+    { // hero: a colourful bommie on every heap (LOOK round 4: more, varied colours, no flat table slabs)
+      const nh = 12 + (rnd() * 10 | 0), hs_ = rnd();
       for (let m = 0; m < nh; m++) {
-        const q = top[(rnd() * top.length) | 0], id = [7, 8, 10, 26, 7, 10][(rnd() * 6) | 0], a = rnd() * TAU;
-        place(null, 1, 0, 0, [q[0] + cos(a) * q[3] * 0.4, q[1] - 0.2, q[2] + sin(a) * q[3] * 0.4], id, 6, rr(2.2, 4.2), fract(hs_ + m * 0.21 + rr(-0.04, 0.04)));
+        const q = top[(rnd() * top.length) | 0], id = [7, 8, 26, 27, 9, 7, 8][(rnd() * 7) | 0], a = rnd() * TAU, rq = rnd() * q[3] * 0.6;
+        place(null, 1, 0, 0, [q[0] + cos(a) * rq, q[1] - 0.25, q[2] + sin(a) * rq], id, 6, rr(0.8, 2.1), fract(hs_ + m * 0.37 + rr(-0.03, 0.03)));
       }
     }
     for (let m = 0; m < 10; m++) { const a = rnd() * TAU, r = rr(2, 5), px = x + cos(a) * r, pz = z + sin(a) * r, py = gy(px, pz); for (let j = 0; j < 14; j++) leaf(small, px + rr(-0.2, 0.2), py - 0.04, pz + rr(-0.2, 0.2), rr(0.4, 0.9), rnd() * TAU, rr(0.04, 0.4), rr(0.03, 0.055), 0, 2, rnd(), rnd(), rr(0.3, 0.7)); }
     for (let m = 0; m < 2; m++) { const a = rnd() * TAU, px = x + cos(a) * 2.5, pz = z + sin(a) * 2.5, f = floorsAt(px, pz); if (f.length) column(px, f[f.length - 2] - 0.3, pz, rr(4, 9), 0, 0.5); }
+  }
+  // --- LOOK round 4: the arches crusted with coral and sponge (terrain vertices on the ring, placed like gardens)
+  rseed(17);
+  {
+    const AR = ARCHES.map((A) => ({ A, cs: cos(A[3]), sn: sin(A[3]), c: [] }));
+    for (let k = 0; k < T.nv; k++) {
+      const x = T.wp[k * 3], y = T.wp[k * 3 + 1], z = T.wp[k * 3 + 2];
+      for (const o of AR) {
+        const A = o.A, dx = wrapD(x - A[0]), dz = wrapD(z - A[2]); if (abs(dx) > A[4] + A[5] + 3 || abs(dz) > A[4] + A[5] + 3) continue;
+        const lx = o.cs * dx + o.sn * dz, ly = (y - A[1]) / A[6], lz = -o.sn * dx + o.cs * dz;
+        if (hypot(hypot(lx, ly) - A[4], lz) < A[5] + 1.2 && y > gy(x, z) + 0.6) o.c.push(k * 3);
+      }
+    }
+    self.__archCrust = AR.map((o) => o.c.length); // LOOK: test hook (vertices found on each arch)
+    for (const o of AR) {
+      if (o.c.length < 20) continue;
+      const n = min(700, o.c.length), sd = rnd();
+      for (let m = 0; m < n; m++) {
+        const k = o.c[(rnd() * o.c.length) | 0];
+        if (rnd() < 0.45) { const id = [7, 8, 26, 27, 9][(rnd() * 5) | 0]; place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [T.wp[k], T.wp[k + 1], T.wp[k + 2]], id, 6, rr(0.8, 1.9), fract(sd + m * 0.37)); }
+        else { const [mesh, mat, sc] = PIECE(rnd() < 0.5 ? 0 : 1); place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [T.wp[k], T.wp[k + 1], T.wp[k + 2]], mesh, mat, sc * 1.4, fract(sd + rr(-0.05, 0.05))); }
+      }
+    }
   }
   // --- rocks: boulders lying about, then rubble, then pebbles and shells on the sand
   rseed(8);
