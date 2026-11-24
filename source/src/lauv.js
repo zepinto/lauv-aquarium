@@ -526,23 +526,24 @@ function lauvCamera(dt) {
   const hy = lv.yaw; let yawRef = S.snap ? hy : S.camYaw; if (S.snap) S.camYaw = hy;
   if (mode === 'chase' || mode === 'free') { yawRef += lauvWrapA(hy - yawRef) * (1 - exp(-dt * 2.6)); S.camYaw = yawRef; } else yawRef = S.camYaw = hy;
   let az = S.camAz, el = S.camEl, dist = S.camDist, baseEl = 0.2 + lv.pitch * 0.35;
-  if (mode === 'chase') { dist = (3.3 + 0.35 * abs(lv.v[0])) * (1 - S.surfK) + 7.5 * S.surfK; baseEl += 0.1 * S.surfK + 0.14 * (1 - S.surfK); } // LOOK: a little higher (and to the side, below)   // floating: the camera pulls back to 7.5 m so the hull reads against the sea
-  else if (mode === 'side') { az = 0; el = 0; baseEl = 0.06; dist = 2.5; } // LOOK: chase 2.5 -> 3.3 m, side 1.9 -> 2.5 m (vehicle smaller in frame)
+  if (mode === 'chase') { dist = (3.3 + 0.35 * abs(lv.v[0])) * (1 - S.surfK) + 4.6 * S.surfK; baseEl += 0.12 * S.surfK + 0.14 * (1 - S.surfK); }   // underwater 3.3 m a little higher (LOOK); floating 4.6 m back, a little above, so the hull reads against the sea
+  else if (mode === 'side') { az = 0; el = 0; baseEl = 0.06; dist = 2.5; }
   else if (mode === 'front') { az = 0; el = 0; baseEl = 0.1; dist = 2.1; }
   else if (mode === 'top') { az = 0; el = 0; baseEl = 1.45; dist = 3.2; }
-  else if (mode === 'surface') { dist = 8; baseEl = 0.3; }
-  else if (mode === 'surflow') { dist = 3.4; baseEl = 0.05; az += 0.7; }
+  else if (mode === 'surface') { dist = 5; baseEl = 0.3; }
+  else if (mode === 'surflow') { dist = 4.5; baseEl = 0.05; az += 0.7; }
   else if (mode === 'surfhigh') { dist = 5.2; baseEl = 1.15; }
   else if (mode === 'free') { baseEl = 0.25; dist = 3.6; }
   if (mode === 'chase' && S.camIdle > 1.8) { const k = exp(-dt * 1.4); S.camAz *= k; S.camEl *= k; az = S.camAz; el = S.camEl; }
   S.camIdle += dt;
-  const a = yawRef + az + (mode === 'chase' ? 0.32 * (1 - S.surfK) : 0), e = clamp(baseEl + el, -1.3, 1.5); // LOOK: chase a little to the side
+  az += 0.32 * (mode === 'chase' ? 1 : 0);   // chase sits ~18 degrees off the stern so the hull is not end-on (under and above water)
+  const a = yawRef + az, e = clamp(baseEl + el, -1.3, 1.5);
   // behind the vehicle for az = 0 (forward is (sin, ., -cos))
   let dx = -sin(a) * cos(e), dy = sin(e), dz = cos(a) * cos(e);
   if (mode === 'side') { const sl = hypot(R[6], R[8]) || 1; dx = R[6] / sl * cos(e); dz = R[8] / sl * cos(e); }
   else if (mode === 'front') { const fl = hypot(fx, fz) || 1; dx = fx / fl * cos(e); dz = fz / fl * cos(e); }
   let px = tx + dx * dist, py = ty + dy * dist, pz = tz + dz * dist;
-  if (mode === 'surface') py = lv.surfY + 2.3; else if (mode === 'surflow') py = lv.surfY + 0.3;
+  if (mode === 'surface') py = lv.surfY + 1.7; else if (mode === 'surflow') py = surfWaveAt(px, pz, F[TIME], surfS).h + 0.7;   // low across the water: 0.7 m above the wave under the camera
   if (!sfc) {   // rock avoidance: walk from the target towards the wanted position and stop in front of the rock
     const n = max(2, Math.ceil(dist / 0.2)); let last = dist;
     for (let i = 1; i <= n; i++) { const t = i / n, d = t * dist; if (d > 0.7 && lauvSdf(tx + (px - tx) * t, ty + (py - ty) * t, tz + (pz - tz) * t) > -0.35) { last = max((i - 1) / n * dist, 1.3); break; } }

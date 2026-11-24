@@ -247,8 +247,11 @@ class LauvVehicle {
     this.rotate(w[0] * dt, w[1] * dt, w[2] * dt);
     // water surface: the hull top stays at the surface
     const lim = this.surfY + this.depthMin;
-    // within 10 cm of the surface (and not told to dive) the hull rides the water: it follows the waves up and down
-    const hug = this.in.pitch > -0.05 && lim - this.pos[1] < 0.1;
+    // within 10 cm of the surface (and not told to dive) the hull rides the water: it follows the waves up and down. Once
+    // floating it stays with them (a crest can outrun it by more than 10 cm) until told to dive or half a metre down
+    const gap = lim - this.pos[1];
+    if (this.in.pitch < -0.05 || gap > 0.5) this.floating = false; else if (gap < 0.1) this.floating = true;
+    const hug = this.in.pitch > -0.05 && (gap < 0.1 || (this.floating && gap < 0.5));
     if (this.pos[1] > lim) this.pos[1] = lim; else if (hug) this.pos[1] += (lim - this.pos[1]) * Math.min(1, 15 * dt);
     if (hug || this.pos[1] >= lim) {
       const vyw = R[1] * v[0] + R[4] * v[1] + R[7] * v[2] - this.surfVy;
