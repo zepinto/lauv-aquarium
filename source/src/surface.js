@@ -154,7 +154,7 @@ const SURF_RRS = (() => {
 const wgslFn = (src, name) => { const i = src.indexOf('fn ' + name + '('); let d = 0; for (let k = src.indexOf('{', i); k < src.length; k++) { if (src[k] === '{') d++; else if (src[k] === '}' && --d === 0) return src.slice(i, k + 1) + '\n'; } throw new Error('no fn ' + name); };
 const SURF_V = +(new URLSearchParams(location.search).get('sv') || 0);   // cost experiments (dev): 1 flat water, 2 no refraction, 3 no clouds in the reflection, 4 no scene copy
 const SURF_WK = 512, SURF_WKE = 64;   // the wake texture: texels, metres across
-const SURF_M = 128, SURF_LV = 12, SURF_SP0 = 0.08, SURF_TRAIL = 48, SURF_NP = 4;
+const SURF_M = 96, SURF_LV = 12, SURF_SP0 = 0.08, SURF_TRAIL = 48, SURF_NP = 4;
 const W_SURFA = S_B + /*wgsl*/`
 struct SU { a: vec4f, o: vec4f, sv: vec4f, bb: vec4f, w: array<vec4f, ${SURF_TRAIL}> }   // bb: the wake's bounding box (min x, min z, max x, max z, relative to its newest point)
    // a: speed, 1 with the camera under the water, the vehicle's clock (wake ages), hull height above the water; o: foam threshold, 0, 0, 0; sv: slope variance per cascade, unresolved; w: wake points (x, z, birth time, strength), newest first
@@ -682,7 +682,7 @@ async function surfInit() {
     { binding: 3, visibility: VFr, texture: { viewDimension: '2d-array' } }, { binding: 4, visibility: VFr, texture: { viewDimension: '2d-array' } },
     { binding: 5, visibility: VFr, buffer: { type: 'read-only-storage' } }, { binding: 6, visibility: VFr, texture: { sampleType: 'unfilterable-float' } }, { binding: 7, visibility: VFr, texture: { sampleType: 'depth' } },
     { binding: 8, visibility: VFr, sampler: {} }, { binding: 9, visibility: VFr, texture: {} }] });
-  surfSO = device.createSampler({ addressModeU: 'repeat', addressModeV: 'repeat', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', maxAnisotropy: SURF_V === 6 ? 1 : 4 });
+  surfSO = device.createSampler({ addressModeU: 'repeat', addressModeV: 'repeat', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear', maxAnisotropy: SURF_V === 6 ? 1 : 2 });
   const pl = device.createPipelineLayout({ bindGroupLayouts: [bgl0, surfBGL] });
   surfFloorTex = device.createTexture({ size: [NX, NZ], format: 'r8unorm', usage: TU.TEXTURE_BINDING | TU.COPY_DST });
   surfDummy = device.createBuffer({ size: 16, usage: BU.UNIFORM });
@@ -810,8 +810,9 @@ function surfDrawWater(e, r, ts) {
     r.setBindGroup(0, bg0);
   }
   r.setBindGroup(1, surfBG[ocK]); r.setVertexBuffer(0, surfVB); r.setIndexBuffer(surfIB, 'uint32');
-  if (F[CY] < 0.6) { r.setPipeline(pSurfUnder); r.drawIndexed(surfNI); }   // the underside shows only from below or across the lens
+  // the top first, then the underside, which shows only from below or across the lens (its faces hidden behind the top fail the depth test early)
   r.setPipeline(pSurfWater); r.drawIndexed(surfNI);
+  if (F[CY] - pr0H() < 0.35) { r.setPipeline(pSurfUnder); r.drawIndexed(surfNI); }
   if (above && surfPass && F[CY] > 0 && F[CY] < 1.5) { r.setPipeline(pSurfLens); r.draw(4); }
   return r;
 }
