@@ -44,8 +44,8 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
 @fragment fn fs(i: VO, @builtin(front_facing) ff: bool) -> @location(0) vec4f {
   let part = i.mi.x; let t = g.cam.w;
   var N = normalize(i.n);
-  if (!ff) { N = N; }
   let dist = length(i.wp - g.cam.xyz);
+  if (dot(N, g.cam.xyz - i.wp) < 0.) { N = -N; }   // the body rings may wind either way: always face the viewer
   if (dist < 1.0 && ign(i.cp.xy) > (dist - .3) / .7) { discard; }   // nothing blocks the lens
   let pale = i.sk.x; let dark = i.sk.y; let pap = i.sk.z; let mot = i.sk.w; let sand = i.mi.y; let seed = i.mi.z * 91.;
   // skin coordinates in metres, continuous around the tube
@@ -70,9 +70,9 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
     alb = mix(skin, alb, ss(0., .3, i.mi.w));   // mi.w: how open the eye is (blinks)
     gloss = 1.; spec = 3.;
   } else {
-    let base = mix(vec3f(.30, .165, .105), vec3f(.46, .34, .24), sand);
+    let base = mix(vec3f(.34, .165, .095), vec3f(.48, .33, .22), sand);
     let m1 = vn3(q * vec3f(14., 30., 30.) + seed) * .6 + vn3(q * 60. + seed * 2.) * .4;
-    let m2 = vn3(q * vec3f(40., 85., 85.) + 11. + seed + t * .05);
+    let m2 = vn3(q * vec3f(26., 50., 50.) + 11. + seed + t * .05);
     // chromatophores: broad warm and dark patches with fine flecks, drifting slowly like clouds
     let cl = vn3(vec3f(q.x * 11., q.y * 24., q.z * 24.) + vec3f(t * .07, 0., seed));
     var col = base * (1. + (m1 - .5) * 1.4 * mot);
@@ -110,7 +110,7 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
     let h = hgt;
     let r1 = cross(dpy, N); let r2 = cross(N, dpx); let det = dot(dpx, r1);
     let grad = sign(det) * (dhx * r1 + dhy * r2);
-    N = normalize(abs(det) * N - grad * .0032 * ss(5., 1.2, dist));
+    N = normalize(abs(det) * N - grad * .0014 * ss(4., 1.2, dist));
     // papillae catch the light: pale tips, dark crevices between them
     alb = alb * (1. - .3 * pap * ss(.45, .0, h)) + vec3f(.34, .31, .26) * pap * ss(.55, .95, h) * (1. - dark * .6) * .5;
     gloss = mix(.6, .3, pap);
