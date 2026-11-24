@@ -536,6 +536,7 @@ function lauvCamera(dt) {
   else if (mode === 'free') { baseEl = 0.25; dist = 3.6; }
   if (mode === 'chase' && S.camIdle > 1.8) { const k = exp(-dt * 1.4); S.camAz *= k; S.camEl *= k; az = S.camAz; el = S.camEl; }
   S.camIdle += dt;
+  az += 0.32 * S.surfK * (mode === 'chase' ? 1 : 0);   // floating: 18 degrees off the stern so the hull is not end-on
   const a = yawRef + az, e = clamp(baseEl + el, -1.3, 1.5);
   // behind the vehicle for az = 0 (forward is (sin, ., -cos))
   let dx = -sin(a) * cos(e), dy = sin(e), dz = cos(a) * cos(e);

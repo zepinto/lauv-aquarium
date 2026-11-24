@@ -40,6 +40,7 @@ const SURF_NR = 130, SURF_NS = 256, SURF_TRAIL = 48;
 const W_SURFA = S_B + /*wgsl*/`
 struct SU { a: vec4f, w: array<vec4f, ${SURF_TRAIL}> }   // a: x speed, y rpm, z wave height at the camera, w the hull's height above the water; w: wake points (x, z, birth time, strength), newest first
 @group(1) @binding(1) var<uniform> su: SU;
+@group(1) @binding(2) var tFl: texture_2d<f32>;   // height of the sea floor (r: (h + 40) / 40), from the world's ground map
 const NW = ${SURF_NW};
 const WV = array<vec4f, ${SURF_NW}>(${SURF_W.map((w) => `vec4f(${w.kx}, ${w.kz}, ${w.a}, ${w.w})`).join(', ')});
 const WPH = array<f32, ${SURF_NW}>(${SURF_W.map((w) => w.ph).join(', ')});
@@ -203,10 +204,14 @@ fn wake(p: vec3f, t: f32) -> f32 {
   // patches of rougher and calmer water (gusts), and every ripple layer sampled at its own angle and scale so nothing visibly repeats
   let pm = .45 + 1.1 * fbm(wp.xz / 38. + vec2f(t * .01, 4.), 3);
   let qa = vec2f(q.x * .8 - q.y * .6, q.x * .6 + q.y * .8); let qb = vec2f(q.x * .5 + q.y * .87, q.x * .87 - q.y * .5) * (1. + .13 * sin(wp.x * .021 + wp.z * .017));
-  let s = (textureSample(tW, sR, pu(qa, 1.5)).ba * 1.0 * ss(110., 18., d) + textureSample(tW, sR, pu(qb, .62) + .3).ba * 1.1 * ss(55., 8., d) + textureSample(tW, sR, pu(qa * .7, 3.4) + .6).ba * .7 * fl + textureSample(tW, sR, pu(qb * 1.3, .29) + .1).ba * .9 * ss(24., 4., d)) * pm;
+  // each layer's ripples are about 1/11 of its tile: they fade out when one pixel covers more than half a ripple (the footprint, so no stripes towards the horizon)
+  let fw = max(length(dpdx(wp.xz)), length(dpdy(wp.xz)));
+  let s = (textureSample(tW, sR, pu(qa, 1.5)).ba * 1.0 * (1. - ss(1.5 / 50., 1.5 / 14., fw)) + textureSample(tW, sR, pu(qb, .62) + .3).ba * 1.1 * (1. - ss(.62 / 50., .62 / 14., fw)) + textureSample(tW, sR, pu(qa * .7, 3.4) + .6).ba * .7 * (1. - ss(3.4 / 50., 3.4 / 14., fw)) + textureSample(tW, sR, pu(qb * 1.3, .29) + .1).ba * .9 * (1. - ss(.29 / 50., .29 / 14., fw))) * pm;
   let n = normalize(vec3f(-wv.y - s.x * .9, 1., -wv.z - s.y * .9));
-  let mic = (textureSample(tW, sR, pu(qb * 2.1, .17) + .4).ba + textureSample(tW, sR, pu(qa * 1.7, .23) + .8).ba) * ss(40., 6., d) * pm;
-  let nv = sat(dot(n, V));
+  let mic = (textureSample(tW, sR, pu(qb * 2.1, .17) + .4).ba + textureSample(tW, sR, pu(qa * 1.7, .23) + .8).ba) * (1. - ss(.2 / 50., .2 / 14., fw)) * pm;
+  // Schlick Fresnel (F0 = .02) on the swell normal with a third of the ripple tilt, so the middle and far sea go to sky and the near sea stays clear
+  let nm = normalize(vec3f(-wv.y, 1., -wv.z));
+  let nv = sat(dot(normalize(nm + (n - nm) * .35), V));
   let F = .02 + .98 * pow(1. - nv, 5.);
   var R = reflect(-V, n); R.y = abs(R.y) + .01; R = normalize(R);
   let L = SKYSUN;
@@ -232,7 +237,7 @@ fn wake(p: vec3f, t: f32) -> f32 {
     let ab = nb - ta; let h = clamp(-dot(ta, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
     let dh = length(ta + ab * h);
     // waterline: a tight bright meniscus on the hull, a looser skirt of bubbles around it
-    let ring = (ss(.115, .08, dh) * ss(.07, .085, dh) * .95 + ss(.2, .09, dh) * .45 * ss(.25, .55, nz)) * aw;
+    let ring = (ss(.115, .08, dh) * ss(.07, .085, dh) * .95 + ss(.2, .09, dh) * .2 * ss(.3, .6, nz)) * aw;
     // bow wave: a V of foam lines opening behind the nose, stronger with speed
     let hdir = normalize(ab); let rel = -nb; let back = -dot(rel, hdir); let side = abs(dot(rel, vec2f(-hdir.y, hdir.x)));
     let vl = ss(.08 + .1 * back, 0., abs(side - (.12 + .3 * max(back, 0.)))) * ss(-.05, .1, back) * ss(9., 0., back);
@@ -244,8 +249,11 @@ fn wake(p: vec3f, t: f32) -> f32 {
   let lit = .45 + .55 * sat(dot(n, L));
   let foamC = (vec3f(.92, .95, .97) * lit + vec3f(.08, .12, .18)) * .9;
   // what the water itself does to the view down into it: it absorbs red first and scatters blue-green, more the longer the path (about 8 m of water, seen along V)
-  let path = min(8. / max(V.y, .08), 70.);
-  let body = (1. - exp(-.10 * path)) * (1. - F);
+  // transmittance T = exp(-sigma * depth / cos(refracted ray)) with the real depth below this pixel (the world's ground map), and less seabed the farther it is from the lens
+  let fh = textureSampleLevel(tFl, sR, (wp.xz - vec2f(${OX}., ${OZ}.)) / PER, 0.).r * 40. - 40.;
+  let cr = sqrt(max(1. - (1. - nv * nv) / 1.77, .3));
+  let T = exp(-.15 * max(-fh, .3) / cr - .03 * d);
+  let body = (1. - T) * (1. - F);
   let deep = .75 + .6 * fbm(wp.xz / 90. + 7., 2);   // patches of deeper, bluer water
   let bodyC = vec3f(.02, .15, .28) * deep * (.55 + .45 * sat(dot(n, L)));
   var src = refl * F * (1. - foam) + foamC * foam + SUNC * glint * F * (1. - foam) * .5 + bodyC * body * (1. - foam);
@@ -261,17 +269,25 @@ fn wake(p: vec3f, t: f32) -> f32 {
 
 // ---------------------------------------------------------------- GPU side
 const SURF_SKIP = { sky: false, water: false };
+let surfFloorTex = null;
+// the world's ground map (floor height per cell) as a texture, once the world is built
+function surfFloor(map) {
+  const b = new Uint8Array(NX * NZ);
+  for (let i = 0; i < b.length; i++) b[i] = clamp((map[i * 4 + 1] + 40) / 40, 0, 1) * 255 + 0.5;
+  Q.writeTexture({ texture: surfFloorTex }, b, { bytesPerRow: NX }, [NX, NZ]);
+}
 let surfOn = false;                 // the camera is near or above the water: the sky and the mesh are drawn
 let surfBG = null, surfUBO = null, pSurfSky = null, pSurfWater = null, pSurfUnder = null, surfIB = null, surfNI = 0;
 const surfU = new Float32Array(4 + SURF_TRAIL * 4);
 const surfLast = [0, 0, 0], surfTrail = [];               // newest first: {x, z, t, s}
 async function surfInit() {
   const m = mod(W_SURFA), VFr = SS.VERTEX | SS.FRAGMENT;
-  const bgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: VFr, buffer: {} }, { binding: 1, visibility: VFr, buffer: {} }] });
+  const bgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: VFr, buffer: {} }, { binding: 1, visibility: VFr, buffer: {} }, { binding: 2, visibility: VFr, texture: {} }] });
   const pl = device.createPipelineLayout({ bindGroupLayouts: [bgl0, bgl] });
+  surfFloorTex = device.createTexture({ size: [NX, NZ], format: 'r8unorm', usage: TU.TEXTURE_BINDING | TU.COPY_DST });
   const dummy = device.createBuffer({ size: 16, usage: BU.UNIFORM });
   surfUBO = device.createBuffer({ size: surfU.byteLength, usage: BU.UNIFORM | BU.COPY_DST });
-  surfBG = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: dummy } }, { binding: 1, resource: { buffer: surfUBO } }] });
+  surfBG = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: dummy } }, { binding: 1, resource: { buffer: surfUBO } }, { binding: 2, resource: surfFloorTex.createView() }] });
   const OVER = { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } };
   pSurfSky = device.createRenderPipeline({ layout: pl, vertex: { module: m, entryPoint: 'vsSky' }, fragment: { module: m, entryPoint: 'fsSky', targets: [{ format: HDR }] },
     primitive: { topology: 'triangle-strip' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' }, multisample: { count: AA } });

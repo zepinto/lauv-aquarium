@@ -186,7 +186,7 @@ let D, MAP;
   e.copyBufferToBuffer(bd, 0, br, 0, size); e.copyBufferToBuffer(bm, 0, bmr, 0, msize);
   Q.submit([e.finish()]);
   await br.mapAsync(GPUMapMode.READ); await bmr.mapAsync(GPUMapMode.READ);
-  D = new Float32Array(br.getMappedRange().slice(0)); MAP = new Float32Array(bmr.getMappedRange().slice(0));
+  D = new Float32Array(br.getMappedRange().slice(0)); MAP = new Float32Array(bmr.getMappedRange().slice(0)); surfFloor(MAP);
   br.unmap(); br.destroy(); bd.destroy(); bmr.unmap(); bmr.destroy(); bm.destroy();
   // rock connected to the seabed: each column's unbroken run up from the bottom is, and the rock above a gap
   // (overhangs, specks) is when it touches rock that is (the grid wraps in x and z). What never connects is a speck of
@@ -707,6 +707,7 @@ window.__app = {
   key(cmd, down) { lauvKey(cmd, down); },
   pause(b) { gPaused = !!b; },
   camPos(a) { lauvS.camForce = a || null; },   // fixed camera [x,y,z, target x,y,z] (tests: mid-crossing frames); null releases it
+  surfH(x, z) { return surfWaveAt(x, z, F[TIME], surfS).h; },   // height of the sea at (x, z) now (tests)
   surfSkip: SURF_SKIP,   // {sky, water}: leave the surface passes out to time them (state().gpu)
   step(dt) { gStep += dt; },   // while paused: the next frame advances everything by dt
   hold(o) { lauvS.hold = o || null; lv.in.steer = o ? o.steer || 0 : 0; lv.in.pitch = o ? o.pitch || 0 : 0; },   // {steer, pitch} held regardless of the keyboard (tests)
