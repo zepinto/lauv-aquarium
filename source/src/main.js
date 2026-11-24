@@ -706,6 +706,8 @@ window.__app = {
   },
   key(cmd, down) { lauvKey(cmd, down); },
   pause(b) { gPaused = !!b; },
+  camPos(a) { lauvS.camForce = a || null; },   // fixed camera [x,y,z, target x,y,z] (tests: mid-crossing frames); null releases it
+  surfSkip: SURF_SKIP,   // {sky, water}: leave the surface passes out to time them (state().gpu)
   step(dt) { gStep += dt; },   // while paused: the next frame advances everything by dt
   hold(o) { lauvS.hold = o || null; lv.in.steer = o ? o.steer || 0 : 0; lv.in.pitch = o ? o.pitch || 0 : 0; },   // {steer, pitch} held regardless of the keyboard (tests)
   addCollider(fn) { lauvColliders.push(fn); },   // fn(x, y, z) -> signed distance in metres, > 0 inside the obstacle

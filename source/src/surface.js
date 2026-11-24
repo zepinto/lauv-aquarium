@@ -45,16 +45,31 @@ const WV = array<vec4f, ${SURF_NW}>(${SURF_W.map((w) => `vec4f(${w.kx}, ${w.kz},
 const WPH = array<f32, ${SURF_NW}>(${SURF_W.map((w) => w.ph).join(', ')});
 const SK = 2.5;   // the sky is written in display units; the exposure above the water is 0.6 * 0.62
 const WIND = vec2f(.8, .35);
-// (height, d/dx, d/dz); the short waves fade out with distance so they do not alias
-fn wave(p: vec2f, t: f32, d: f32) -> vec3f {
-  var r = vec3f(0.);
+const SKYSUN = vec3f(.647, .5, -.575);   // the sun as the sky shows it: 30 degrees up (the underwater light keeps the world's own)
+// the sea at p: .x height, .yz slope, .w the Jacobian of the choppy displacement (below ~.7 the crests break into foam); the short waves fade with distance
+fn wave(p: vec2f, t: f32, d: f32) -> vec4f {
+  var r = vec4f(0., 0., 0., 1.);
   let q = vec2f(wr(p.x), wr(p.y));
-  for (var i = 0; i < 8; i++) {
+  for (var i = 0; i < NW; i++) {
     let w = WV[i];
-    let lam = TAU / length(w.xy);
-    let f = 1. - ss(lam * 7., lam * 18., d);
+    let k = length(w.xy);
+    let f = 1. - ss(TAU / k * 7., TAU / k * 18., d);
     let ph = dot(w.xy, q) - w.w * t + WPH[i];
-    r += vec3f(sin(ph), cos(ph) * w.x, cos(ph) * w.y) * (w.z * f);
+    let s = sin(ph); let c = cos(ph);
+    r += vec4f(s, c * w.x, c * w.y, -${SURF_CHOP} * k * s) * (w.z * f);
+  }
+  r.w += 1.;
+  return r;
+}
+// horizontal displacement of the surface point whose rest position is p (choppy waves: crests sharpen)
+fn waveDisp(p: vec2f, t: f32, d: f32) -> vec2f {
+  var r = vec2f(0.);
+  let q = vec2f(wr(p.x), wr(p.y));
+  for (var i = 0; i < NW; i++) {
+    let w = WV[i];
+    let k = length(w.xy);
+    let f = 1. - ss(TAU / k * 7., TAU / k * 18., d);
+    r += w.xy / k * (cos(dot(w.xy, q) - w.w * t + WPH[i]) * w.z * f * ${SURF_CHOP});
   }
   return r;
 }
@@ -74,7 +89,7 @@ fn skyBase(rd: vec3f) -> vec3f {
   let y = max(rd.y, 0.);
   var c = mix(HAZE, vec3f(.035, .20, .70), pow(y, .5));
   c = mix(c, vec3f(.62, .76, .90), (1. - ss(0., .10, y)) * .45);
-  let sd = sat(dot(rd, g.sun.xyz));
+  let sd = sat(dot(rd, SKYSUN));
   c += vec3f(1., .86, .62) * (pow(sd, 5.) * .10 + pow(sd, 48.) * .30);
   return c;
 }
@@ -86,7 +101,7 @@ fn clouds(rd: vec3f, base: vec3f, t: f32, full: bool) -> vec3f {
   let cov = ss(.47, .64, n1) * ss(.01, .14, rd.y);
   if (cov <= 0.) { return base; }
   var lit = .8;
-  if (full) { let n2 = fbm(uv + g.sun.xz * .22, 4); lit = sat(.62 - (n2 - n1) * 4.5); }
+  if (full) { let n2 = fbm(uv + SKYSUN.xz * .6, 4); lit = sat(.62 - (n2 - n1) * 4.5); }
   var cc = mix(vec3f(.40, .48, .66), vec3f(1.15, 1.1, 1.05), lit);
   cc *= 1. - .22 * ss(.62, .85, n1);
   cc += (1. - cov) * .18;
@@ -95,7 +110,7 @@ fn clouds(rd: vec3f, base: vec3f, t: f32, full: bool) -> vec3f {
 fn skyCol(rd: vec3f, t: f32, full: bool) -> vec3f {
   var c = skyBase(rd);
   c = clouds(rd, c, t, full);
-  let sd = dot(rd, g.sun.xyz);
+  let sd = dot(rd, SKYSUN);
   c += vec3f(1., .95, .85) * (ss(.9996, .99985, sd) * 40.) * select(0., 1., full);
   return c;
 }
@@ -128,7 +143,8 @@ struct VM { @builtin(position) cp: vec4f, @location(0) wp: vec3f };
   let r = 2.667 * (exp(.045 * i) - 1.);
   let a = j / ${SURF_NS}. * TAU;
   let p = vec2f(g.cam.x + r * cos(a), g.cam.z + r * sin(a));
-  o.wp = vec3f(p.x, wave(p, g.cam.w, r).x, p.y);
+  let dsp = waveDisp(p, g.cam.w, r);
+  o.wp = vec3f(p.x + dsp.x, wave(p, g.cam.w, r).x, p.y + dsp.y);
   o.cp = g.vp * vec4f(o.wp, 1.);
   return o;
 }
@@ -174,50 +190,61 @@ fn wake(p: vec3f, t: f32) -> f32 {
   let t = g.cam.w; let wp = i.wp;
   let v = g.cam.xyz - wp; let d = length(v); let V = v / d;
   let wv = wave(wp.xz, t, d);
-  // ripples: the world's animated slope texture at three scales, drifting with the wind
+  // ripples on top of the swell: the world's animated slope texture at four scales, drifting with the wind, each gone before it can alias
   let fl = ss(130., 20., d);
   let q = wp.xz + WIND * t * .5;
-  let s = textureSample(tW, sR, pu(q, 1.5)).ba * 1.2 * ss(110., 18., d) + textureSample(tW, sR, pu(q.yx, .62) + .3).ba * 1.4 * ss(55., 8., d) + textureSample(tW, sR, pu(q * .7, 3.4) + .6).ba * .8 * fl + textureSample(tW, sR, pu(q.yx * 1.3, .29) + .1).ba * 1.1 * ss(24., 4., d);
-  let n = normalize(vec3f(-wv.y - s.x * 1.1, 1., -wv.z - s.y * 1.1));
+  let s = textureSample(tW, sR, pu(q, 1.5)).ba * 1.0 * ss(110., 18., d) + textureSample(tW, sR, pu(q.yx, .62) + .3).ba * 1.1 * ss(55., 8., d) + textureSample(tW, sR, pu(q * .7, 3.4) + .6).ba * .7 * fl + textureSample(tW, sR, pu(q.yx * 1.3, .29) + .1).ba * .9 * ss(24., 4., d);
+  let n = normalize(vec3f(-wv.y - s.x * .9, 1., -wv.z - s.y * .9));
   let nv = sat(dot(n, V));
   let F = .02 + .98 * pow(1. - nv, 5.);
   var R = reflect(-V, n); R.y = abs(R.y) + .01; R = normalize(R);
-  let L = g.sun.xyz;
+  let L = SKYSUN;
   let refl = skyCol(R, t, false);
   let sd = sat(dot(R, L));
-  let glint = (pow(sd, 1400.) * 90. + pow(sd, 150.) * 1.2 + pow(sd, 18.) * .06) * ss(0., .2, R.y);
-  // foam: caps on the crests, bubbles round the hull, the wake
+  var glint = pow(sd, 700.) * 30. + pow(sd, 90.) * .9 + pow(sd, 12.) * .05;
+  glint = glint / (1. + glint * .12) * ss(0., .15, R.y);   // soft clip: bright, never a white blob
+  // foam: breaking crests where the choppy surface folds over itself, bubbles round the hull, bow wave and wake
   let nz = textureSample(tD, sR, pu(q, 1.6)).b * .55 + textureSample(tD, sR, pu(q.yx, .45) + .3).a * .45;
-  let steep = length(wv.yz);
-  let cap = ss(.07, .24, wv.x + steep * .30 + (nz - .5) * .18);
-  var foam = cap * ss(.38, .62, nz + cap * .25) * fl * .85;
+  let fold = ss(.80, .50, wv.w + (nz - .5) * .22);
+  var foam = fold * ss(.35, .6, nz + fold * .3) * ss(260., 60., d) * .9;
+  foam += ss(.22, .34, wv.x + (nz - .5) * .1) * ss(.3, .6, nz) * fl * .25;   // thin streaks on the highest crests
   let aw = ss(.16, .03, su.a.w);
   if (aw > 0. || su.w[0].w > 0.) {
     let wk = wake(wp, t);
     let fz = textureSample(tD, sR, pu(q * 1.1, .33)).a * .5 + textureSample(tD, sR, pu(q.yx, .8) + .2).b * .5;
-    foam = max(foam, ss(.50 - .16 * wk, .70 - .08 * wk, fz) * sat(wk * 1.6) * .7);
+    foam = max(foam, ss(.50 - .16 * wk, .70 - .08 * wk, fz) * sat(wk * 1.6) * .75);
     let ta = wd(g.va.xyz - wp).xz; let nb = wd(g.vb.xyz - wp).xz;
     let ab = nb - ta; let h = clamp(-dot(ta, ab) / max(dot(ab, ab), 1e-4), 0., 1.);
     let dh = length(ta + ab * h);
-    let ring = ss(.20, .075, dh) * aw * ss(.25, .55, nz);
-    let bow = ss(.55, .0, length(nb)) * aw * clamp(su.a.x * .7, 0., 1.) * ss(.2, .6, nz);
-    foam = max(foam, max(ring * .9, bow));
+    // waterline: a tight bright meniscus on the hull, a looser skirt of bubbles around it
+    let ring = (ss(.115, .08, dh) * ss(.07, .085, dh) * .95 + ss(.2, .09, dh) * .45 * ss(.25, .55, nz)) * aw;
+    // bow wave: a V of foam lines opening behind the nose, stronger with speed
+    let hdir = normalize(ab); let rel = -nb; let back = -dot(rel, hdir); let side = abs(dot(rel, vec2f(-hdir.y, hdir.x)));
+    let vl = ss(.05 + .06 * back, 0., abs(side - (.09 + .24 * max(back, 0.)))) * ss(-.05, .1, back) * ss(5., 0., back);
+    let bowK = aw * clamp(su.a.x * .8, 0., 1.);
+    let bow = (vl * ss(.3, .6, nz) * .8 + ss(.35, .0, length(nb)) * .7 * ss(.2, .5, nz)) * bowK;
+    foam = max(foam, max(ring, bow));
   }
   foam = sat(foam);
-  let lit = .5 + .5 * sat(dot(n, L));
-  let foamC = (vec3f(.90, .94, .96) * lit + vec3f(.10, .14, .20)) * .95;
-  var src = refl * F * (1. - foam) + foamC * foam + SUNC * glint * F * (1. - foam) * .8;
-  var al = F * (1. - foam) + foam;
+  let lit = .45 + .55 * sat(dot(n, L));
+  let foamC = (vec3f(.92, .95, .97) * lit + vec3f(.08, .12, .18)) * .9;
+  // what the water itself does to the view down into it: it absorbs red first and scatters blue-green, more the longer the path (about 8 m of water, seen along V)
+  let path = min(8. / max(V.y, .08), 70.);
+  let body = (1. - exp(-.10 * path)) * (1. - F);
+  let bodyC = vec3f(.02, .17, .29) * (.55 + .45 * sat(dot(n, L))) ;
+  var src = refl * F * (1. - foam) + foamC * foam + SUNC * glint * F * (1. - foam) * .5 + bodyC * body * (1. - foam);
+  var al = F * (1. - foam) + foam + body * (1. - foam);
   // far away the sea becomes the haze of the horizon
-  let hz = ss(300., 900., d);
+  let hz = ss(150., 800., d);
   let hd = normalize(-V.xz);
-  src = mix(src, skyBase(vec3f(hd.x * .999, .01, hd.y * .999)), hz);
+  src = mix(src, skyBase(vec3f(hd.x * .999, .01, hd.y * .999)) * .92, hz);
   al = mix(al, 1., hz);
-  return vec4f(min(src * SK, vec3f(60.)), al);
+  return vec4f(min(src * SK, vec3f(40.)), min(al, 1.));
 }
 `;
 
 // ---------------------------------------------------------------- GPU side
+const SURF_SKIP = { sky: false, water: false };
 let surfOn = false;                 // the camera is near or above the water: the sky and the mesh are drawn
 let surfBG = null, surfUBO = null, pSurfSky = null, pSurfWater = null, pSurfUnder = null, surfIB = null, surfNI = 0;
 const surfU = new Float32Array(4 + SURF_TRAIL * 4);
@@ -270,5 +297,5 @@ function surfUpdate() {
   Q.writeBuffer(surfUBO, 0, surfU);
 }
 // the sky first (it sits at the far plane), the water mesh after the scene
-function surfDrawSky(r) { if (!surfOn) return false; r.setBindGroup(1, surfBG); r.setPipeline(pSurfSky); r.draw(4); return true; }
-function surfDrawWater(r) { r.setBindGroup(1, surfBG); r.setIndexBuffer(surfIB, 'uint32'); r.setPipeline(pSurfUnder); r.drawIndexed(surfNI); r.setPipeline(pSurfWater); r.drawIndexed(surfNI); }
+function surfDrawSky(r) { if (!surfOn || SURF_SKIP.sky) return false; r.setBindGroup(1, surfBG); r.setPipeline(pSurfSky); r.draw(4); return true; }
+function surfDrawWater(r) { if (SURF_SKIP.water) return; r.setBindGroup(1, surfBG); r.setIndexBuffer(surfIB, 'uint32'); r.setPipeline(pSurfUnder); r.drawIndexed(surfNI); r.setPipeline(pSurfWater); r.drawIndexed(surfNI); }
