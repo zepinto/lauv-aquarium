@@ -7,7 +7,8 @@
 // 16 rings, 2 eyes) is built on the CPU every frame for the animals that are near the camera: about 0.1 ms each.
 const OCT_N = 6, OCT_NA = 8, OCT_NS = 22, OCT_NRB = 24, OCT_BR = 20, OCT_AR = 10, OCT_ER = 9, OCT_EC = 10;
 const OCT_VA = OCT_NA * OCT_NS * OCT_AR, OCT_VB = OCT_NRB * OCT_BR, OCT_VE = OCT_ER * OCT_EC, OCT_VPO = OCT_VA + OCT_VB + 2 * OCT_VE;
-const OCT_MAXINK = 128, OCT_SEE = 150;
+const OCT_MAXINK = 192, OCT_SEE = 150;
+const OCT_FLAG = /[?&]octo=(\d+)/.test(location.search) ? +/[?&]octo=(\d+)/.exec(location.search)[1] : 0;   // ?octo=N starts the LAUV 6 m from octopus N (1-6)
 const OCT_OFF = /[?&]oct=0/.test(location.search);   // dev: oct=0 leaves the octopuses out, to time what they cost
 const OS = { REST: 0, CRAWL: 1, ALARM: 2, JET: 3, ENTER: 4, HIDE: 5, PEEK: 6, EXIT: 7 };
 
@@ -82,7 +83,7 @@ fn skinH(q: vec3f, pap: f32, sc: f32) -> f32 {
     let under = ss(.1, .9, -N.y);
     col *= mix(1., 1.25, under) * mix(.9, 1.1, part);
     // pale: blanched, translucent grey-white; dark: deep brown with white spots (the deimatic display)
-    col = mix(col, vec3f(.60, .57, .52) * (.8 + .3 * m1), pale * .9);
+    col = mix(col, vec3f(.88, .85, .78) * (.85 + .25 * m1), pale * .95);
     let sp = ss(.30, .17, cell2(vec2f(q.x, q.y + q.z * .5) * 26. + 3.).x);
     col = mix(col, vec3f(.035, .018, .016), dark * .92);
     col = mix(col, vec3f(.75, .72, .66), sp * dark * dark * .9);
@@ -159,7 +160,7 @@ struct IO { @builtin(position) cp: vec4f, @location(0) uv: vec2f, @location(1) @
   let T = exp(-SIG.g * d);
   let fg = fogIn(g.cam.xyz, v / d, d, z, g.sun.xyz);
   let E = sunE(i.wp.y, z) * (.3 + .7 * i.sh);
-  var c = vec3f(.075, .068, .042) * (E * .35 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * 1.4) * (.5 + n * .8) + vec3f(.004, .003, .003);
+  var c = vec3f(.05, .044, .03) * (E * .3 + amb(i.wp, vec3f(0., 1., 0.), 1., z) * 1.1) * (.5 + n * .8) + vec3f(.004, .003, .003);
   c = c * T + fg * (1. - T);
   return vec4f(min(max(c * al, vec3f(0.)), vec3f(12.)), al);
 }
@@ -273,7 +274,7 @@ function octPlaceAtPerch(O) {
   O.P[0] = O.perch[0] + O.perchN[0] * 0.07; O.P[1] = O.perch[1] + O.perchN[1] * 0.07; O.P[2] = O.perch[2] + O.perchN[2] * 0.07;
   O.A.set(O.perchN); const a = octRn() * TAU; O.F[0] = Math.cos(a); O.F[1] = 0; O.F[2] = Math.sin(a); octOrtho(O);
   O.V.fill(0);
-  for (let i = 0; i < 8; i++) { O.phi[i] = (i + 0.5) * Math.PI / 4 + (octRn() - 0.5) * 0.25; O.rho[i] = 0.5 + 0.16 * octRn(); O.alen[i] = 0.74 + 0.1 * octRn() + (i === 2 || i === 5 ? 0.05 : 0); O.aph[i] = octRn() * TAU; O.pl[i] = 0; }
+  for (let i = 0; i < 8; i++) { O.phi[i] = (i + 0.5) * Math.PI / 4 + (octRn() - 0.5) * 0.25; O.rho[i] = 0.5 + 0.16 * octRn(); O.alen[i] = 0.62 + 0.28 * octRn(); O.aph[i] = octRn() * TAU; O.pl[i] = 0; }
   octIdeals(O, 0); for (let i = 0; i < 8; i++) { for (let k = 0; k < 3; k++) { O.tip[i * 3 + k] = O.ideal[i * 3 + k]; } O.pl[i] = 1; }
 }
 
@@ -425,7 +426,7 @@ function octBuild(O, ox, oy, oz) {
     // the free tip (above the base) for arms in the air, the planted one on the rock
     gx = O.tip[i * 3]; gy = O.tip[i * 3 + 1]; gz = O.tip[i * 3 + 2];
     const planted = O.pl[i] === 1 && O.state <= OS.CRAWL;
-    octArmChain(O, bx, by, bz, gx, gy, gz, L, A[0], A[1], A[2], planted ? 0.35 : 0.8, planted ? 0.9 : 0.3, (i & 1) ? 1 : -1, O.curl, O.wigAmp, O.aph[i], g_octT, planted ? 0.15 * Math.sin(O.aph[i] * 3) : 0.8 + 0.7 * Math.sin(O.aph[i] * 3));
+    octArmChain(O, bx, by, bz, gx, gy, gz, L, A[0], A[1], A[2], planted ? 0.35 : 0.8, planted ? 0.9 : 0.3, (i & 1) ? 1 : -1, clamp(O.curl * (0.65 + 0.7 * Math.sin(g_octT * 0.6 + O.aph[i] * 2) * Math.sin(g_octT * 0.37 + i)) + (planted ? 0 : 0.1), 0, 1), O.wigAmp * (0.8 + 0.5 * Math.sin(O.aph[i])), O.aph[i], g_octT * (0.8 + 0.1 * i), planted ? 0.15 * Math.sin(O.aph[i] * 3) : 0.8 + 0.7 * Math.sin(O.aph[i] * 3));
     // keep the nodes out of the rock
     if (O.near) for (let k = 3; k < NS; k++) {
       const x = octCh[k * 3], y = octCh[k * 3 + 1], z = octCh[k * 3 + 2], r = octArmR(k / (NS - 1)) * sc, d = sdAt(x, y, z);
@@ -457,10 +458,10 @@ function octInkAdd(x, y, z, vx, vy, vz, s0, life, a0) {
 }
 // the ink of an escape: a dense blob (the decoy) at the animal's position, and a trail while it jets
 function octInkBurst(O, dx, dy, dz) {
-  for (let k = 0; k < 22; k++) {
+  for (let k = 0; k < 30; k++) {
     const a = octRn() * TAU, b = octRn() * 2 - 1, r = Math.sqrt(1 - b * b), ux = r * Math.cos(a), uy = b, uz = r * Math.sin(a), sp = 0.14 + 0.22 * octRn();
-    const h = 0.2 + 0.9 * (k / 22) * (0.6 + 0.4 * octRn()), w = 0.8 - 0.4 * (k / 22);
-    octInkAdd(O.P[0] + O.A[0] * h + ux * 0.14 * w - dx * 0.1, O.P[1] + O.A[1] * h + uy * 0.1 - dy * 0.1, O.P[2] + O.A[2] * h + uz * 0.14 * w - dz * 0.1, ux * sp * 0.7 - dx * 0.15, 0.25 + 0.35 * octRn() + uy * 0.1, uz * sp * 0.7 - dz * 0.15, 0.28 + 0.2 * octRn(), 15 + 5 * octRn(), 0.55 + 0.25 * octRn());
+    const h = 0.2 + 1.3 * (k / 30) * (0.6 + 0.4 * octRn()), w = 0.9 - 0.5 * (k / 30);
+    octInkAdd(O.P[0] + O.A[0] * h + ux * 0.14 * w - dx * 0.1, O.P[1] + O.A[1] * h + uy * 0.1 - dy * 0.1, O.P[2] + O.A[2] * h + uz * 0.14 * w - dz * 0.1, ux * sp * 0.7 - dx * 0.15, 0.3 + 0.4 * octRn() + uy * 0.1, uz * sp * 0.7 - dz * 0.15, 0.36 + 0.24 * octRn(), 15 + 5 * octRn(), 0.8 + 0.2 * octRn());
   }
 }
 // a thin haze round the blob that spreads for longer: the ink disperses slowly
@@ -606,13 +607,17 @@ function octStep(O, dt) {
     }
     case OS.ALARM: {
       const t = O.t; octStick(O, dt, 0.13);
-      octTurn(O, dt, O.perchN[0], O.perchN[1], O.perchN[2], dx, 0, dz, 6); 
-      O.lean += (0.1 - O.lean) * Math.min(1, dt * 10); O.curl += (0.3 - O.curl) * Math.min(1, dt * 6); O.wigAmp = 0.03;
-      if (t < 0.14) octSkin(O, dt, 1, 0, 1, 0.3, 4, 16);
-      else if (t < 0.5) octSkin(O, dt, 0.0, 1, 1, 0.3, 4, 18);
-      else octSkin(O, dt, 0.9, 0.0, 0.2, 0.3, 4, 16);
-      octArms(O, dt, true, 12, 0, 0, 0, 0.34 * O.scale, 0, 0.26 * O.scale);
-      if (t >= 0.55) {
+      octTurn(O, dt, O.perchN[0], O.perchN[1], O.perchN[2], dx, 0, dz, 6);
+      // 0 - 0.8 s: it notices (head up and round, eyes on the intruder, arms draw in and curl); then the flash: white, black, white
+      if (t < 0.8) { O.lean += (0.15 - O.lean) * Math.min(1, dt * 5); O.curl += (0.8 - O.curl) * Math.min(1, dt * 4); O.wigAmp = 0.05; octSkin(O, dt, 0, 0.18, 0.5, 0.7, 5, 5); octArms(O, dt, true, 5, 0, 0, 0, 0.3 * O.scale, 0, 0.16 * O.scale); }
+      else {
+        O.lean += (0.1 - O.lean) * Math.min(1, dt * 10); O.curl += (0.9 - O.curl) * Math.min(1, dt * 6); O.wigAmp = 0.06;
+        if (t < 0.98) octSkin(O, dt, 1, 0, 1, 0.1, 30, 30);
+        else if (t < 1.28) octSkin(O, dt, 0.0, 1, 1, 0.1, 30, 30);
+        else octSkin(O, dt, 0.9, 0.0, 0.2, 0.3, 30, 30);
+        octArms(O, dt, true, 12, 0, 0, 0, 0.34 * O.scale, 0, 0.26 * O.scale);
+      }
+      if (t >= 1.3) {
         let ex = O.front[0] - P[0], ey = O.front[1] - P[1], ez = O.front[2] - P[2]; const el = octLen(ex, ey, ez) || 1; ex /= el; ey /= el; ez /= el;
         // not straight at the intruder: if the den is that way, break off to the side
         octState(O, OS.JET); O.jetT = 0; O.jetN = -1; O.inkT = 0; V[0] = ex * 0.6; V[1] = ey * 0.6 + 0.35; V[2] = ez * 0.6; octInkBurst(O, ex, ey, ez); octInkHaze(O);
@@ -656,7 +661,7 @@ function octStep(O, dt) {
       break;
     }
     case OS.HIDE: case OS.PEEK: {
-      const peek = O.state === OS.PEEK, k = peek ? 0.3 : -0.04;
+      const peek = O.state === OS.PEEK, k = peek ? 0.3 : 0.04;
       const tx = O.den[0] + O.dout[0] * k, ty = O.den[1] + O.dout[1] * k, tz = O.den[2] + O.dout[2] * k;
       octSwim(O, dt, tx, ty, tz, 0.25, 0.04);
       const up = Math.abs(O.dout[1]) < 0.9;
@@ -670,6 +675,27 @@ function octStep(O, dt) {
   }
 }
 
+// staging: a camera 3 m to the side of the perch-den line with a clear view of both, and the LAUV coming in from the far side of the perch
+function octClear(x0, y0, z0, x1, y1, z1, r) { const l = octLen(x1 - x0, y1 - y0, z1 - z0); for (let s = 0.2; s < l; s += 0.15) { const k = s / l; if (sdAt(x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, z0 + (z1 - z0) * k) > -r) return false; } return true; }
+function octStage(O, vehOnly) {
+  let fx = O.front[0] - O.perch[0], fz = O.front[2] - O.perch[2]; const fl = octLen(fx, 0, fz) || 1; fx /= fl; fz /= fl;
+  const mx = (O.perch[0] + O.front[0]) / 2, my = (O.perch[1] + O.front[1]) / 2 + 0.25, mz = (O.perch[2] + O.front[2]) / 2;
+  let best = null, bs = -1;
+  for (let sd = -1; sd <= 1; sd += 2) for (let dd = 2.4; dd <= 3.8; dd += 0.35) for (let ey = 0.5; ey <= 1.3; ey += 0.2) for (let rot = -0.5; rot <= 0.5; rot += 0.25) {
+    const a = Math.atan2(-fz * sd, fx * sd) + rot, cx = mx + Math.sin(a) * dd, cz = mz + Math.cos(a) * dd, cy = O.perch[1] + ey;
+    if (sdAt(cx, cy, cz) > -0.5) continue;
+    if (!octClear(cx, cy, cz, O.perch[0], O.perch[1] + 0.2, O.perch[2], 0.15) || !octClear(cx, cy, cz, O.front[0], O.front[1], O.front[2], 0.15) || !octClear(cx, cy, cz, O.den[0] + O.dout[0] * 0.3, O.den[1] + O.dout[1] * 0.3, O.den[2] + O.dout[2] * 0.3, 0.1)) continue;
+    // the vehicle's approach: from behind the perch (away from the den), 7 m out
+    const vx = O.perch[0] - fx * 7, vz = O.perch[2] - fz * 7, vy = O.perch[1] + 0.7;
+    if (!octClear(vx, vy, vz, O.perch[0], vy, O.perch[2], 0.35)) continue;
+    const sc = 10 - dd - 2 * Math.abs(rot) - 0.5 * Math.abs(ey - 0.8); if (sc > bs) { bs = sc; best = { cam: [cx, cy, cz, O.perch[0] * 0.6 + O.front[0] * 0.4, O.perch[1] * 0.6 + O.front[1] * 0.4 + 0.15, O.perch[2] * 0.6 + O.front[2] * 0.4], veh: [vx, vy, vz], yaw: Math.atan2(fx, -fz) }; }
+  }
+  if (!best) { // no clear side view: 6 m from the animal on the open side
+    best = { cam: null, veh: [O.perch[0] - fx * 6, O.perch[1] + 0.8, O.perch[2] - fz * 6], yaw: Math.atan2(fx, -fz) };
+  }
+  if (vehOnly) { lauvPlace(best.veh[0], best.veh[1], best.veh[2], best.yaw, 0); lv.setSpeed(0); return best; }
+  return best;
+}
 // ---------------------------------------------------------------- registration
 FAUNA.push({
   name: 'octopus',
@@ -728,6 +754,7 @@ FAUNA.push({
       if (!G.bench) Q.writeBuffer(G.gpu.vb, O.i * OCT_VPO * 32, octAB, 0, OCT_VPO * 32);
     }
     G.drawn = nb;
+    if (OCT_FLAG && !G.flagged) { G.flagged = true; octStage(octO[OCT_FLAG - 1] || octO[0], true); }
     if (octInk.n && !G.bench) Q.writeBuffer(G.gpu.vbInk, 0, octInk.p.buffer, 0, octInk.n * 32);
     G.ms = performance.now() - t0;
   },
@@ -752,6 +779,9 @@ window.__octo = {
   state(i) { return octO[i].state; },
   scare(i) { const O = octO[i]; if (O && O.state <= OS.CRAWL) { octState(O, OS.ALARM); O.pl.fill(0); O.stepT.fill(-1); } },
   noscare: false,
+  // stage octopus i for a clip: fixed camera, LAUV 7 m out on the far side (returns the pose, or null)
+  stage(i) { const O = octO[i], b = octStage(O, false); octG.follow = null; if (b.cam) octG.cam = b.cam; lauvPlace(b.veh[0], b.veh[1], b.veh[2], b.yaw, 0); lv.setSpeed(1.1); return b; },
+  canStage(i) { const O = octO[i]; return !!octStage(O, false).cam; },
   // CPU cost of one update(1/60) (physics of all animals, geometry of the visible ones, uploads), averaged over n calls
   bench(n = 300) { const f = FAUNA.find((q) => q.name === 'octopus'); octG.bench = true; const t0 = performance.now(); for (let i = 0; i < n; i++) f.update(1 / 60); const r = (performance.now() - t0) / n; octG.bench = false; return r; },
   set off(v) { octG.off = !!v; }, get off() { return !!octG.off; },
