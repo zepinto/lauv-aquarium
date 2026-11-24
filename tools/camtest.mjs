@@ -1,0 +1,10 @@
+import { launch } from './chrome.mjs';
+const b = await launch(); const p = await b.newPage({ viewport: { width: 640, height: 360 } });
+p.on('pageerror', e => console.log('pageerror: ' + e.message));
+await p.goto('http://127.0.0.1:' + process.argv[2] + '/index.html?res=1&hud=0&t=5');
+await p.waitForFunction(() => window.__app?.ready, null, { timeout: 180000 });
+await p.evaluate(() => __app.start());
+await p.evaluate(() => { __app.set({ x: 0, y: -0.05, z: 0, yaw: 0.4, pitch: 0, u: 1.2 }); __app.sim(5); __app.cam('surfhigh'); });
+await p.waitForTimeout(2000);
+console.log(JSON.stringify(await p.evaluate(() => { const s = __app.state(); return { p: [s.x, s.y, s.z], cam: s.camPos, tgt: s.camTarget, mode: s.cam }; })));
+await b.close();
