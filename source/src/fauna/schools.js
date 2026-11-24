@@ -13,7 +13,7 @@ const SC_KMAX = 96;            // neighbours looked at per fish and frame (a win
 
 // ---- species: len (m), half height / half width as a fraction of the length, where the body is deepest (0..1 from the nose), colours
 const SC_SPECIES = [
-  { name: 'sardine', len: 0.16, H: 0.085, W: 0.055, peak: 0.36, tail: [0.22, 0.20, 0.7], dorsal: [0.30, 0.52, 0.09], anal: [0.60, 0.74, 0.04], pect: 0, rings: 5, sides: 5,
+  { name: 'sardine', len: 0.14, H: 0.085, W: 0.055, peak: 0.36, tail: [0.22, 0.20, 0.7], dorsal: [0.30, 0.52, 0.09], anal: [0.60, 0.74, 0.04], pect: 0, rings: 5, sides: 5,
     pat: 0, back: [0.07, 0.17, 0.26], belly: [0.82, 0.88, 0.90], metal: 0.9, accent: [0.05, 0.08, 0.12], fin: [0.40, 0.45, 0.48] },
   { name: 'chromis', len: 0.10, H: 0.17, W: 0.07, peak: 0.36, tail: [0.26, 0.24, 0.75], dorsal: [0.22, 0.72, 0.10], anal: [0.60, 0.80, 0.06], pect: 1, rings: 8, sides: 8,
     pat: 1, back: [0.10, 0.45, 0.62], belly: [0.42, 0.72, 0.72], metal: 0.25, accent: [0.05, 0.25, 0.40], fin: [0.18, 0.5, 0.6] },
@@ -38,7 +38,7 @@ const SC_PLAN = [
   { sp: 0, n: 14000, kind: 1, count: 1, R: 2.4, speed: 1.0, fear: 1.3, ymin: -17, ymax: -7, hole: 1 },
   { sp: 0, n: 5000, kind: 1, count: 1, R: 1.7, speed: 0.9, fear: 1.2, ymin: -17, ymax: -6, hole: 1 },
   { sp: 0, n: 512, kind: 0, count: 3, R: 3.0, speed: 5, fear: 2.4, ymin: -16, ymax: -5 },
-  { sp: 6, n: 160, kind: 0, count: 3, R: 4.0, speed: 4.5, fear: 2.4, ymin: -16, ymax: -4 },
+  { sp: 6, n: 160, kind: 0, count: 3, noBall: 1, R: 4.0, speed: 4.5, fear: 2.4, ymin: -16, ymax: -4 },
   { sp: 4, n: 20, kind: 2, count: 12, R: 1.4, speed: 1.4, fear: 1.6, rock: 1, above: 1.3 },
   { sp: 3, n: 10, kind: 2, count: 8, R: 1.6, speed: 1.2, fear: 1.7, rock: 1, above: 1.5 },
   { sp: 5, n: 8, kind: 0, count: 10, R: 2.0, speed: 2.0, fear: 2.0, ymin: -18, ymax: -8 },
@@ -154,8 +154,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // bait ball: a shell of random radii round the anchor, swirling about a tilted axis
     let rb = -rel; let r = max(dist, .05);
     let near = ss(10., 3., length(wv(S.anc.xyz - k.veh.xyz)));
-    let rt = R0 * (1. - .3 * near) * (.15 + .85 * pow(h0, .3333)) * (1. + .14 * sin(tm * .6 + dot(rb / r, vec3f(1., 2.3, 3.1)) * 2.2));
-    acc += rel / r * (r - rt) * 3.5;
+    let rt = R0 * (1. - .3 * near) * (.15 + .85 * pow(h0, .3333)) * (1. + .14 * sin(tm * .6 + dot(rb / r, vec3f(1., 2.3, 3.1)) * 2.2) + .12 * sin(tm * .35 + dot(rb, vec3f(2.9, 1.7, 3.7))));
+    acc += rel / r * (r - rt) * 3.5 * (1. + 2. * ss(1.1 * R0, 2. * R0, r));
     let tilt = S.prm3.w; let axis = vec3f(sin(tilt), cos(tilt), 0.);
     let tg = cross(axis, rb); let tl = length(tg);
     let vt = tg / max(tl, .1) * S.prm3.z * cruise * (1. + .7 * near) * ss(.1 * R0, .55 * R0, r);
@@ -219,7 +219,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   @location(5) lt: f32, @location(6) @interpolate(flat) al: f32, @location(7) @interpolate(flat) prt: f32, @location(8) @interpolate(flat) cr: f32 };
 @vertex fn vs(i: VI) -> VO {
   var o: VO;
-  o.cp = vec4f(2., 2., 2., 1.); o.wp = vec3f(0.); o.n = vec3f(0., 1., 0.); o.op = vec3f(0.); o.sp = 0u; o.sd = 0.; o.lt = 1.; o.al = 0.; o.prt = 0.; o.cr = 2.;
+  o.cp = vec4f(2., 2., 2., 1.); o.wp = vec3f(0.); o.n = vec3f(0., 1., 0.); o.op = vec3f(0.); o.sp = 0u; o.sd = 0.; o.lt = 1.; o.al = 0.; o.prt = 0.; o.cr = 1.;
   let F = FS[i.ii]; let S = SC[u32(F.c.x)]; let sp = S.ids.z;
   let L = F.c.y;
   let P = g.cam.xyz + wd(F.pos - g.cam.xyz);
@@ -243,7 +243,14 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   if (part > 3.5) { l.z += sign(l.z) * .03 * (1. + sin(F.ph * TAU * .7)); }
   let w = P + (dir * l.x + up * l.y + side * l.z) * L;
   o.cp = g.vp * vec4f(w, 1.); o.wp = w; o.n = normalize(dir * nl.x + up * nl.y + side * nl.z); o.op = l;
-  o.cr = select(2., length(wd(F.pos - S.anc.xyz)) / S.prm3.y, S.prm.w > .5 && S.prm.w < 1.5);
+  if (S.prm.w > .5 && S.prm.w < 1.5) {
+    // bait ball: how much ball lies between this fish and the camera / the sun (a sphere of the ball's radius round the anchor)
+    let Rb = S.prm3.y * 1.05; let vd = normalize(dc); let ac = wd(S.anc.xyz - g.cam.xyz);
+    let bb = dot(ac, vd); let t0 = bb - sqrt(max(Rb * Rb - (dot(ac, ac) - bb * bb), 0.));
+    let dv = max(dot(dc, vd) - t0, 0.);
+    let rl = wd(F.pos - S.anc.xyz); let bs = dot(rl, g.sun.xyz); let ds = bs + sqrt(max(Rb * Rb - (dot(rl, rl) - bs * bs), 0.));
+    o.cr = exp(-dv * .75 - ds * .35);
+  }
   o.sp = sp; o.sd = hs(f32(i.ii) * .37); o.al = F.alarm; o.prt = part;
   o.lt = select(shadow1(w), 1., sp == 0u);
   return o;
@@ -283,7 +290,7 @@ struct VO { @builtin(position) cp: vec4f, @location(0) wp: vec3f, @location(1) n
   c = mix(c, c * .5 + (envc * 3.6 + vec3f(.05, .09, .11)) * alb + E * fl * 3.2 * alb, metal * .85);
   c += E * fl * (.5 + 3. * i.al) * metal * vec3f(1., .98, .92);
   c += E * pow(sat(dot(n, normalize(V + L))), 24.) * .5 * (1. - metal) + vec3f(.3, .6, .7) * pow(1. - sat(dot(n, V)), 3.) * .15 * vv.g;
-  c *= mix(.04, 1., ss(.5, 1.1, i.cr)) * (1. + .6 * ss(.85, 1.15, i.cr));
+  c *= mix(vec3f(.025, .06, .12), vec3f(1.), i.cr) * (1. + .5 * ss(.8, 1., i.cr));
   return fin(fog(c, i.wp, z));
 }
 `;
@@ -336,6 +343,7 @@ function scMakeWorld() {
       } else {
         const fl = scFloorMax(x, z, s.R0 + 3), y0 = fl + s.R0 + 2.2 + rr(0, 3.5);
         if (y0 > s.ymax) continue;
+        if (s.kind !== 1 && list.some((b) => b.kind === 1 && hypot(wrapD(b.px - x), wrapD(b.pz - z)) < 30)) continue; // not into a bait ball
         s.hx = x; s.hz = z; s.hy = max(y0, s.ymin); ok = true;
       }
     }
@@ -357,7 +365,7 @@ function scMakeWorld() {
       const a = rnd() * TAU, sp = s.cruise * (0.8 + 0.4 * rnd());
       FD[o] = wrapT(s.px + dx); FD[o + 1] = s.py + dy; FD[o + 2] = wrapT(s.pz + dz); FD[o + 3] = 0;
       FD[o + 4] = (s.kind === 1 ? -dz : sin(s.hd)) / (s.kind === 1 ? max(hypot(dx, dz), 0.1) : 1) * sp; FD[o + 5] = rr(-0.2, 0.2) * sp; FD[o + 6] = (s.kind === 1 ? dx / max(hypot(dx, dz), 0.1) : -cos(s.hd)) * sp; FD[o + 7] = rnd();
-      FD[o + 8] = si; FD[o + 9] = s.len * (0.85 + 0.3 * rnd()); FD[o + 10] = 0; FD[o + 11] = 0;
+      FD[o + 8] = si; FD[o + 9] = s.len * (0.7 + 0.55 * rnd()); FD[o + 10] = 0; FD[o + 11] = 0;
     }
   });
   Q.writeBuffer(scBuf.A, 0, FD); Q.writeBuffer(scBuf.B, 0, FD);
@@ -381,6 +389,10 @@ function scMoveAnchors(dt) {
       if (want > s.ymax) s.hd += (hl < hr ? -1 : 1) * 1.1 * dt;
       s.py += clamp((min(max(want, s.ybase), s.ymax) - s.py) * 0.5, -0.5, 0.5) * dt;
       const dx = wrapD(s.px - vp[0]), dz = wrapD(s.pz - vp[2]), d = hypot(dx, dz, s.py - vp[1]);
+      for (const b of SC_SCH) if (b.kind === 1 && b !== s) { // keep clear of the bait balls
+        const bx = wrapD(s.px - b.px), bz = wrapD(s.pz - b.pz), bd = hypot(bx, bz, s.py - b.py);
+        if (bd < 16) s.hd += clamp(scWrapA(atan2(bx, -bz) - s.hd), -1, 1) * 1.5 * dt * ss01(16, 8, bd);
+      }
       if (d < 10 && !s.hole) s.hd += clamp(scWrapA(atan2(dx, -dz) - s.hd), -1, 1) * dt * ss01(10, 3, d);
       s.px = wrapT(s.px + sin(s.hd) * sp * dt); s.pz = wrapT(s.pz - cos(s.hd) * sp * dt);
     }
