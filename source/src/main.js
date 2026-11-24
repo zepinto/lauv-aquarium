@@ -51,7 +51,7 @@ const tVol = tex(NX / 2, NY / 2, 'rg8unorm', TU.TEXTURE_BINDING | TU.COPY_DST, {
 const tMap = tex(512, 512, 'rgba8unorm', TU.TEXTURE_BINDING | TU.COPY_DST);
 
 // LOOK: debug switches (tests, per-pass costs) and a camera orbit for test shots (free camera at azimuth / elevation)
-const LOOKDBG = { rays: 1, ao: 1, orbit(az, el) { lauvS.camMode = 'free'; lauvS.camAz = az; lauvS.camEl = el; lauvS.snap = 1; } }; window.__look = LOOKDBG;
+const LOOKDBG = { rays: 1, ao: 1, life: 1, orbit(az, el) { lauvS.camMode = 'free'; lauvS.camAz = az; lauvS.camEl = el; lauvS.snap = 1; } }; window.__look = LOOKDBG;
 const LOOK = lookTextures(); // LOOK: scanned material textures (look.js), loading in the background
 const UB = new Float32Array(68), UBS = new Float32Array(68);
 const ubo = device.createBuffer({ size: 272, usage: BU.UNIFORM | BU.COPY_DST }), uboS = device.createBuffer({ size: 272, usage: BU.UNIFORM | BU.COPY_DST });
@@ -263,7 +263,8 @@ const meshes = [meshChunk(1, 3), meshChunk(7, 3), meshChunk(13, 3), meshChunk(22
   meshLathe([[0, 0, 0.5], [0.5, 0, 0.7], [0.72, 0.18, 1], [0.74, 0.38, 1], [0.62, 0.5, 0.9], [0.48, 0.42, 0.45], [0.4, 0.2, 0.15], [0, 0.14, 0.06]], 18, 0.25, 10),
   meshCoral(0), meshCoral(1), meshTubes()].map((m) => m.build());
 meshes.push(meshTable().build(), meshShip().build(), meshManta().build(), meshFish().build(),
-  meshChunk(3).build(), meshChunk(11).build(), meshChunk(29).build(), meshChunk(5, 3).build(), meshChunk(17, 3).build(), meshChunk(41, 3).build(), meshChunk(9, 1).build(), meshCoral(0, 1).build(), meshCoral(1, 1).build(), meshChunk(5, 2, 1).build(), meshChunk(17, 2, 1).build(), meshChunk(41, 2, 1).build(), meshBrain().build(), meshMound().build());
+  meshChunk(3).build(), meshChunk(11).build(), meshChunk(29).build(), meshChunk(5, 3).build(), meshChunk(17, 3).build(), meshChunk(41, 3).build(), meshChunk(9, 1).build(), meshCoral(0, 1).build(), meshCoral(1, 1).build(), meshChunk(5, 2, 1).build(), meshChunk(17, 2, 1).build(), meshChunk(41, 2, 1).build(), meshBrain().build(), meshMound().build(),
+  meshSoft(0).build(), meshSoft(1).build(), meshFan(0).build(), meshFan(1).build(), meshClam().build(), meshAnemone(0).build(), meshBarrel().build()); // 28-34: LOOK reef life
 let nV = 0, nI = 0;
 for (const m of meshes) { m.v0 = nV; m.i0 = nI; nV += m.nv; nI += m.ib.length; }
 const allV = new Uint8Array(nV * 16), allI = new Uint32Array(nI);
@@ -497,7 +498,7 @@ function drawSolids(r, dp) {
   }
   if (!SKIP.props) for (let i = 0; i < PROP_IDS.length; i++) {
     const id = PROP_IDS[i], lod = id === 7 || id === 8; r.setVertexBuffer(1, ibProp[i]);
-    drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[id], 0, 0, lod ? 6 : (id < 4 ? 150 : 110) * DLOD);
+    drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[id], 0, 0, lod ? 6 : (id >= 28 ? (id === 32 || id === 33 ? 22 : 38) * LOOKDBG.life : id < 4 ? 150 : 110) * DLOD); // LOOK: reef life to 38 m (clams, anemones 22 m): GPU budget
     if (lod) drawCells(r, Wd.props[i].start, Wd.props[i].lo, Wd.props[i].hi, 3, meshes[14 + id], 0, 6, 110 * DLOD);
   }
   useTile(r, 4);

@@ -114,7 +114,7 @@ function buildTerrain(D, MAP) {
 }
 
 // ---------------------------------------------------------------- instance stores
-const PROP_IDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 26, 27]; // meshes drawn from cell-sorted prop stores
+const PROP_IDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 26, 27, 28, 29, 30, 31, 32, 33, 34]; // 28-34: LOOK reef life // meshes drawn from cell-sorted prop stores
 function makeWorld(D, T, POSES) {
   const gi = (x, y, z) => x + NX * (y + NY * z);
   const smp = T.smp, sandAt = T.sandAt;
@@ -283,6 +283,12 @@ function makeWorld(D, T, POSES) {
     if (kind === 0) return u < 0.4 ? [7, 5, s * 1.1] : u < 0.46 ? [26, 5, s * 0.9] /* LOOK: no flat table corals */ : u < 0.6 ? [26, 5, s] : u < 0.82 ? [8, 5, s * 1.05] : u < 0.9 ? [9, 4, s * 0.8] : [27, 5, s * 1.1];
     return u < 0.18 ? [4, 4, s * 0.8] : u < 0.3 ? [5, 4, s * 0.7] : u < 0.4 ? [6, 4, s * 0.8] : u < 0.55 ? [9, 4, s * 0.9] : u < 0.8 ? [27, 4, s * 1.2] : [8, 5, s];
   };
+  // LOOK round 5: reef life [mesh, mat, scale]: soft corals (28, 29), sea fans (30, 31), giant clam (32), anemone (33),
+  // barrel sponge (34) and tube sponges (9) with their own materials (mat 7-11)
+  const LIFE = () => { const u = rnd(), L = LIFE0(u); L[2] *= 1.8; return L; }; // real sizes: soft corals ~1-2 m, fans to 2.5 m, barrels to 2 m
+  const LIFE0 = (u) => {
+    return u < 0.15 ? [28, 7, rr(0.6, 1.3)] : u < 0.28 ? [29, 7, rr(0.6, 1.3)] : u < 0.38 ? [30, 8, rr(0.8, 1.5)] : u < 0.46 ? [31, 8, rr(0.8, 1.5)]
+      : u < 0.55 ? [32, 9, rr(0.45, 0.9)] : u < 0.7 ? [33, 10, rr(0.9, 1.5)] : u < 0.86 ? [34, 11, rr(0.6, 1.3)] : [9, 11, rr(0.6, 1.1)]; };
   const place = (n0, ny, nz, nx, p, mesh, mat, sc, sd) => {
     const nx2 = nx + rr(-0.3, 0.3), nz2 = nz + rr(-0.3, 0.3), l = hypot(nx2, ny + 0.9, nz2), ux = nx2 / l, uy = (ny + 0.9) / l, uz = nz2 / l;
     solid(mesh, p[0] - ux * 0.1 * sc, p[1] - uy * 0.1 * sc, p[2] - uz * 0.1 * sc, sc, qMul(qFromY(ux, uy, uz), qAxis(0, 1, 0, rnd() * TAU)), mat, sd, 1, 0);
@@ -322,8 +328,8 @@ function makeWorld(D, T, POSES) {
       const k = near[(rnd() * near.length) | 0], x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2];
       const [mesh, mat, sc] = PIECE(kind);
       // LOOK round 4: a third of a garden in reef colours
-      const vivid = rnd() < 0.35 && mesh !== 10;
-      place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [x + rr(-0.3, 0.3), y, z + rr(-0.3, 0.3)], mesh, vivid ? 6 : mat, sc, vivid ? rnd() : fract(sd + rr(-0.05, 0.05)));
+      const vivid = rnd() < 0.45, L = vivid ? LIFE() : null;
+      place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [x + rr(-0.3, 0.3), y, z + rr(-0.3, 0.3)], vivid ? L[0] : mesh, vivid ? L[1] : mat, vivid ? L[2] : sc, vivid ? rnd() : fract(sd + rr(-0.05, 0.05)));
     }
   }
   // --- mini reefs: boulder heaps crusted with coral and sponge, with grass about them, spread over the sand so every view has a landmark
@@ -348,8 +354,9 @@ function makeWorld(D, T, POSES) {
     { // hero: a colourful bommie on every heap (LOOK round 4: more, varied colours, no flat table slabs)
       const nh = 12 + (rnd() * 10 | 0), hs_ = rnd();
       for (let m = 0; m < nh; m++) {
-        const q = top[(rnd() * top.length) | 0], id = [7, 8, 26, 27, 9, 7, 8][(rnd() * 7) | 0], a = rnd() * TAU, rq = rnd() * q[3] * 0.6;
-        place(null, 1, 0, 0, [q[0] + cos(a) * rq, q[1] - 0.25, q[2] + sin(a) * rq], id, 6, rr(0.8, 2.1), fract(hs_ + m * 0.37 + rr(-0.03, 0.03)));
+        const q = top[(rnd() * top.length) | 0], a = rnd() * TAU, rq = rnd() * q[3] * 0.6, pp = [q[0] + cos(a) * rq, q[1] - 0.25, q[2] + sin(a) * rq];
+        if (rnd() < 0.25) place(null, 1, 0, 0, pp, [7, 8, 26][(rnd() * 3) | 0], 5, rr(0.8, 1.8), fract(hs_ + m * 0.37)); // hard coral in natural colours
+        else { const L = LIFE(); place(null, 1, 0, 0, pp, L[0], L[1], L[2] * 1.15, rnd()); }
       }
     }
     for (let m = 0; m < 10; m++) { const a = rnd() * TAU, r = rr(2, 5), px = x + cos(a) * r, pz = z + sin(a) * r, py = gy(px, pz); for (let j = 0; j < 14; j++) leaf(small, px + rr(-0.2, 0.2), py - 0.04, pz + rr(-0.2, 0.2), rr(0.4, 0.9), rnd() * TAU, rr(0.04, 0.4), rr(0.03, 0.055), 0, 2, rnd(), rnd(), rr(0.3, 0.7)); }
@@ -373,10 +380,28 @@ function makeWorld(D, T, POSES) {
       const n = min(700, o.c.length), sd = rnd();
       for (let m = 0; m < n; m++) {
         const k = o.c[(rnd() * o.c.length) | 0];
-        if (rnd() < 0.45) { const id = [7, 8, 26, 27, 9][(rnd() * 5) | 0]; place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [T.wp[k], T.wp[k + 1], T.wp[k + 2]], id, 6, rr(0.8, 1.9), fract(sd + m * 0.37)); }
+        if (rnd() < 0.5) { const L = LIFE(); place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [T.wp[k], T.wp[k + 1], T.wp[k + 2]], L[0], L[1], L[2] * 1.2, rnd()); }
         else { const [mesh, mat, sc] = PIECE(rnd() < 0.5 ? 0 : 1); place(null, T.wn[k + 1], T.wn[k + 2], T.wn[k], [T.wp[k], T.wp[k + 1], T.wp[k + 2]], mesh, mat, sc * 1.4, fract(sd + rr(-0.05, 0.05))); }
       }
     }
+  }
+  // --- LOOK round 5: clusters of reef life on the rock outcrops, about 12 m apart
+  rseed(18);
+  {
+    const CL = [];
+    for (let t = 0; t < 80000 && CL.length < 420; t++) {
+      const k = pickV(), x = T.wp[k], y = T.wp[k + 1], z = T.wp[k + 2], ny = T.wn[k + 1];
+      if (ny < 0.3 || y > -4 || y < -18 || T.vs[k / 3] > 0.3 || nearPose(x, z, 3)) continue;
+      if (CL.some((p) => dist2(x, z, p[0], p[1]) < 12)) continue;
+      CL.push([x, z, y]);
+      const n0 = [T.wn[k], ny, T.wn[k + 2]], [t1, t2] = tangent(n0), cnt = 10 + (rnd() * 12 | 0);
+      for (let j = 0; j < cnt; j++) {
+        const a = rr(-2.6, 2.6), b = rr(-2.6, 2.6);
+        const s = snap(x + t1[0] * a + t2[0] * b, y + t1[1] * a + t2[1] * b, z + t1[2] * a + t2[2] * b, n0); if (!s) continue;
+        const L = LIFE(); place(n0, s[4], s[5], s[3], s, L[0], L[1], L[2], rnd());
+      }
+    }
+    self.__lifeSpots = CL.slice(0, 40); // LOOK: test hook
   }
   // --- rocks: boulders lying about, then rubble, then pebbles and shells on the sand
   rseed(8);
@@ -629,3 +654,71 @@ function meshTable() { return meshLathe([[0, 0, 0.4], [0.1, 0, 0.5], [0.09, 0.3,
 function meshBrain() { return meshLathe([[0, 0, 0.4], [0.5, 0, 0.6], [0.64, 0.18, 0.9], [0.58, 0.5, 1], [0.34, 0.72, 1], [0, 0.78, 1]], 24, 0.14, 18); }
 // encrusting sponge / massive coral: a low lumpy mound
 function meshMound() { return meshLathe([[0, 0, 0.4], [0.7, 0, 0.6], [0.9, 0.18, 0.9], [0.78, 0.46, 1], [0.46, 0.62, 0.9], [0, 0.66, 0.7]], 16, 0.45, 0); }
+
+// ---------------------------------------------------------------- LOOK round 5: reef-life meshes (normal.w = aux, see the solid shader, mat 7-11)
+// soft coral: fleshy branches with club tips (aux: 0 at the base, 1 at the tips)
+function meshSoft(sd) {
+  rseed(300 + sd);
+  const m = new Mesh(), nrm = (v) => { const l = hypot(...v) || 1; return v.map((c) => c / l); };
+  const br = (p, d, r, len, depth) => {
+    const pts = [p], ns = 4; let q = p;
+    for (let i = 0; i < ns; i++) { d = nrm([d[0] + rr(-0.25, 0.25), d[1] + rr(0, 0.25), d[2] + rr(-0.25, 0.25)]); q = [q[0] + d[0] * len / ns, q[1] + d[1] * len / ns, q[2] + d[2] * len / ns]; pts.push(q); }
+    const tip = depth === 0;
+    m.tube(pts, (k) => r * (tip ? 1 + 0.25 * sstep(2, 4, k) : 1 - 0.25 * k / ns), 8, tip, (k) => clamp((3 - depth + k / ns) / 4, 0.08, 1));
+    if (!tip) { const n = 2 + (rnd() * 2 | 0); for (let i = 0; i < n; i++) br(q, nrm([d[0] + rr(-1, 1), d[1] + rr(0, 0.6), d[2] + rr(-1, 1)]), r * 0.72, len * 0.72, depth - 1); }
+  };
+  const n0 = 1 + (sd & 1);
+  for (let i = 0; i < n0; i++) br([rr(-0.1, 0.1), 0, rr(-0.1, 0.1)], nrm([rr(-0.3, 0.3), 1, rr(-0.3, 0.3)]), 0.085, 0.36, 2 + (sd & 1));
+  return m;
+}
+// sea fan: a flat lattice of fine branches (in the x-y plane) on a short trunk, with cross-links between neighbours
+function meshFan(sd) {
+  rseed(320 + sd);
+  const m = new Mesh(), nodes = [];
+  const br = (x, y, a, len, r, depth) => {
+    const pts = [[x, y, 0]]; let px = x, py = y;
+    for (let i = 0; i < 3; i++) { a += rr(-0.15, 0.15); px += sin(a) * len / 3; py += cos(a) * len / 3; pts.push([px, py, rr(-0.012, 0.012)]); }
+    m.tube(pts, (k) => max(0.0045, r * (1 - 0.2 * k / 3)), 3, false, (k) => clamp((6 - depth + k / 3) / 7, 0.1, 1));
+    nodes.push([px, py, depth]);
+    if (depth > 0) { br(px, py, a - rr(0.22, 0.5), len * 0.8, r * 0.74, depth - 1); br(px, py, a + rr(0.22, 0.5), len * 0.8, r * 0.74, depth - 1); }
+  };
+  m.tube([[0, 0, 0], [0, 0.1, 0]], 0.03, 5, false, () => 0.2);
+  for (const a0 of [-0.75, 0, 0.75]) br(0, 0.1, a0 + rr(-0.1, 0.1), 0.26, 0.02, 5);
+  for (let i = 0; i < nodes.length; i++) { // lace: link each node to its nearest non-sibling neighbour
+    let best = -1, bd = 0.11;
+    for (let j = 0; j < nodes.length; j++) { if (j === i || abs(nodes[j][2] - nodes[i][2]) > 1) continue; const d = hypot(nodes[j][0] - nodes[i][0], nodes[j][1] - nodes[i][1]); if (d > 0.03 && d < bd) { bd = d; best = j; } }
+    if (best >= 0) m.tube([[nodes[i][0], nodes[i][1], 0], [nodes[best][0], nodes[best][1], 0]], 0.0045, 3, false, () => 0.9);
+  }
+  return m;
+}
+// giant clam: a fluted shell with wavy lips (aux 0.3-1) and the mantle between them (aux -1)
+function meshClam() {
+  const m = new Mesh(), NX = 18, NA = 16, A0 = PI * 0.86, rings = [], mant = [];
+  for (let i = 0; i <= NX; i++) {
+    const x = -0.5 + i / NX, e = sqrt(max(0, 1 - (2 * x) ** 2)), w = 0.3 * (0.2 + 0.8 * e), h = 0.26 * (0.2 + 0.8 * e), ring = [];
+    for (let j = 0; j <= NA; j++) {
+      const a = -A0 + 2 * A0 * j / NA, rib = 1 + 0.1 * cos(x * TAU * 4.5) * sstep(0.15, 0.9, abs(a) / A0);
+      ring.push(m.v(x, h - cos(a) * h * rib, sin(a) * w * rib, 0.3 + 0.7 * abs(a) / A0));
+    }
+    rings.push(ring);
+    const lip = 1 + 0.1 * cos(x * TAU * 4.5), yl = h - cos(A0) * h * lip, zl = sin(A0) * w * lip * 0.96, mr = [];
+    for (let s = 0; s <= 4; s++) { const t = s / 4 * 2 - 1; mr.push(m.v(x, yl + (0.045 * (1 - t * t) + 0.02 * sin(x * 38 + t * 3)) * e, zl * t, -1)); }
+    mant.push(mr);
+  }
+  for (let i = 0; i < NX; i++) { for (let j = 0; j < NA; j++) m.quad(rings[i][j], rings[i + 1][j], rings[i + 1][j + 1], rings[i][j + 1]); for (let s = 0; s < 4; s++) m.quad(mant[i][s], mant[i][s + 1], mant[i + 1][s + 1], mant[i + 1][s]); }
+  return m;
+}
+// anemone: a short column (aux -0.6) with a crown of tentacles (aux 0.2 at the root to 1 at the tip, they sway)
+function meshAnemone(sd) {
+  rseed(340 + sd);
+  const m = new Mesh();
+  m.tube([[0, 0, 0], [0, 0.06, 0], [0, 0.12, 0]], (k) => [0.09, 0.08, 0.1][k], 12, true, () => -0.6);
+  for (let t = 0; t < 70; t++) {
+    const a = rnd() * TAU, r0 = 0.02 + 0.085 * sqrt(rnd()), L = rr(0.14, 0.24), out = rr(0.4, 1.1) * (r0 / 0.1), pts = [];
+    for (let k = 0; k <= 4; k++) { const s = k / 4, rl = r0 + out * L * s * 0.8; pts.push([cos(a) * rl, 0.12 + L * s * (1 - 0.35 * s * out), sin(a) * rl]); }
+    m.tube(pts, (k) => 0.011 * (1 - 0.5 * k / 4), 3, true, (k) => 0.2 + 0.8 * k / 4);
+  }
+  return m;
+}
+// barrel sponge: a ribbed vase with an open throat
+function meshBarrel() { return meshLathe([[0, 0, 0.4], [0.42, 0, 0.5], [0.52, 0.3, 0.8], [0.58, 0.7, 1], [0.56, 1.0, 1], [0.48, 1.08, 0.9], [0.4, 1.0, 0.45], [0.36, 0.6, 0.15], [0, 0.55, 0.08]], 22, 0.12, 14); }

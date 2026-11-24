@@ -291,7 +291,7 @@ const KDF = vec3f(.043, .045, .042);
 // infinitely long ray (the water colour) by direction: bright under the surface, mid blue level, dark below,
 // with a forward-scattering glow round the sun; it dims with depth (WKD). Every ray (terrain, surface, background,
 // sprites) is fogged with the same wFog, so the horizon has no seam.
-const WEXT = vec3f(.066, .041, .034); // LOOK round 3: more falloff with distance
+const WEXT = vec3f(.11, .045, .034); // LOOK round 5: red goes first (warm and saturated near, blue-green with distance)
 const WHOR = vec3f(.018, .115, .40);
 const WUPC = vec3f(.26, .85, 2.2);
 const WDNC = vec3f(.006, .045, .17);
@@ -466,6 +466,13 @@ struct VO { @invariant @builtin(position) cp: vec4f, @location(0) wp: vec3f, @lo
   if (i.c.x < 1.5 && i.c.z > 1.5 && g.res.x > 0.) { sc *= 1. - ss(i.c.z * .7, i.c.z, distance(base, g.cam.xyz) / g.mis.z); }
   var w = base + qrot(i.b, i.p * sc);
   w.y += sin(g.cam.w * .3 + i.c.y * 40.) * i.c.w;
+  if (i.c.x > 6.5) { // LOOK round 5: reef life sways in the surge (fans as a whole, anemone tentacles each on its own)
+    let t = g.cam.w; let hh = max(i.p.y, 0.) * sc; let ph = i.c.y * 40.;
+    let ten = f32(i.c.x > 9.5 && i.c.x < 10.5 && i.n.w > 0.);
+    let amp = mix(select(.03, .045, i.c.x > 7.5 && i.c.x < 8.5) * hh * hh, .06 * sc * i.n.w, ten);
+    let k = 2. + 28. * ten;
+    w += vec3f(sin(t * .9 + ph + i.p.x * k), .25 * sin(t * 1.3 + ph + i.p.z * 9.), cos(t * .75 + ph * 1.3 + i.p.z * k)) * amp;
+  }
   o.cp = proj(w); o.wp = w; o.n = qrot(i.b, i.n.xyz); o.op = i.p * i.a.w + i.c.y * 37.; o.on = i.n.xyz;
   o.m = i.c; o.q = i.b; o.ao = i.n.w;
   return o;
@@ -502,6 +509,7 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   let ca = caus(i.wp, dist);
   let hgt = A.h * .5 + B.h * .35 + C.h * .15;
   var bump = 1.7; var gloss = .1; var alb = vec3f(0.); var emi = vec3f(0.); var vao = 1.; var flu = 0.;
+  var trn = 0.; var irid = 0.; // LOOK round 5: light through thin tissue, iridescence (reef life)
   let flt = ss(.72, .93, n0.y);
   var sK = 0.; var rdir = vec2f(0.);
   // LOOK: scanned-texture normals (object space) and how strongly they count; derivatives for textureSampleGrad
@@ -595,6 +603,43 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
     alb *= .35 + .65 * ss(0., .12, min(pk_, 1. - pk_));
     alb = mix(alb, vec3f(.08, .22, .16), ss(.5, .7, A.c) * .6);
     gloss = .2; bump = .7;
+  } else if (mat >= 7) {
+    // ---- LOOK round 5: reef life: 7 soft coral, 8 sea fan, 9 giant clam, 10 anemone, 11 barrel / tube sponge
+    let hu = fract(sd * 7.13); let tip = sat(i.ao);
+    let P = tri(i.op, on, 7.); // fine pores and polyps
+    gloss = .12; bump = .9; flu = .05;
+    if (mat == 7) {
+      var cc = vec3f(.80, .30, .07);
+      if (hu > .3) { cc = vec3f(.42, .10, .46); } if (hu > .55) { cc = vec3f(.64, .07, .10); } if (hu > .75) { cc = vec3f(.82, .38, .50); } if (hu > .9) { cc = vec3f(.80, .62, .16); }
+      alb = mix(cc * .7, cc * 1.2 + vec3f(.07), tip) * (.7 + .55 * P.h);
+      trn = .25 + .75 * tip; vao = .5 + .5 * tip; bump = 1.5;
+    } else if (mat == 8) {
+      var cc = vec3f(.42, .10, .48);
+      if (hu > .45) { cc = vec3f(.82, .62, .10); } if (hu > .8) { cc = vec3f(.72, .20, .08); }
+      alb = cc * (.75 + .35 * tip); trn = .55; bump = .3;
+    } else if (mat == 9) {
+      if (i.ao < 0.) {
+        let sp = sD(i.op.xz * 5.).a; let sp2 = sD(i.op.xz * 13. + .3).b;
+        alb = mix(vec3f(.04, .28, .52), vec3f(.08, .52, .40), ss(.4, .6, sp)) * (.7 + .5 * ss(.55, .7, sp2));
+        alb = mix(alb, vec3f(.45, .75, .85), ss(.72, .8, sp2) * .6);
+        irid = 1.; gloss = .45; bump = .5;
+      } else {
+        alb = vec3f(.62, .60, .52) * (.55 + .5 * P.h) * (.6 + .4 * tip);
+        alb = mix(alb, vec3f(.25, .30, .18), ss(.5, .7, B.c) * .4); bump = 1.8;
+      }
+    } else if (mat == 10) {
+      if (i.ao < 0.) { alb = vec3f(.50, .22, .18) * (.7 + .4 * P.h); }
+      else {
+        var tc = vec3f(.66, .20, .56);
+        if (hu > .4) { tc = vec3f(.36, .62, .28); } if (hu > .75) { tc = vec3f(.86, .45, .55); }
+        alb = mix(vec3f(.72, .60, .45), tc, ss(.3, .95, tip)); trn = .8; bump = .2;
+      }
+    } else {
+      var cc = vec3f(.75, .32, .08);
+      if (hu > .3) { cc = vec3f(.55, .10, .08); } if (hu > .5) { cc = vec3f(.78, .62, .14); } if (hu > .7) { cc = vec3f(.36, .16, .40); } if (hu > .85) { cc = vec3f(.45, .28, .15); }
+      let pr = ss(.18, .45, P.h); // pores
+      alb = cc * (.4 + .7 * pr) * (.6 + .4 * sat(i.ao)); vao = .5 + .5 * pr; bump = 2.2; flu = .08;
+    }
   } else if (mat == 4) {
     // sponges: brown, tan, rust and a muted violet
     let hue = fract(sd * 7.31);
@@ -654,6 +699,11 @@ fn tri(p: vec3f, n: vec3f, s: f32) -> TP {
   // LOOK: caustics as thin bright lines over an even base: the dark cells between them read as blotches when strong
   let dl = E * ndl * (2.1 + mix(vec3f(.4), ca, ss(.05, .35, dot(n0, L))) * .85);
   var c = alb * (dl + am) + emi + alb * flu * dot(dl + am, vec3f(.1, .5, .5));
+  if (mat >= 7) { // LOOK round 5: sunlight through thin tissue (tips glow against the light), the clam mantle's iridescence
+    c += alb * trn * E * (.15 + 1.6 * pow(sat(dot(-V, L)), 3.)) * (.6 + .4 * (1. - ndl)) * vec3f(1., .9, .75);
+    let ndv = sat(dot(N, V));
+    c += irid * (.5 + .5 * cos(TAU * (vec3f(0., .33, .67) + ndv * 1.6 + .2))) * (am * .5 + E * .15) * (.3 + .7 * pow(1. - ndv, 1.5));
+  }
   let H = normalize(V + L);
   c += E * (.25 + ca) * pow(sat(dot(N, H)), mix(10., 70., gloss)) * gloss * ndl * 1.8;
   c += (amb(i.wp, reflect(-V, N), v1.g, z) + side(i.wp, reflect(-V, N), sat((v2.r - .5) * 2.7), z)) * ao * (.08 + gloss) * .6 * pow(1. - sat(dot(N, V)), 2.5);
