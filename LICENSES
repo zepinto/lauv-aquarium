@@ -19,5 +19,6 @@ the OpenGL normal map in RG and the displacement (height, stretched to the full 
 
 Other assets
 ------------
-- lauv-omst.glb: OceanScan LAUV model (OceanScan-MST).
+- lauv-omst.glb (and source/lauv-omst.glb): OceanScan LAUV model, (c) OceanScan-MST, published with its permission.
+  It is not covered by the MIT licence of the code.
 - The base code is Abyssal Garden (MIT, see LICENSE).
